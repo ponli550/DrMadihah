@@ -1,0 +1,74 @@
+# ---------------------------------------------------------------- secrets --
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+credentials.json
+service-account*.json
+
+# ------------------------------------------------------- generated media --
+# Everything under here is rebuildable from the scripts + source assets.
+# Source photos/footage live on the remote Mac, never in git.
+video/cards/*.mp4
+video/cards/*.jpg
+video/cards/*.png
+video/voiceover/
+video/render/
+video/exports/
+video/*_OLD.*
+
+# raw media of any kind
+*.mp4
+*.mov
+*.m4v
+*.mxf
+*.wav
+*.mp3
+*.aac
+*.m4a
+*.jpg
+*.jpeg
+*.JPG
+*.heic
+
+# keep the brand logos -- they are source, not output
+!assets/logos/*.png
+
+# ------------------------------------------------------------- Premiere --
+*.prproj
+*.prproj.bak
+*.xmp
+Adobe Premiere Pro Auto-Save/
+Adobe Premiere Pro Audio Previews/
+Adobe Premiere Pro Video Previews/
+*.cfa
+*.pek
+
+# --------------------------------------------------------------- vendor --
+# Upstream MCP server, cloned for reference. Not our code.
+AdobePremiereProMCP/
+
+# ------------------------------------------------------------- scratch --
+vibe_images/
+pane.log
+*.b64
+scratch/
+tmp/
+
+# ------------------------------------------------------------------ os --
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+
+# -------------------------------------------------------------- python --
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# ---------------------------------------------------------------- node --
+node_modules/
