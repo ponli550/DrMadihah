@@ -78,3 +78,6 @@ node_modules/
 .env.plain.bak
 .env.*.bak
 .env.keys.*.bak
+
+# umcares working dir: manifests, contact sheets, resolved timelines
+.umcares/

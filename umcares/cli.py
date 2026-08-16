@@ -11,8 +11,10 @@ import json
 import sys
 from pathlib import Path
 
-from . import (auth, doctor, log, media, post, scaffold, secrets, session,
+from . import (auth, doctor, inspect as inspect_mod, log, media, post, recipe as
+               recipe_mod, render as render_mod, scaffold, secrets, session,
                spinner, stack)
+from .example import EXAMPLE_RECIPE
 from . import __version__
 from .config import Config
 from .premiere import Premiere
@@ -201,6 +203,167 @@ def cmd_stack(args, cfg):
         return 0
 
     return 2
+
+
+def _workdir(cfg) -> Path:
+    d = cfg.root / ".umcares"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def cmd_inspect(args, cfg):
+    """Probe the media and render contact sheets so an AI can see it."""
+    t = _transport(args, cfg)
+    dirs = args.dir or [f"{cfg.remote.assets}/edit_ready",
+                        f"{cfg.remote.assets}/photos",
+                        f"{cfg.remote.assets}/music"]
+    work = _workdir(cfg)
+
+    parts = []
+    for d in dirs:
+        with spinner.spin(f"probing {d}", 60):
+            m = inspect_mod.scan(t, d, deep=not args.fast)
+        if m.get("error"):
+            log.warn(m["error"])
+            continue
+        parts.append(m)
+    if not parts:
+        log.err("nothing to inspect — check the paths")
+        return 1
+    manifest = inspect_mod.merge(parts) if len(parts) > 1 else parts[0]
+    for name, paths in (manifest.get("duplicate_names") or {}).items():
+        log.warn(f"duplicate filename `{name}` in {len(paths)} places — "
+                 f"a recipe reference would be ambiguous")
+
+    counts = manifest.get("counts", {})
+    log.ok(f"{counts.get('video',0)} video · {counts.get('photo',0)} photo · "
+           f"{counts.get('audio',0)} audio · {manifest.get('video_seconds',0)}s footage")
+    bad = manifest.get("needs_transcode") or []
+    if bad:
+        log.warn(f"{len(bad)} file(s) Premiere would import as AUDIO ONLY: "
+                 f"{', '.join(bad[:5])}{' …' if len(bad) > 5 else ''}")
+        log.warn("run `umcares media prepare` before referencing them in a recipe")
+
+    sheets = []
+    if not args.no_sheets:
+        for d in dirs:
+            tag = Path(d).name
+            for kind in ("video", "photo"):
+                with spinner.spin(f"contact sheet: {tag}/{kind}", 60):
+                    sh = inspect_mod.contact_sheet(
+                        t, d, work / f"sheet_{tag}_{kind}.jpg",
+                        kind=kind, cols=args.cols)
+                if sh.get("count"):
+                    sh["dir"] = d
+                    sheets.append(sh)
+
+    (work / "manifest.json").write_text(
+        json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+    md = inspect_mod.write_markdown(manifest, sheets, work / "MEDIA.md")
+
+    log.ok(f"wrote {md} — open it (or the sheets) to choose clips for a recipe")
+    log.out({"manifest": str(work / "manifest.json"), "markdown": str(md),
+             "sheets": [s["sheet"] for s in sheets if s.get("sheet")],
+             "counts": counts, "needs_transcode": bad})
+    return 0
+
+
+def cmd_recipe(args, cfg):
+    work = _workdir(cfg)
+
+    if args.action == "example":
+        out = Path(args.out) if args.out else (cfg.root / "recipe.example.json")
+        recipe_mod.save(EXAMPLE_RECIPE, out)
+        log.ok(f"wrote {out}")
+        log.info("edit it, then: umcares recipe validate --file <path>")
+        log.out(str(out))
+        return 0
+
+    if not args.file:
+        log.err("--file is required")
+        return 2
+    rec = recipe_mod.load(Path(args.file).expanduser())
+
+    manifest = None
+    mpath = work / "manifest.json"
+    if mpath.exists():
+        manifest = json.loads(mpath.read_text(encoding="utf-8"))
+    elif args.action == "validate":
+        log.warn("no manifest yet — run `umcares inspect` to check media references too")
+
+    if args.action == "validate":
+        problems = recipe_mod.validate(rec, manifest)
+        if problems:
+            for pr in problems:
+                log.err(pr)
+            log.out({"ok": False, "problems": problems})
+            return 1
+        log.ok("recipe is valid")
+        log.out({"ok": True, "scenes": len(rec.get("scenes") or [])})
+        return 0
+
+    if args.action == "resolve":
+        # seed from the manifest (clips, music), then let measured values from
+        # durations.json win — they come from files we actually rendered
+        durations = {}
+        if manifest:
+            for item in manifest.get("items", []):
+                if item.get("duration"):
+                    kind = "clip" if item.get("kind") == "video" else "audio"
+                    durations[f"{kind}:{item['file']}"] = item["duration"]
+        dpath = work / "durations.json"
+        if dpath.exists():
+            durations.update(json.loads(dpath.read_text(encoding="utf-8")))
+        resolved = recipe_mod.resolve(rec, durations)
+        print(recipe_mod.summary(resolved), file=sys.stderr)
+        if resolved["missing"]:
+            log.warn(f"{len(resolved['missing'])} asset(s) have no measured duration "
+                     f"— they must be rendered first")
+        (work / "resolved.json").write_text(
+            json.dumps(resolved, indent=2, ensure_ascii=False), encoding="utf-8")
+        log.out(resolved)
+        return 0
+
+    return 2
+
+
+def cmd_render(args, cfg):
+    """Render a recipe into a video. Idempotent; re-runs redo only what changed."""
+    work = _workdir(cfg)
+    rec = recipe_mod.load(Path(args.file).expanduser())
+
+    manifest = None
+    mpath = work / "manifest.json"
+    if mpath.exists():
+        manifest = json.loads(mpath.read_text(encoding="utf-8"))
+
+    problems = recipe_mod.validate(rec, manifest)
+    if problems:
+        for pr in problems:
+            log.err(pr)
+        log.err("recipe is not renderable — fix the above, or re-run "
+                "`umcares inspect` if the media moved")
+        return 1
+    log.ok(f"recipe valid: {len(rec.get('scenes') or [])} scenes")
+
+    stages = render_mod.STAGES
+    if args.only:
+        stages = args.only
+    else:
+        if args.from_stage:
+            stages = stages[stages.index(args.from_stage):]
+        if args.to_stage:
+            stages = stages[:stages.index(args.to_stage) + 1]
+
+    if args.dry_run:
+        log.out({"would_run": stages, "scenes": len(rec.get("scenes") or [])})
+        return 0
+
+    t = _transport(args, cfg)
+    res = render_mod.run(t, cfg, rec, work, manifest=manifest,
+                         stages=stages, force=args.force)
+    log.out(res)
+    return 0
 
 
 def cmd_doctor(args, cfg):
@@ -407,6 +570,30 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--reconnect", action="store_true",
                    help="re-open ssh in the remote pane after it drops")
     s.set_defaults(func=cmd_session)
+
+    rn = sub.add_parser("render", help="render a recipe into a video")
+    rn.add_argument("--file", required=True, help="recipe .json or .yml")
+    rn.add_argument("--from", dest="from_stage", choices=render_mod.STAGES)
+    rn.add_argument("--to", dest="to_stage", choices=render_mod.STAGES)
+    rn.add_argument("--only", nargs="*", choices=render_mod.STAGES)
+    rn.add_argument("--force", action="store_true",
+                    help="regenerate even if outputs already exist")
+    rn.add_argument("--dry-run", action="store_true")
+    rn.set_defaults(func=cmd_render)
+
+    ins = sub.add_parser("inspect", help="probe media + contact sheets so an AI can see it")
+    ins.add_argument("--dir", nargs="*",
+                     help="remote media dirs (default: edit_ready, photos, music)")
+    ins.add_argument("--cols", type=int, default=4)
+    ins.add_argument("--fast", action="store_true", help="skip loudness analysis")
+    ins.add_argument("--no-sheets", action="store_true")
+    ins.set_defaults(func=cmd_inspect)
+
+    rc = sub.add_parser("recipe", help="validate / resolve a recipe")
+    rc.add_argument("action", choices=["example", "validate", "resolve"])
+    rc.add_argument("--file")
+    rc.add_argument("--out")
+    rc.set_defaults(func=cmd_recipe)
 
     i = sub.add_parser("init", help="create the project folder tree")
     i.add_argument("--local-only", action="store_true")

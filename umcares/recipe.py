@@ -1,0 +1,258 @@
+"""The recipe: what an AI writes, and what umcares renders.
+
+Division of labour:
+
+  * The **AI** looks at the media (see `umcares inspect`) and declares intent —
+    scenes, narration text, which clip or stills go where, what each card says.
+    It does NOT compute timings.
+  * **umcares** resolves that intent into exact frame positions, renders the
+    missing pieces, and builds the timeline. Deterministic and repeatable: the
+    same recipe always produces the same cut.
+
+Why the split matters: every timing bug this pipeline has had came from a human
+or model doing arithmetic by hand — narration that outran its scene, music
+lifted before a sentence finished, 23 seconds of black nobody noticed. Durations
+are *measured* here (from the rendered voiceover and the probed clips), never
+guessed.
+
+A scene declares `narration` and a list of `visuals`. Visual durations may be
+given explicitly; anything left open is stretched so the scene covers its
+narration plus `pad`.
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from . import log
+
+# ---------------------------------------------------------------- loading --
+def load(path: Path) -> dict:
+    """Load a recipe. YAML when PyYAML is present, otherwise JSON."""
+    text = path.read_text(encoding="utf-8")
+    if path.suffix.lower() in (".yml", ".yaml"):
+        try:
+            import yaml  # optional
+        except ImportError:
+            raise SystemExit(
+                f"{path.name} is YAML but PyYAML is not installed.\n"
+                "  pip install pyyaml     (or write the recipe as .json)")
+        return yaml.safe_load(text) or {}
+    return json.loads(text or "{}")
+
+
+def save(recipe: dict, path: Path) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.suffix.lower() in (".yml", ".yaml"):
+        try:
+            import yaml
+            path.write_text(yaml.safe_dump(recipe, sort_keys=False,
+                                           allow_unicode=True), encoding="utf-8")
+            return path
+        except ImportError:
+            path = path.with_suffix(".json")
+    path.write_text(json.dumps(recipe, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+# ------------------------------------------------------------- validation --
+VISUAL_KINDS = ("clip", "card", "kenburns", "still", "black")
+
+
+def validate(recipe: dict, manifest: dict | None = None) -> list:
+    """Return a list of problems. Empty means the recipe is renderable.
+
+    When a manifest is supplied, referenced media is checked for existence and
+    for the VP9 trap, so a bad reference is caught before any rendering starts.
+    """
+    problems = []
+    known, unusable = set(), set()
+    if manifest:
+        for item in manifest.get("items", []):
+            known.add(item["file"])
+            if item.get("kind") == "video" and not item.get("premiere_usable", True):
+                unusable.add(item["file"])
+
+    if not recipe.get("scenes"):
+        problems.append("recipe has no `scenes`")
+
+    cards = recipe.get("cards") or {}
+    seen_ids = set()
+
+    for i, scene in enumerate(recipe.get("scenes") or []):
+        sid = scene.get("id") or f"scene[{i}]"
+        if not scene.get("id"):
+            problems.append(f"{sid}: missing `id`")
+        if sid in seen_ids:
+            problems.append(f"{sid}: duplicate id")
+        seen_ids.add(sid)
+
+        visuals = scene.get("visuals") or []
+        if not visuals:
+            problems.append(f"{sid}: no `visuals` — the scene would be black")
+
+        for j, v in enumerate(visuals):
+            kinds = [k for k in VISUAL_KINDS if k in v]
+            if len(kinds) != 1:
+                problems.append(
+                    f"{sid}.visuals[{j}]: expected exactly one of {VISUAL_KINDS}, got {kinds}")
+                continue
+            kind = kinds[0]
+
+            if kind == "clip" and manifest:
+                name = v["clip"]
+                if name not in known:
+                    problems.append(f"{sid}.visuals[{j}]: clip `{name}` not in the media dir")
+                elif name in unusable:
+                    problems.append(
+                        f"{sid}.visuals[{j}]: `{name}` is not H.264 — Premiere would "
+                        f"import it as audio only. Run `umcares media prepare` first.")
+
+            if kind == "card" and v["card"] not in cards:
+                problems.append(f"{sid}.visuals[{j}]: card `{v['card']}` is not defined")
+
+            if kind == "kenburns":
+                photos = (v["kenburns"] or {}).get("photos") or []
+                if len(photos) < 2:
+                    problems.append(f"{sid}.visuals[{j}]: kenburns needs >= 2 photos")
+                if manifest:
+                    for ph in photos:
+                        if ph not in known:
+                            problems.append(
+                                f"{sid}.visuals[{j}]: photo `{ph}` not in the media dir")
+
+    music = recipe.get("music") or {}
+    if music.get("file") and music.get("ducking"):
+        last = 0
+        for k, entry in enumerate(music["ducking"]):
+            if not (isinstance(entry, (list, tuple)) and len(entry) == 2):
+                problems.append(f"music.ducking[{k}]: expected [until_seconds, dB]")
+                continue
+            if entry[0] <= last:
+                problems.append(
+                    f"music.ducking[{k}]: boundary {entry[0]} must increase (previous {last})")
+            last = entry[0]
+
+    return problems
+
+
+# --------------------------------------------------------------- resolving --
+def resolve(recipe: dict, durations: dict) -> dict:
+    """Turn declared intent into an exact timeline.
+
+    `durations` maps an asset key to measured seconds:
+        {"vo:s1_pembukaan": 4.68, "clip:C0006.mp4": 7.2, "card:open": 11.0, ...}
+
+    Anything missing is treated as 0 and reported, rather than silently
+    producing a gap — black frames are the failure mode we keep hitting.
+    """
+    fps = float((recipe.get("meta") or {}).get("fps") or 50)
+    pad = float((recipe.get("meta") or {}).get("scene_pad") or 0.5)
+    vo_lead = float((recipe.get("meta") or {}).get("narration_lead") or 0.5)
+
+    video, audio, missing = [], [], []
+    t = 0.0
+    timeline = []
+
+    for scene in recipe.get("scenes") or []:
+        sid = scene["id"]
+        scene_start = t
+
+        vo_key = f"vo:{sid}"
+        vo_len = float(durations.get(vo_key) or 0)
+        if scene.get("narration") and not vo_len:
+            missing.append(vo_key)
+
+        # place visuals back to back
+        fixed, open_slots = [], []
+        for v in scene.get("visuals") or []:
+            kind = next(k for k in VISUAL_KINDS if k in v)
+            if kind == "clip":
+                key, ref = f"clip:{v['clip']}", v["clip"]
+            elif kind == "card":
+                key, ref = f"card:{v['card']}", v["card"]
+            elif kind == "kenburns":
+                ref = v["kenburns"].get("id") or f"{sid}_kb{len(fixed)}"
+                key = f"kenburns:{ref}"
+            else:
+                key, ref = f"{kind}:{v.get(kind)}", v.get(kind)
+
+            dur = v.get("duration")
+            if dur is None:
+                dur = durations.get(key)
+            if dur is None:
+                open_slots.append(len(fixed))
+                dur = 0.0
+                missing.append(key)
+            fixed.append({"kind": kind, "key": key, "ref": ref,
+                          "duration": float(dur), "spec": v})
+
+        # a scene must last at least as long as its narration plus the pad
+        need = (vo_lead + vo_len + pad) if vo_len else 0.0
+        have = sum(f["duration"] for f in fixed)
+        if open_slots and need > have:
+            extra = (need - have) / len(open_slots)
+            for idx in open_slots:
+                fixed[idx]["duration"] += extra
+            have = sum(f["duration"] for f in fixed)
+        elif need > have and fixed:
+            # stretch the last visual rather than leave the voice over black
+            fixed[-1]["duration"] += (need - have)
+            have = need
+
+        for f in fixed:
+            if f["duration"] <= 0:
+                continue
+            video.append({"key": f["key"], "ref": f["ref"], "kind": f["kind"],
+                          "start": round(t, 3), "duration": round(f["duration"], 3),
+                          "scene": sid, "spec": f["spec"]})
+            t += f["duration"]
+
+        if vo_len:
+            audio.append({"key": vo_key, "scene": sid,
+                          "start": round(scene_start + vo_lead, 3),
+                          "duration": round(vo_len, 3), "track": 1})
+
+        for extra_a in scene.get("audio") or []:
+            key = f"audio:{extra_a['file']}"
+            audio.append({"key": key, "scene": sid,
+                          "start": round(scene_start + float(extra_a.get("at", 0)), 3),
+                          "duration": float(durations.get(key) or 0),
+                          "track": int(extra_a.get("track", 2))})
+
+        timeline.append({"scene": sid, "start": round(scene_start, 3),
+                         "end": round(t, 3), "duration": round(t - scene_start, 3),
+                         "narration": round(vo_len, 2)})
+
+    return {
+        "fps": fps,
+        "total": round(t, 3),
+        "video": video,
+        "audio": audio,
+        "scenes": timeline,
+        "missing": sorted(set(missing)),
+    }
+
+
+def to_build_plan(resolved: dict, path_for) -> dict:
+    """Convert a resolved timeline into the plan `premiere build` consumes.
+
+    `path_for(entry)` maps a resolved entry to an absolute remote path.
+    """
+    return {
+        "video": [[path_for(v), v["start"]] for v in resolved["video"]],
+        "audio": [[path_for(a), a["start"], a.get("track", 1)]
+                  for a in resolved["audio"]],
+        "mute_sync_db": -60,
+    }
+
+
+def summary(resolved: dict) -> str:
+    lines = [f"total {resolved['total']}s ({resolved['total'] / 60:.1f} min), "
+             f"{len(resolved['video'])} visuals, {len(resolved['audio'])} audio"]
+    for s in resolved["scenes"]:
+        lines.append(f"  {s['start']:>7.1f} - {s['end']:>7.1f}  {s['scene']:<18} "
+                     f"({s['duration']:.1f}s, narration {s['narration']:.1f}s)")
+    if resolved["missing"]:
+        lines.append(f"  MISSING durations: {', '.join(resolved['missing'])}")
+    return "\n".join(lines)

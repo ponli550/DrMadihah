@@ -1,7 +1,25 @@
 # umcares
 
-One CLI for the UM Cares video pipeline: drives Adobe Premiere Pro on a remote
-Mac, prepares media, renders cards and voiceover, and produces the delivery.
+**umcares does not decide anything creative. It renders what a recipe says.**
+
+    media on disk  ──►  umcares inspect  ──►  manifest + contact sheets
+                                                      │
+                                                      ▼
+                                            AI reads and WRITES a recipe
+                                        (scenes, narration, cards, subtitles)
+                                                      │
+                                                      ▼
+                            umcares render  ──►  video  ──►  regenerate on edit
+
+The split exists because the two halves fail differently. Judgement — which
+clip shows the speaker, what the narration should say — is what a model is good
+at. Arithmetic — where each clip starts, whether the music is still ducked when
+the last sentence ends — is what it is bad at, and every timing bug this
+pipeline has had came from someone doing that arithmetic by hand.
+
+So the AI declares intent and never computes a timing. umcares measures real
+durations from rendered audio and probed clips, resolves the timeline, and
+produces the same cut every time from the same recipe.
 
 ```bash
 # install: symlink into a dir already on PATH (matches the pr-cli convention)
@@ -52,6 +70,9 @@ The right pane must hold a live ssh session — it is the fallback transport.
 
 | Command | Purpose |
 |---|---|
+| `inspect [--dir] [--cols N]` | probe media + contact sheets, so an AI can SEE it |
+| `recipe example\|validate\|resolve` | author, check and resolve a recipe |
+| `render --file R [--from S] [--to S] [--only S…]` | render the recipe into a video |
 | `session [--force] [--status] [--reconnect]` | build/inspect the layout, re-open ssh |
 | `init [--plan] [--local-only] [--remote-only]` | create the project folder tree |
 | `stack check\|up\|down\|status\|logs\|stdio` | MCP backend containers on the remote |
@@ -261,3 +282,92 @@ opaque "port is already allocated". `stack up` refuses and points at
 **The CLI does not need the stack.** umcares drives Premiere through the CEP
 DevTools port precisely because the MCP tool layer is broken. The stack exists
 for reproducible media analysis and for serving other MCP clients.
+
+
+---
+
+## The recipe
+
+`umcares recipe example` writes a worked one. The shape:
+
+```jsonc
+{
+  "meta":   { "fps": 50, "scene_pad": 0.6, "narration_lead": 0.5 },
+  "voice":  { "name": "ms-MY-OsmanNeural", "english_terms": ["scam cyber"],
+              "acronyms": ["UM Cares", "PPR"] },
+  "cards":  { "impak": { "type": "stats", "tiles": [ {"value": "84%", "label": "…"} ] } },
+  "scenes": [
+    { "id": "s2_konteks",
+      "narration": "Perkembangan teknologi membawa banyak manfaat…",
+      "emphasis":  "menjadikan golongan muda sasaran utama",
+      "visuals": [
+        { "clip": "C0011.mp4" },
+        { "kenburns": { "photos": ["DSC01218.JPG", "DSC01220.JPG"] } }
+      ] } ],
+  "music":  { "file": "…mp3", "start": 25,
+              "ducking": [[11,-3], [161,-20], [185,-25], [228,-20], [9999,-3]] }
+}
+```
+
+**Durations are optional and usually omitted.** `recipe resolve` measures the
+rendered narration and the probed clips, then stretches the open visuals so
+each scene covers its own narration plus `scene_pad`. A visual with an explicit
+`duration` is respected as-is.
+
+`recipe validate` refuses a recipe that references a missing file, an undefined
+card, a kenburns with fewer than two photos, non-increasing ducking boundaries
+— or **a clip Premiere would import as audio-only**, which is the failure that
+looks like success.
+
+## Seeing the media (`umcares inspect`)
+
+Writes into `.umcares/`:
+
+| file | purpose |
+|---|---|
+| `manifest.json` | every file probed: codec, size, duration, loudness, usable? |
+| `sheet_video.jpg`, `sheet_photo.jpg` | tiled thumbnails — what the AI looks at |
+| `MEDIA.md` | a briefing: counts, warnings, tile→filename order, file table |
+
+The tile order is emitted explicitly so "tile 6 is the red-shirt speaker" maps
+back to a real filename.
+
+
+---
+
+## Rendering (`umcares render`)
+
+Nine stages, run in order, each idempotent — a re-run redoes only what changed:
+
+| stage | does |
+|---|---|
+| `voice` | narration -> per-scene WAVs (json2video -> Azure `ms-MY`) |
+| `cards` | card specs -> clips (json2video text + ffmpeg logo overlay) |
+| `motion` | kenburns specs -> clips (ffmpeg, on the remote) |
+| `resolve` | measure everything, place it on the timeline |
+| `import` | put the assets into the Premiere project |
+| `build` | lay the timeline, mute sync audio, sweep orphans |
+| `subs` | SRT timed from the delivered audio |
+| `export` | master out of Premiere |
+| `deliver` | music bed + soft subtitles -> H.264 |
+
+```bash
+umcares render --file recipe.json --only voice   # one stage
+umcares render --file recipe.json --to build     # up to a point
+umcares render --file recipe.json --force        # regenerate everything
+```
+
+`resolve` refuses to continue while anything lacks a measured duration, listing
+exactly what is missing. That list is the work queue — it is why the earlier
+stages exist, and why a half-generated recipe cannot silently produce black.
+
+### Measure, never assume
+
+Every timing bug this pipeline has had came from arithmetic done by hand:
+narration outrunning its scene, music lifted before a sentence ended, 23
+seconds of black nobody noticed. So durations are read from the rendered files
+and probed clips — never estimated — and `resolve` runs again after generation
+so the timeline is built from what exists rather than what was hoped for.
+
+A scene is stretched to cover `narration_lead + narration + scene_pad`. Visuals
+with an explicit `duration` are respected; the rest absorb the slack.
