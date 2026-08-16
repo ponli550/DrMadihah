@@ -72,3 +72,9 @@ venv/
 
 # ---------------------------------------------------------------- node --
 node_modules/
+
+# dotenvx: .env may be encrypted and committed; the KEY never is
+.env.keys
+.env.plain.bak
+.env.*.bak
+.env.keys.*.bak

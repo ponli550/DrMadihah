@@ -1,0 +1,429 @@
+"""Getting commands onto the Adobe machine, reliably.
+
+Two transports, tried in order:
+
+1. SSHTransport   — a real ssh connection. Clean stdout/stderr, real exit
+                    codes, fast. Used whenever ssh can authenticate.
+2. TmuxTransport  — drives an ssh session that is already open in a tmux pane.
+                    This is the fallback for when no SSH key is available and
+                    the only live session is one a human logged in by hand.
+
+The tmux path is the fiddly one, and these are the rules that make it work:
+
+  * Command output is written to a temp file, then base64'd back between
+    unique markers. The pane wraps lines at its width and injects ANSI, which
+    silently corrupts raw output; base64 survives because we strip every
+    whitespace character before decoding.
+  * Exit codes are captured explicitly and returned, so callers can branch.
+  * Input is sent in size-limited chunks and the accumulated length is checked
+    after every chunk. tmux send-keys drops input when the remote shell is
+    busy, with no error — this cost us a corrupted binary before we caught it.
+  * Nothing is ever typed into a pane that is running a foreground process,
+    because the keystrokes land inside that process (they ended up inside
+    ffmpeg's interactive prompt more than once).
+"""
+from __future__ import annotations
+
+import base64
+import re
+import shlex
+import subprocess
+import time
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+
+from . import log
+from .config import Remote
+
+ANSI = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\a]*\a")
+
+
+@dataclass
+class Result:
+    rc: int
+    stdout: str
+    stderr: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.rc == 0
+
+    def check(self, what: str) -> "Result":
+        if not self.ok:
+            detail = (self.stderr or self.stdout).strip()[:400]
+            raise RuntimeError(f"{what} failed (rc={self.rc}): {detail}")
+        return self
+
+
+class Transport:
+    name = "base"
+
+    def run(self, cmd: str, timeout: int = 120) -> Result:
+        raise NotImplementedError
+
+    def push(self, local: Path, remote: str) -> None:
+        raise NotImplementedError
+
+    def pull(self, remote: str, local: Path) -> None:
+        raise NotImplementedError
+
+    # -- helpers shared by both transports ---------------------------------
+    def run_script(self, script: str, timeout: int = 600, shell: str = "bash") -> Result:
+        """Run a multi-line script remotely.
+
+        Anything with a heredoc, loop or multiple lines MUST come through here.
+        Sending it as a single tmux line makes the remote shell sit waiting for
+        a heredoc terminator that never arrives, and the call hangs forever.
+        Writing a file and executing it sidesteps shell quoting entirely.
+        """
+        import tempfile
+        import uuid as _uuid
+        remote_path = f"/tmp/.umc_script_{_uuid.uuid4().hex[:8]}.sh"
+        with tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False,
+                                         encoding="utf-8") as fh:
+            fh.write(script)
+            local = Path(fh.name)
+        try:
+            self.push(local, remote_path)
+            # NOTE: never `exit` here. On the tmux transport the command runs
+            # in the interactive login shell, and `exit` would close the ssh
+            # session itself. `(exit $__s)` sets $? from a subshell instead.
+            return self.run(
+                f"{shell} {remote_path}; __s=$?; rm -f {remote_path}; (exit $__s)",
+                timeout=timeout)
+        finally:
+            local.unlink(missing_ok=True)
+
+    def exists(self, remote_path: str) -> bool:
+        r = self.run(f"test -e {shlex.quote(remote_path)} && echo Y || echo N", timeout=30)
+        return r.stdout.strip().endswith("Y")
+
+    def size(self, remote_path: str) -> int:
+        r = self.run(f"wc -c < {shlex.quote(remote_path)} 2>/dev/null || echo -1", timeout=30)
+        try:
+            return int(r.stdout.strip().split()[-1])
+        except (ValueError, IndexError):
+            return -1
+
+
+# --------------------------------------------------------------------------
+class SSHTransport(Transport):
+    name = "ssh"
+
+    def __init__(self, target: str):
+        self.target = target
+
+    def __init__(self, target: str, password: str = "", key: str = ""):
+        self.target = target
+        self.password = password
+        self.key = key
+
+    def _base(self, batch: bool = True) -> list:
+        """ssh argv, optionally wrapped in sshpass for password auth."""
+        cmd = ["ssh"]
+        if self.key:
+            cmd += ["-i", self.key, "-o", "IdentitiesOnly=yes"]
+        if self.password:
+            # sshpass keeps it non-interactive; a key is still the better answer
+            cmd = ["sshpass", "-p", self.password] + cmd
+        elif batch:
+            cmd += ["-o", "BatchMode=yes"]
+        cmd += ["-o", "StrictHostKeyChecking=accept-new"]
+        return cmd
+
+    @staticmethod
+    def probe(remote: Remote, timeout: int = 8) -> "SSHTransport | None":
+        """Return a working SSH transport, or None. Never prompts interactively.
+
+        Tries, in order: an explicit key, the ssh alias / user@host with
+        whatever the agent offers, and finally a configured password via
+        sshpass. Anything that would block on a prompt is skipped.
+        """
+        import os
+        import shutil as _sh
+
+        key = os.path.expanduser(remote.key_path) if remote.key_path else ""
+        key = key if key and os.path.exists(key) else ""
+        pw = remote.password
+        if pw and not _sh.which("sshpass"):
+            log.debug("UMC_SSH_PASSWORD set but sshpass is not installed")
+            pw = ""
+
+        targets = [c for c in (remote.ssh_alias, f"{remote.user}@{remote.host}") if c]
+        for use_pw in ([False, True] if pw else [False]):
+            for target in targets:
+                cand = SSHTransport(target, pw if use_pw else "", key)
+                try:
+                    argv = cand._base(batch=not use_pw) + [
+                        "-o", f"ConnectTimeout={timeout}", target, "echo __UMC_OK__"]
+                    p = subprocess.run(argv, capture_output=True, text=True,
+                                       timeout=timeout + 8)
+                    if p.returncode == 0 and "__UMC_OK__" in p.stdout:
+                        how = "password" if use_pw else ("key" if key else "agent")
+                        log.debug(f"ssh works via '{target}' ({how})")
+                        return cand
+                    log.debug(f"ssh '{target}' rc={p.returncode}: {p.stderr.strip()[:120]}")
+                except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+                    log.debug(f"ssh '{target}' unavailable: {e}")
+        return None
+
+    def run(self, cmd: str, timeout: int = 120) -> Result:
+        p = subprocess.run(self._base() + [self.target, cmd],
+                           capture_output=True, text=True, timeout=timeout)
+        return Result(p.returncode, p.stdout, p.stderr)
+
+    def push(self, local: Path, remote: str) -> None:
+        argv = (["sshpass", "-p", self.password] if self.password else []) + \
+               ["scp", "-q"] + (["-i", self.key] if self.key else []) + \
+               [str(local), f"{self.target}:{remote}"]
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=900)
+        if p.returncode != 0:
+            raise RuntimeError(f"scp push failed: {p.stderr.strip()[:300]}")
+
+    def pull(self, remote: str, local: Path) -> None:
+        local.parent.mkdir(parents=True, exist_ok=True)
+        argv = (["sshpass", "-p", self.password] if self.password else []) + \
+               ["scp", "-q"] + (["-i", self.key] if self.key else []) + \
+               [f"{self.target}:{remote}", str(local)]
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=900)
+        if p.returncode != 0:
+            raise RuntimeError(f"scp pull failed: {p.stderr.strip()[:300]}")
+
+
+# --------------------------------------------------------------------------
+class TmuxTransport(Transport):
+    name = "tmux"
+
+    CHUNK = 2000          # base64 chars per send-keys; larger stalls the PTY
+    SETTLE = 0.35         # pause after each chunk
+
+    def __init__(self, pane: str):
+        self.pane = pane
+
+    # -- discovery ----------------------------------------------------------
+    @staticmethod
+    def find_pane(remote: Remote) -> "str | None":
+        if remote.tmux_pane:
+            return remote.tmux_pane
+        try:
+            p = subprocess.run(
+                ["tmux", "list-panes", "-a", "-F",
+                 "#{pane_id}\t#{session_name}\t#{pane_current_command}"],
+                capture_output=True, text=True, timeout=10,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            return None
+        if p.returncode != 0:
+            return None
+        best = None
+        for line in p.stdout.splitlines():
+            parts = line.split("\t")
+            if len(parts) < 3:
+                continue
+            pane_id, session, cmd = parts[0], parts[1], parts[2]
+            if cmd.strip() == "ssh":
+                # prefer a pane in the configured session
+                if session == remote.tmux_session:
+                    return pane_id
+                best = best or pane_id
+        return best
+
+    @staticmethod
+    def probe(remote: Remote) -> "TmuxTransport | None":
+        pane = TmuxTransport.find_pane(remote)
+        if not pane:
+            return None
+        t = TmuxTransport(pane)
+        if t.busy():
+            log.warn(f"tmux pane {pane} is running something; waiting for it to finish")
+            if not t.wait_idle(timeout=60):
+                log.warn(f"pane {pane} still busy — commands would be typed into it")
+                return None
+        r = t.run("echo __UMC_OK__; hostname", timeout=25)
+        if not (r.ok and "__UMC_OK__" in r.stdout):
+            return None
+
+        # A pane whose ssh session has died silently falls back to a LOCAL
+        # shell, and every "remote" command would then run on this machine.
+        # Refuse unless the pane really is somewhere else.
+        import socket
+        here = socket.gethostname().split(".")[0].lower()
+        lines = [l.strip() for l in r.stdout.splitlines() if l.strip()]
+        there = (lines[-1].split(".")[0].lower() if lines else "")
+        if not there or there == here:
+            log.err(f"pane {pane} is a LOCAL shell ({there or 'unknown'}), not the remote — "
+                    f"its ssh session has probably dropped")
+            log.warn(f"reconnect ssh in that pane, then retry")
+            return None
+
+        expected = remote.host.split(".")[0].lower()
+        if expected and there != expected:
+            log.warn(f"pane {pane} is on '{there}', expected '{expected}' — continuing anyway")
+        log.debug(f"tmux transport ready on pane {pane} (host {there})")
+        return t
+
+    # -- pane state ---------------------------------------------------------
+    def _tmux(self, *args: str, timeout: int = 15) -> subprocess.CompletedProcess:
+        return subprocess.run(["tmux", *args], capture_output=True, text=True, timeout=timeout)
+
+    def busy(self) -> bool:
+        """True when a foreground process owns the pane (never type into it)."""
+        p = self._tmux("display-message", "-p", "-t", self.pane, "#{pane_current_command}")
+        cmd = p.stdout.strip()
+        return cmd not in ("ssh", "bash", "zsh", "sh", "-zsh", "-bash", "fish", "")
+
+    def wait_idle(self, timeout: int = 120) -> bool:
+        end = time.time() + timeout
+        while time.time() < end:
+            if not self.busy():
+                return True
+            time.sleep(2)
+        return not self.busy()
+
+    def _capture(self, lines: int = 4000) -> str:
+        p = self._tmux("capture-pane", "-p", "-J", "-S", f"-{lines}", "-t", self.pane, timeout=30)
+        return ANSI.sub("", p.stdout.replace("\r", ""))
+
+    def _send(self, text: str) -> None:
+        self._tmux("send-keys", "-t", self.pane, text, "C-m")
+
+    # -- command execution --------------------------------------------------
+    def run(self, cmd: str, timeout: int = 120) -> Result:
+        """Run remotely; return real exit code and untouched output.
+
+        Output travels back base64-encoded between markers so that pane
+        wrapping and ANSI escapes cannot corrupt it.
+        """
+        tag = "UMC" + uuid.uuid4().hex[:10].upper()
+        tmp = f"/tmp/.umc_{tag}"
+        # The markers are assembled from a shell variable at RUNTIME. If the
+        # literal "TAG_E" appeared in the command text, tmux would show it the
+        # moment the line is echoed -- before the command has run -- and the
+        # poller would parse the echo as output. Referencing ${__t} keeps the
+        # expanded marker out of the echoed line entirely.
+        wrapped = (
+            f"__t={tag}; {{ {cmd} ; }} > {tmp}.out 2> {tmp}.err; __rc=$?; "
+            f'echo "${{__t}}_S"; echo RC=$__rc; '
+            f"base64 < {tmp}.out | tr -d '\\n'; echo; "
+            f'echo "${{__t}}_M"; '
+            f"base64 < {tmp}.err | tr -d '\\n'; echo; "
+            f'echo "${{__t}}_E"; '
+            f"rm -f {tmp}.out {tmp}.err"
+        )
+        self._send(wrapped)
+
+        end = time.time() + timeout
+        while time.time() < end:
+            buf = self._capture()
+            if f"{tag}_E" in buf:
+                return self._parse(buf, tag)
+            time.sleep(0.4)
+        return Result(124, "", f"timeout after {timeout}s")
+
+    def _parse(self, buf: str, tag: str) -> Result:
+        # capture-pane also contains the ECHOED command, which embeds the
+        # marker literals and (for pushes) base64 payload. Always take the
+        # LAST block, which is the real output.
+        try:
+            e = buf.rindex(f"{tag}_E")
+            m = buf.rindex(f"{tag}_M", 0, e)
+            s = buf.rindex(f"{tag}_S", 0, m)
+            head = buf[s + len(f"{tag}_S"):m]
+            errpart = buf[m + len(f"{tag}_M"):e]
+        except ValueError:
+            return Result(125, "", "could not parse marker block")
+
+        m = re.search(r"RC=(-?\d+)", head)
+        rc = int(m.group(1)) if m else 126
+        b64_out = re.sub(r"[^A-Za-z0-9+/=]", "", head[m.end():] if m else head)
+        b64_err = re.sub(r"[^A-Za-z0-9+/=]", "", errpart)
+        return Result(rc, _b64_text(b64_out), _b64_text(b64_err))
+
+    # -- file transfer ------------------------------------------------------
+    def push(self, local: Path, remote: str) -> None:
+        data = base64.b64encode(local.read_bytes()).decode()
+        total = len(data)
+        stage = f"/tmp/.umc_push_{uuid.uuid4().hex[:8]}"
+        self.run(f": > {stage}", timeout=30).check("stage file")
+
+        sent = 0
+        offset = 0
+        while offset < total:
+            part = data[offset:offset + self.CHUNK]
+            want = offset + len(part)
+            for attempt in range(3):
+                self._send(f"printf '%s' '{part}' >> {stage}")
+                time.sleep(self.SETTLE)
+                got = self.size(stage)
+                if got == want:
+                    break
+                # send-keys silently drops input when the shell is busy;
+                # rewind to the known-good prefix and resend this chunk
+                log.debug(f"chunk resend at {offset} (got {got}, want {want})")
+                self.run(f"truncate -s {offset} {stage}", timeout=30)
+            else:
+                raise RuntimeError(f"push stalled at byte {offset} of {total}")
+            offset = want
+            sent += 1
+
+        self.run(f"base64 -d < {stage} > {shlex.quote(remote)} && rm -f {stage}",
+                 timeout=120).check("decode")
+        local_n = local.stat().st_size
+        remote_n = self.size(remote)
+        if remote_n != local_n:
+            raise RuntimeError(f"push verify failed: local {local_n} != remote {remote_n}")
+        log.debug(f"pushed {local.name} in {sent} chunks, {local_n} bytes verified")
+
+    def pull(self, remote: str, local: Path) -> None:
+        n = self.size(remote)
+        if n < 0:
+            raise RuntimeError(f"remote file not found: {remote}")
+        r = self.run(f"base64 < {shlex.quote(remote)} | tr -d '\\n'", timeout=600)
+        r.check("read remote file")
+        blob = re.sub(r"[^A-Za-z0-9+/=]", "", r.stdout)
+        local.parent.mkdir(parents=True, exist_ok=True)
+        local.write_bytes(base64.b64decode(blob))
+        if local.stat().st_size != n:
+            raise RuntimeError(
+                f"pull verify failed: remote {n} != local {local.stat().st_size}")
+
+
+def _b64_text(blob: str) -> str:
+    if not blob:
+        return ""
+    try:
+        return base64.b64decode(blob + "=" * (-len(blob) % 4)).decode("utf-8", "replace")
+    except Exception:
+        return ""
+
+
+# --------------------------------------------------------------------------
+def connect(remote: Remote, prefer: str = "auto") -> Transport:
+    """Pick the best available transport.
+
+    'auto' tries ssh first because it gives clean stdout and real exit codes,
+    then falls back to an already-open tmux ssh pane.
+    """
+    if prefer in ("auto", "ssh"):
+        t = SSHTransport.probe(remote)
+        if t:
+            log.debug("transport: ssh")
+            return t
+        if prefer == "ssh":
+            raise SystemExit("ssh transport requested but no key-based login works.")
+        log.debug("ssh unavailable, falling back to tmux")
+
+    if prefer in ("auto", "tmux"):
+        t = TmuxTransport.probe(remote)
+        if t:
+            log.debug(f"transport: tmux pane {t.pane}")
+            return t
+
+    raise SystemExit(
+        "No transport available.\n"
+        "  ssh  : no key-based login (try `ssh-add`, or grant the key)\n"
+        "  tmux : no pane running an ssh session was found\n"
+        "Run `umcares session` to create the working layout, then log in on the "
+        "right-hand pane."
+    )

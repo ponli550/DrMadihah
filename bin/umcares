@@ -1,0 +1,15 @@
+#!/usr/bin/env python3
+"""umcares launcher — no install step, just run it from the repo.
+
+    ./bin/umcares doctor
+    export PATH="$PWD/bin:$PATH"   # then: umcares doctor
+"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from umcares.cli import main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(main())
