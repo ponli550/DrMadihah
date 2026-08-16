@@ -95,6 +95,40 @@ class Transport:
         finally:
             local.unlink(missing_ok=True)
 
+    def resolve_bin(self, name: str) -> str:
+        """Absolute path to a remote binary, or the bare name if not found.
+
+        A non-interactive ssh session does not source the login profile, so
+        version managers (nvm, pyenv, rbenv) are invisible and `node` is simply
+        "command not found" — even though it works fine in an interactive
+        shell. Try the plain lookup, then a login shell, then the usual
+        version-manager locations.
+        """
+        cached = getattr(self, "_bin_cache", None)
+        if cached is None:
+            cached = {}
+            self._bin_cache = cached
+        if name in cached:
+            return cached[name]
+
+        probes = [
+            f"command -v {name} 2>/dev/null",
+            f"zsh -lc 'command -v {name}' 2>/dev/null",
+            f"bash -lc 'command -v {name}' 2>/dev/null",
+            f"ls -1 ~/.nvm/versions/node/*/bin/{name} 2>/dev/null | tail -1",
+            f"ls -1 /opt/homebrew/bin/{name} /usr/local/bin/{name} 2>/dev/null | head -1",
+        ]
+        for probe in probes:
+            r = self.run(probe, timeout=45)
+            path = r.stdout.strip().splitlines()[-1].strip() if r.stdout.strip() else ""
+            if path.startswith("/"):
+                log.debug(f"resolved {name} -> {path}")
+                cached[name] = path
+                return path
+        log.debug(f"could not resolve {name}; using bare name")
+        cached[name] = name
+        return name
+
     def exists(self, remote_path: str) -> bool:
         r = self.run(f"test -e {shlex.quote(remote_path)} && echo Y || echo N", timeout=30)
         return r.stdout.strip().endswith("Y")
@@ -168,8 +202,33 @@ class SSHTransport(Transport):
                     log.debug(f"ssh '{target}' unavailable: {e}")
         return None
 
+    def _login_path(self) -> str:
+        """PATH as an interactive login shell sees it.
+
+        A non-interactive ssh session skips the login profile, so Homebrew and
+        every version manager vanish: ffmpeg, ffprobe, node and docker are all
+        "command not found" even though they work when you log in by hand.
+        Fetch the real PATH once and prepend it to everything after that.
+        """
+        if getattr(self, "_cached_path", None):
+            return self._cached_path
+        for shell in ("zsh", "bash"):
+            p = subprocess.run(
+                self._base() + [self.target, f"{shell} -lc 'printf %s \"$PATH\"'"],
+                capture_output=True, text=True, timeout=45)
+            path = p.stdout.strip()
+            if p.returncode == 0 and ":" in path and "/bin" in path:
+                self._cached_path = path
+                log.debug(f"login PATH resolved ({len(path.split(':'))} entries)")
+                return path
+        # last resort: the usual suspects
+        self._cached_path = ("/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:"
+                             "/usr/sbin:/sbin")
+        return self._cached_path
+
     def run(self, cmd: str, timeout: int = 120) -> Result:
-        p = subprocess.run(self._base() + [self.target, cmd],
+        wrapped = f'export PATH={shlex.quote(self._login_path())}; {cmd}'
+        p = subprocess.run(self._base() + [self.target, wrapped],
                            capture_output=True, text=True, timeout=timeout)
         return Result(p.returncode, p.stdout, p.stderr)
 

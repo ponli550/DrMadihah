@@ -13,6 +13,7 @@ Order of preference, best first:
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -54,11 +55,15 @@ def _agent_count() -> int:
         return 0
 
 
-def setup_key(remote: Remote) -> dict:
-    """Create a dedicated keypair and install it on the remote.
+def setup_key(remote: Remote, transport=None) -> dict:
+    """Create a keypair and install it on the remote.
 
-    Uses the configured password (via sshpass) if present so this can run
-    unattended; otherwise ssh-copy-id will prompt once in your terminal.
+    Primary path: push the public key through the transport that already
+    works (usually the logged-in tmux pane). That needs no password at all,
+    which matters because ssh-copy-id prompts interactively and therefore
+    cannot run unattended.
+
+    Falls back to ssh-copy-id only if no transport is available.
     """
     key = Path(os.path.expanduser(remote.key_path))
     key.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -75,20 +80,61 @@ def setup_key(remote: Remote) -> dict:
     else:
         log.ok(f"reusing existing key {key}")
 
+    pub = Path(str(key) + ".pub").read_text(encoding="utf-8").strip()
+
+    if transport is not None:
+        return _install_via_transport(transport, remote, key, pub)
+    return _install_via_copy_id(remote, key)
+
+
+def _install_via_transport(t, remote: Remote, key: Path, pub: str) -> dict:
+    """Append the public key to authorized_keys over the live session."""
+    log.step("installing the public key through the existing session")
+    # `grep -qxF` keeps this idempotent; permissions matter or sshd ignores it
+    script = f"""
+set -e
+mkdir -p ~/.ssh
+chmod 700 ~/.ssh
+touch ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+if grep -qxF {shlex.quote(pub)} ~/.ssh/authorized_keys; then
+  echo "ALREADY_PRESENT"
+else
+  printf '%s\n' {shlex.quote(pub)} >> ~/.ssh/authorized_keys
+  echo "APPENDED"
+fi
+echo "KEYS=$(grep -c . ~/.ssh/authorized_keys)"
+"""
+    r = t.run_script(script, timeout=180)
+    r.check("install key")
+    state = "already present" if "ALREADY_PRESENT" in r.stdout else "appended"
+    log.ok(f"public key {state} in ~/.ssh/authorized_keys")
+
+    probe = SSHTransport.probe(remote)
+    if not probe:
+        log.warn("key installed but ssh still will not authenticate — the server "
+                 "may disallow publickey, or the home directory may be group-writable")
+        return {"key": str(key), "installed": state, "ssh_works": False}
+    log.ok(f"key auth working via {probe.target} — the tmux pane is now only a fallback")
+    return {"key": str(key), "installed": state, "ssh_works": True,
+            "target": probe.target, "method": "key"}
+
+
+def _install_via_copy_id(remote: Remote, key: Path) -> dict:
     target = remote.ssh_alias or f"{remote.user}@{remote.host}"
-    argv = ["ssh-copy-id", "-i", f"{key}.pub", "-o", "StrictHostKeyChecking=accept-new", target]
+    argv = ["ssh-copy-id", "-i", f"{key}.pub",
+            "-o", "StrictHostKeyChecking=accept-new", target]
     if remote.password:
         if not shutil.which("sshpass"):
             raise RuntimeError(
                 "UMC_SSH_PASSWORD is set but sshpass is missing.\n"
-                "  brew install hudochenkov/sshpass/sshpass\n"
-                "…or run without the password and type it when prompted.")
+                "  brew install hudochenkov/sshpass/sshpass")
         argv = ["sshpass", "-p", remote.password] + argv
-        log.step(f"installing key on {target} (using configured password)")
         p = subprocess.run(argv, capture_output=True, text=True, timeout=120)
     else:
-        log.step(f"installing key on {target} — you will be asked for the password once")
-        p = subprocess.run(argv, timeout=300)      # inherit tty so it can prompt
+        log.warn("no transport available — ssh-copy-id will prompt for a password. "
+                 "Run this from an interactive terminal.")
+        p = subprocess.run(argv, timeout=300)
 
     out = getattr(p, "stderr", "") or ""
     if p.returncode != 0 and "already exist" not in out:
@@ -97,5 +143,5 @@ def setup_key(remote: Remote) -> dict:
     t = SSHTransport.probe(remote)
     if not t:
         raise RuntimeError("key installed but ssh still will not authenticate")
-    log.ok("key auth working — the CLI no longer needs the tmux pane")
-    return {"key": str(key), "target": t.target, "method": "key"}
+    log.ok("key auth working")
+    return {"key": str(key), "target": t.target, "method": "key", "ssh_works": True}

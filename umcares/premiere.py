@@ -229,9 +229,11 @@ class Premiere:
         """Evaluate JS inside the CEP panel; returns its string result."""
         self._ensure_driver()
         self._write_remote("/tmp/umc_expr.js", expression)
+        node = self.t.resolve_bin("node")
         env = f"UMC_CDP_PORT={self.remote.cdp_port}"
-        r = self.t.run(f"{env} node /tmp/umc_cdp.js /tmp/umc_expr.js {timeout * 1000}",
-                       timeout=timeout + 60)
+        r = self.t.run(
+            f"{env} {node} /tmp/umc_cdp.js /tmp/umc_expr.js {timeout * 1000}",
+            timeout=timeout + 60)
         if not r.ok:
             raise RuntimeError(f"CDP evaluate failed: {(r.stderr or r.stdout).strip()[:300]}")
         return r.stdout.strip()

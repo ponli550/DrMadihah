@@ -4,12 +4,33 @@ One CLI for the UM Cares video pipeline: drives Adobe Premiere Pro on a remote
 Mac, prepares media, renders cards and voiceover, and produces the delivery.
 
 ```bash
-export PATH="$PWD/bin:$PATH"
+# install: symlink into a dir already on PATH (matches the pr-cli convention)
+ln -sfn "$PWD/bin/umcares" ~/.local/bin/umcares
 
 umcares session          # create the 3-pane tmux layout
+umcares auth --setup-key # key login, so ssh replaces the tmux fallback
 umcares doctor           # preflight everything
+umcares init             # create the folder tree
 umcares premiere heal    # make Premiere controllable
 ```
+
+No zshrc edit is needed if `~/.local/bin` is already on your PATH. The launcher
+resolves its own symlink, so `.env` and the package are found from any working
+directory.
+
+### Why key auth matters
+
+`auth --setup-key` installs the public key **through whatever transport already
+works** — usually the logged-in tmux pane — so it never prompts for a password.
+After that the CLI opens its own short-lived ssh connections:
+
+| | 3 commands | push 61 KB |
+|---|---|---|
+| ssh | 0.81s | **0.4s** |
+| tmux | 1.42s | 52.6s |
+
+131x faster on transfer (`scp` versus length-verified base64 chunks through a
+PTY), and it removes the whole class of "the pane session dropped" failures.
 
 ---
 
@@ -31,11 +52,13 @@ The right pane must hold a live ssh session — it is the fallback transport.
 
 | Command | Purpose |
 |---|---|
-| `session [--force] [--status]` | build/inspect the tmux layout |
+| `session [--force] [--status] [--reconnect]` | build/inspect the layout, re-open ssh |
+| `init [--plan] [--local-only] [--remote-only]` | create the project folder tree |
+| `stack check\|up\|down\|status\|logs\|stdio` | MCP backend containers on the remote |
 | `doctor [--json] [--quick]` | preflight every dependency |
 | `auth [--setup-key]` | ssh credential status, or install a key |
 | `config set\|get\|list` | settings and credentials (auto-encrypts secrets) |
-| `secrets status\|encrypt\|decrypt` | dotenvx-encrypted `.env` |
+| `secrets status\|init\|rotate\|encrypt\|decrypt` | dotenvx-encrypted `.env` (opt-in) |
 | `remote <cmd>` | run a command on the Adobe machine |
 | `push <local> <remote>` / `pull` | verified file transfer |
 | `premiere heal\|status\|report\|import\|build\|export` | control Premiere |
@@ -186,3 +209,55 @@ All optional; defaults are in `umcares/config.py`.
 | `UMC_CDP_PORT` | CEP DevTools port (default 9241) |
 | `UMC_REMOTE_ROOT` | project root on the remote |
 | `UMC_NO_SPINNER=1` | disable the spinner |
+
+
+---
+
+## Folder layout (`umcares init`)
+
+```
+assets/
+  footage/A      A-roll: speakers, interviews, primary action
+  footage/B      B-roll: cutaways, atmosphere
+  photos/        source stills
+  edit_ready/    H.264 transcodes — the ONLY folder Premiere imports from
+  logos/  music/  vo/  cards/
+presets/   subtitles/   exports/   project/
+```
+
+Created on **both** machines, but the local copy deliberately omits source
+media — footage stays on the remote where Premiere can reach it, and out of
+git. Each folder gets a `.what-goes-here` note.
+
+Nothing lives under `~/Downloads`, `~/Documents` or `~/Desktop`: macOS TCC
+blocks an ssh session from reading those, so media stored there is invisible to
+the pipeline and fails much later in a confusing way.
+
+---
+
+## Containers (`umcares stack`)
+
+```bash
+umcares stack check                 # docker + compose + port conflicts
+umcares stack up --stop-host --build
+umcares stack status
+umcares stack stdio                 # command for an external MCP client
+```
+
+**What cannot be containerized:** Premiere Pro is a licensed macOS GUI app, and
+the CEP panel loads inside it. Both stay on the host, so compose must run on
+the *remote Mac* and the bridge reaches the panel via
+`host.docker.internal:9801`.
+
+Upstream ships only `rust-engine` and `python-intel`. `umcares` writes a
+`docker-compose.umcares.yml` override that adds `go-orchestrator` and
+`ts-bridge`.
+
+**Port conflicts are checked first.** `scripts/start-all.sh` binds 50052/50053/
+50054 on the host; containers publish the same ports and would fail with an
+opaque "port is already allocated". `stack up` refuses and points at
+`--stop-host`.
+
+**The CLI does not need the stack.** umcares drives Premiere through the CEP
+DevTools port precisely because the MCP tool layer is broken. The stack exists
+for reproducible media analysis and for serving other MCP clients.

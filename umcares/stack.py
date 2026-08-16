@@ -117,16 +117,48 @@ test -f {shlex.quote(remote.mcp_repo)}/Dockerfile && echo "dockerfile=ok" || ech
     r = t.run_script(script, timeout=180)
     info = {}
     for line in r.stdout.splitlines():
-        if "=" in line:
+        if "=" in line and not line.startswith("port:"):
             k, v = line.strip().split("=", 1)
             info[k] = v
+
+    # The host may already be running these services (scripts/start-all.sh).
+    # Docker would then fail with an opaque "port is already allocated".
+    conflicts = {}
+    probe = t.run(
+        "for p in 50052 50053 50054 8090; do "
+        "  o=$(lsof -nP -iTCP:$p -sTCP:LISTEN 2>/dev/null | awk 'NR==2{print $1\" pid=\"$2}'); "
+        "  [ -n \"$o\" ] && echo \"$p|$o\"; done", timeout=120)
+    for line in probe.stdout.splitlines():
+        if "|" in line:
+            port, owner = line.strip().split("|", 1)
+            if "docker" not in owner.lower() and "com.docke" not in owner.lower():
+                conflicts[port] = owner
+    info["host_port_conflicts"] = conflicts
+
     info["ok"] = (info.get("daemon") == "up" and info.get("repo") == "ok"
                   and info.get("dockerfile") == "ok")
     return info
 
 
+def stop_host_services(t: Transport, remote: Remote) -> dict:
+    """Stop the host-run backends so the containers can bind their ports."""
+    r = t.run(f"cd {shlex.quote(remote.mcp_repo)} && ./scripts/stop-all.sh 2>&1 | tail -5",
+              timeout=300)
+    return {"ok": r.ok, "output": (r.stdout or r.stderr).strip()[-300:]}
+
+
 def up(t: Transport, remote: Remote, build: bool = False,
-      services: list | None = None, timeout: int = 3600) -> dict:
+      services: list | None = None, timeout: int = 3600,
+      force: bool = False) -> dict:
+    pre = preflight(t, remote)
+    clash = pre.get("host_port_conflicts") or {}
+    if clash and not force:
+        detail = ", ".join(f"{p} ({o})" for p, o in sorted(clash.items()))
+        raise RuntimeError(
+            f"these ports are already held by host processes: {detail}\n"
+            f"  the containers bind the same ports and would fail to start\n"
+            f"  fix: `umcares stack up --stop-host` (runs scripts/stop-all.sh), "
+            f"or stop them yourself")
     ensure_override(t, remote)
     what = " ".join(services or [])
     flags = "up -d" + (" --build" if build else "")

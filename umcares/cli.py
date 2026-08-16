@@ -11,7 +11,9 @@ import json
 import sys
 from pathlib import Path
 
-from . import auth, doctor, log, media, post, scaffold, secrets, session, spinner, stack
+from . import (auth, doctor, log, media, post, scaffold, secrets, session,
+               spinner, stack)
+from . import __version__
 from .config import Config
 from .premiere import Premiere
 from .transport import connect
@@ -39,7 +41,13 @@ def cmd_session(args, cfg):
 
 def cmd_auth(args, cfg):
     if args.setup_key:
-        log.out(auth.setup_key(cfg.remote))
+        # use the working transport so no password prompt is needed
+        try:
+            t = _transport(args, cfg)
+        except SystemExit:
+            t = None
+            log.warn("no transport — falling back to ssh-copy-id (interactive)")
+        log.out(auth.setup_key(cfg.remote, transport=t))
         return 0
     info = auth.status(cfg.remote)
     if info["ssh_works"]:
@@ -157,10 +165,16 @@ def cmd_stack(args, cfg):
             log.err("docker preflight failed — run `umcares stack check`")
             log.out(pre)
             return 1
-        est = 900 if args.build else 90
+        for port, owner in (pre.get("host_port_conflicts") or {}).items():
+            log.warn(f"port {port} already held on the host by {owner}")
+        if args.stop_host:
+            with spinner.spin("stopping host-run backends", 20):
+                stack.stop_host_services(t, cfg.remote)
+        est = 1800 if args.build else 90
         with spinner.spin("starting MCP backend containers"
                           + (" (building — first run is slow)" if args.build else ""), est):
-            res = stack.up(t, cfg.remote, build=args.build, services=args.services)
+            res = stack.up(t, cfg.remote, build=args.build,
+                           services=args.services, force=args.stop_host or args.force)
         log.ok(f"{res['running']} service(s) running")
         for port, state in res["ports"].items():
             (log.ok if state == "open" else log.warn)(f"port {port}: {state}")
@@ -381,6 +395,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--transport", choices=["auto", "ssh", "tmux"], default="auto",
                    help="how to reach the remote (default: auto = ssh, else tmux pane)")
     p.add_argument("-v", "--verbose", action="store_true")
+    p.add_argument("--version", action="version",
+                   version=f"umcares {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("session", help="create the 3-pane tmux layout")
@@ -401,7 +417,11 @@ def build_parser() -> argparse.ArgumentParser:
     st = sub.add_parser("stack", help="MCP backend containers on the remote")
     st.add_argument("action",
                     choices=["check", "up", "down", "status", "logs", "stdio"])
-    st.add_argument("--build", action="store_true", help="rebuild images")
+    st.add_argument("--build", action="store_true",
+                    help="rebuild images (first run is slow: Go+Rust+Python+Node)")
+    st.add_argument("--stop-host", action="store_true",
+                    help="stop host-run backends first so ports are free")
+    st.add_argument("--force", action="store_true", help="ignore port conflicts")
     st.add_argument("--services", nargs="*", default=[])
     st.add_argument("--service", help="one service, for logs")
     st.add_argument("--tail", type=int, default=60)
