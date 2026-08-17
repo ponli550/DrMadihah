@@ -55,6 +55,24 @@ def save(recipe: dict, path: Path) -> Path:
     return path
 
 
+def apply_defaults(recipe: dict, defaults: dict) -> dict:
+    """Fill a recipe's blanks from config. The recipe always wins.
+
+    Precedence is recipe > config > built-in default, so house style lives in
+    config and a one-off override lives in the recipe that needs it — neither
+    has to be restated in the other. Merging is one level deep into each block,
+    which is as deep as these settings nest.
+    """
+    out = dict(recipe)
+    for block, values in defaults.items():
+        if not isinstance(values, dict):
+            continue
+        merged = dict(values)
+        merged.update(out.get(block) or {})
+        out[block] = merged
+    return out
+
+
 # ------------------------------------------------------------- validation --
 VISUAL_KINDS = ("clip", "card", "kenburns", "still", "black")
 
@@ -66,6 +84,7 @@ def validate(recipe: dict, manifest: dict | None = None) -> list:
     for the VP9 trap, so a bad reference is caught before any rendering starts.
     """
     problems = []
+    AUDIO_MODES = ("keep", "duck", "mute")
     known, unusable = set(), set()
     if manifest:
         for item in manifest.get("items", []):
@@ -107,6 +126,11 @@ def validate(recipe: dict, manifest: dict | None = None) -> list:
                     problems.append(
                         f"{sid}.visuals[{j}]: `{name}` is not H.264 — Premiere would "
                         f"import it as audio only. Run `umcares media prepare` first.")
+
+            mode = v.get("audio", "mute")
+            if mode not in AUDIO_MODES:
+                problems.append(
+                    f"{sid}.visuals[{j}]: audio `{mode}` must be one of {AUDIO_MODES}")
 
             if kind == "card" and v["card"] not in cards:
                 problems.append(f"{sid}.visuals[{j}]: card `{v['card']}` is not defined")
@@ -185,7 +209,10 @@ def resolve(recipe: dict, durations: dict) -> dict:
                 dur = 0.0
                 missing.append(key)
             fixed.append({"kind": kind, "key": key, "ref": ref,
-                          "duration": float(dur), "spec": v})
+                          "duration": float(dur), "spec": v,
+                          # keep = its own audio leads (a testimonial),
+                          # duck = present but under narration, mute = silent
+                          "audio": v.get("audio", "mute")})
 
         # a scene must last at least as long as its narration plus the pad
         need = (vo_lead + vo_len + pad) if vo_len else 0.0
@@ -205,7 +232,7 @@ def resolve(recipe: dict, durations: dict) -> dict:
                 continue
             video.append({"key": f["key"], "ref": f["ref"], "kind": f["kind"],
                           "start": round(t, 3), "duration": round(f["duration"], 3),
-                          "scene": sid, "spec": f["spec"]})
+                          "scene": sid, "spec": f["spec"], "audio": f["audio"]})
             t += f["duration"]
 
         if vo_len:

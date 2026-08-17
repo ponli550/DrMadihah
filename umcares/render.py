@@ -215,12 +215,31 @@ class Renderer:
         return {"imported": n, "requested": len(paths)}
 
     def stage_build(self):
+        audio_cfg = self.rec.get("audio") or {}
+        db = {"keep": float(audio_cfg.get("keep_db", 0)),
+              "duck": float(audio_cfg.get("duck_db", -18)),
+              "mute": float(audio_cfg.get("mute_db", -60))}
+
+        # a clip's own audio is matched by filename on the sync track
+        rules = []
+        for v in self.resolved["video"]:
+            mode = v.get("audio", "mute")
+            if mode == "mute":
+                continue
+            stem = str(v["ref"]).rsplit("/", 1)[-1]
+            stem = stem.rsplit(".", 1)[0]
+            rules.append([stem, db[mode]])
+
         plan = {
             "video": [[self._path_for(v), v["start"]] for v in self.resolved["video"]],
             "audio": [[self._audio_path_for(a), a["start"], a.get("track", 1)]
                       for a in self.resolved["audio"]],
-            "mute_sync_db": -60,
+            "mute_sync_db": db["mute"],
+            "audio_levels": rules,
         }
+        if rules:
+            log.step(f"{len(rules)} clip(s) keep their own audio: "
+                     + ", ".join(f"{r[0]}@{r[1]}dB" for r in rules[:4]))
         (self.work / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
         p = Premiere(self.t, self.remote)
         with spinner.spin(f"building timeline ({len(plan['video'])} visuals)", 120):
@@ -247,10 +266,8 @@ class Renderer:
     def stage_export(self):
         outcfg = self.rec.get("output") or {}
         master = self._remote(outcfg.get("master", "exports/master.mxf"))
-        preset = outcfg.get("preset_path") or (
-            "/Applications/Adobe Premiere Pro 2026/Adobe Premiere Pro 2026.app/"
-            "Contents/Settings/EncoderPresets/ConsolidateAndTranscode/"
-            "AVC-Intra Class100 1080 50p.epr")
+        # recipe wins, then config, then the built-in default
+        preset = outcfg.get("preset_path") or self.remote.preset_path
         self.t.run(f"mkdir -p {self._remote('exports')}", timeout=60)
         p = Premiere(self.t, self.remote)
         with spinner.spin("exporting master from Premiere", 480):
@@ -267,17 +284,25 @@ class Renderer:
         srt_remote = getattr(self, "srt_remote", self._remote(
             "subtitles", "subtitles.srt"))
 
+        subs = self.rec.get("subtitles") or {}
+        burn = str(subs.get("mode", "soft")).lower() == "burn"
+        lang = subs.get("language", "msa")
+        style = self.rec.get("style") or {}
+
         if not music.get("file"):
-            with spinner.spin("muxing subtitles (no music in recipe)", 90):
-                return post.mux_subtitles_only(self.t, master, srt_remote, delivery)
+            label = "burning subtitles in" if burn else "muxing subtitles"
+            with spinner.spin(f"{label} (no music in recipe)",
+                              600 if burn else 90):
+                return post.mux_subtitles_only(self.t, master, srt_remote, delivery,
+                                               lang=lang, burn=burn, style=style)
 
         music_path = self._remote("assets", "music", music["file"])
-        with spinner.spin("mixing music + subtitles", 360):
+        with spinner.spin("mixing music + subtitles", 480 if burn else 360):
             return post.mix(
                 self.t, master, music_path, srt_remote, delivery,
                 sections=music.get("ducking"),
                 music_start=float(music.get("start", 25)),
-                lang=(self.rec.get("subtitles") or {}).get("language", "msa"))
+                lang=lang, burn=burn, style=style)
 
 
 def run(t, cfg, rec: dict, work: Path, manifest: dict | None = None,

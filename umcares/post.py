@@ -50,11 +50,48 @@ DEFAULT_SECTIONS = [
 ]
 
 
+def _require_libass(t: Transport) -> None:
+    """Burning needs libass. Fail here with a fix, not inside ffmpeg's output."""
+    r = t.run("ffmpeg -hide_banner -filters 2>/dev/null | grep -c ' subtitles '",
+              timeout=60)
+    if (r.stdout.strip() or "0") == "0":
+        raise SystemExit(
+            "this ffmpeg has no `subtitles` filter (built without libass), so "
+            "subtitles cannot be burned in.\n"
+            "  brew install ffmpeg      # the bottle includes libass\n"
+            "  or set subtitle mode to `soft` (umcares config init --section subtitles)")
+
+
+def _ass_arg(srt: str, style: dict | None) -> str:
+    """An ffmpeg `subtitles=` argument, with the path escaped for the filter.
+
+    Colons and commas separate filter options, so a path containing either
+    truncates the filter instead of erroring — hence the escaping.
+    """
+    path = srt.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+    style = style or {}
+    ink = str(style.get("ink", "#ffffff")).lstrip("#")
+    # ASS colours are &HBBGGRR, i.e. reversed from hex RGB
+    bgr = ink[4:6] + ink[2:4] + ink[0:2] if len(ink) == 6 else "ffffff"
+    force = (f"FontName={style.get('font', 'Inter')},Fontsize=22,"
+             f"PrimaryColour=&H00{bgr},OutlineColour=&H90000000,"
+             f"BorderStyle=3,Outline=1,Shadow=0,MarginV=48")
+    return f"'{path}':force_style='{force}'"
+
+
 def mix(t: Transport, master: str, music: str, srt: str, out: str,
         sections: list | None = None, music_start: float = 25.0,
         fade_out_at: float | None = None, crf: int = 18,
-        lang: str = "msa", timeout: int = 3600) -> dict:
-    """Lay music under a master, mux soft subtitles, encode delivery H.264."""
+        lang: str = "msa", burn: bool = False, style: dict | None = None,
+        timeout: int = 3600) -> dict:
+    """Lay music under a master, add subtitles, encode delivery H.264.
+
+    Subtitles go in one of two ways:
+      soft (default) a real track the viewer can switch off, and which
+                     stays editable — a typo is a remux, not a re-render
+      burn           painted into the picture, for players and social
+                     platforms that ignore subtitle tracks entirely
+    """
     sections = sections or DEFAULT_SECTIONS
     gain = build_envelope(sections)
 
@@ -79,16 +116,22 @@ def mix(t: Transport, master: str, music: str, srt: str, out: str,
         f"[voice][musg]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
     )
 
-    sub_in = f"-i {_q(srt)}" if srt else ""
-    sub_map = "-map 2:0" if False else ("-map 3:0" if srt else "")
-    sub_codec = (f"-c:s mov_text -metadata:s:s:0 language={lang} "
-                 f'-metadata:s:s:0 title="Bahasa Malaysia"') if srt else ""
+    if srt and burn:
+        _require_libass(t)
+        filt += f";[0:v]subtitles={_ass_arg(srt, style)}[vout]"
+        vmap, sub_in, sub_map, sub_codec = '-map "[vout]"', "", "", ""
+    else:
+        vmap = "-map 0:v:0"
+        sub_in = f"-i {_q(srt)}" if srt else ""
+        sub_map = "-map 3:0" if srt else ""
+        sub_codec = (f"-c:s mov_text -metadata:s:s:0 language={lang} "
+                     f'-metadata:s:s:0 title="Bahasa Malaysia"') if srt else ""
 
     script = f'''
 set -e
 ffmpeg -y -loglevel error -i {_q(master)} -i {_q(music)} -i {_q(music)} {sub_in} \
   -filter_complex "{filt}" \
-  -map 0:v:0 -map "[aout]" {sub_map} \
+  {vmap} -map "[aout]" {sub_map} \
   -c:v libx264 -preset medium -crf {crf} -pix_fmt yuv420p \
   -c:a aac -b:a 192k -ac 2 {sub_codec} \
   -movflags +faststart {_q(out)}
@@ -104,11 +147,31 @@ ffmpeg -hide_banner -i {_q(out)} -af ebur128=framelog=quiet -f null - 2>&1 \
 
 
 def mux_subtitles_only(t: Transport, src: str, srt: str, out: str,
-                       lang: str = "msa", timeout: int = 1800) -> dict:
+                       lang: str = "msa", burn: bool = False,
+                       style: dict | None = None, crf: int = 18,
+                       timeout: int = 1800) -> dict:
     """Replace the subtitle track without touching video or audio.
 
-    Stream-copies both, so this is fast and cannot change the mix.
+    Soft subtitles stream-copy both video and audio, so this is fast and cannot
+    change the mix. Burning cannot: painting pixels means re-encoding the video,
+    which costs time and one generation of quality. Audio is still copied.
     """
+    if burn:
+        _require_libass(t)
+        script = f'''
+set -e
+ffmpeg -y -loglevel error -i {_q(src)} \
+  -vf "subtitles={_ass_arg(srt, style)}" \
+  -c:v libx264 -preset medium -crf {crf} -pix_fmt yuv420p -c:a copy \
+  -movflags +faststart {_q(out)}
+echo "---RESULT---"
+ffprobe -v error -select_streams v:0 -show_entries stream=width,height \
+  -show_entries format=duration,size -of json {_q(out)}
+'''
+        r = t.run_script(script, timeout=timeout)
+        r.check("subtitle burn")
+        return _parse_result(r.stdout, out)
+
     script = f'''
 set -e
 ffmpeg -y -loglevel error -i {_q(src)} -i {_q(srt)} \

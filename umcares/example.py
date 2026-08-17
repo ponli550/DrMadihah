@@ -3,6 +3,11 @@
 Modelled on the UM Cares video that this pipeline actually shipped, trimmed to
 three scenes. The point is the SHAPE: declare intent, never arithmetic.
 Durations left out are measured and filled in by `recipe.resolve`.
+
+Deliberately absent: frame rate, scene padding, voice, subtitle and card style
+settings. Those come from config (`umcares config init`) and a recipe only
+names them to override one video. Restating them here would silently defeat
+the config on every recipe that started as a copy of this file.
 """
 
 EXAMPLE_RECIPE = {
@@ -11,32 +16,15 @@ EXAMPLE_RECIPE = {
         "subtitle": "Lindungi Diri dan Keluarga daripada Scam Siber",
         "grant": "RU2025-T323A",
         "language": "ms-MY",
-        "fps": 50,
-        "resolution": "1920x1080",
-        # every scene gets this much air after its narration ends
-        "scene_pad": 0.6,
-        # narration starts this long after the scene does
-        "narration_lead": 0.5,
+        # fps, resolution, scene_pad and narration_lead come from config
     },
 
     "voice": {
-        "provider": "azure",
-        "name": "ms-MY-OsmanNeural",
-        "pitch": "0%",
-        "rate": "0%",
-        "fillers": False,
-        # spoken with English phonetics inside Malay narration
+        # name/pitch/rate/fillers come from config. Only the vocabulary is
+        # per-video: which words this script needs read as English, and which
+        # need spelling out.
         "english_terms": ["scam cyber", "online", "link", "internet"],
-        # spelled out letter by letter rather than read as a word
         "acronyms": ["UM Cares", "PPR", "ICYM"],
-    },
-
-    "style": {
-        "surface": "#0d2847",
-        "ink": "#ffffff",
-        "muted": "#a9b6c9",
-        "accent": "#ffd166",
-        "font": "Inter",
     },
 
     "cards": {
@@ -111,16 +99,9 @@ EXAMPLE_RECIPE = {
         ],
     },
 
-    "subtitles": {
-        "generate": True,
-        "language": "msa",
-        "soft": True,
-    },
-
     "output": {
         "master": "exports/master.mxf",
         "delivery": "exports/UMCares_RU2025-T323A.mp4",
         "preset": "AVC-Intra Class100 1080 50p",
-        "target_lufs": -16,
     },
 }

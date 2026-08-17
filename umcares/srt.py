@@ -99,8 +99,16 @@ def ts(t: float) -> str:
 
 
 def build(recipe: dict, resolved: dict, vo_dir: Path, out: Path,
-          max_chars: int = 62) -> dict:
-    """Write an SRT for the resolved timeline."""
+          max_chars: int | None = None, min_silence: float | None = None) -> dict:
+    """Write an SRT for the resolved timeline.
+
+    Both knobs fall back to the recipe (which config has already filled in), so
+    a caller only passes them to override for one run.
+    """
+    subs = recipe.get("subtitles") or {}
+    max_chars = int(max_chars or subs.get("max_chars") or 62)
+    min_silence = float(min_silence if min_silence is not None
+                        else subs.get("min_silence") or 0.16)
     text_by_scene = {s["id"]: (s.get("narration") or "").strip()
                      for s in recipe.get("scenes") or []}
     extra = {s["id"]: (s.get("captions") or [])
@@ -116,7 +124,7 @@ def build(recipe: dict, resolved: dict, vo_dir: Path, out: Path,
         if not text or not wav.exists():
             continue
         lines = split_sentences(text, max_chars)
-        spans, total = speech_spans(wav)
+        spans, total = speech_spans(wav, min_sil=min_silence)
         spans = fit(spans, len(lines), total)
         for (s, e), line in zip(spans, lines):
             cues.append((entry["start"] + s, entry["start"] + e, line))

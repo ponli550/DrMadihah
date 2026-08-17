@@ -66,6 +66,17 @@ def cmd_auth(args, cfg):
 
 def cmd_config(args, cfg):
     env_path = cfg.root / ".env"
+    if args.action == "init":
+        from . import wizard
+        return wizard.run(cfg, only=args.section, encrypt=args.encrypt)
+
+    if args.action == "sections":
+        from . import wizard
+        for name, (title, fields) in wizard.SECTIONS.items():
+            log.ok(f"{name:<12} {title} ({len(fields)} settings)")
+        log.out({k: v[0] for k, v in wizard.SECTIONS.items()})
+        return 0
+
     if args.action == "set":
         if not args.key or args.value is None:
             log.err("usage: umcares config set KEY VALUE")
@@ -83,6 +94,17 @@ def cmd_config(args, cfg):
             log.err(f"{args.key} is not set")
             return 1
         log.out(val if args.reveal else secrets.mask(args.key, val))
+        return 0
+
+    if args.action == "show":
+        eff = cfg.effective()
+        width = max(len(k) for k in eff)
+        for k, info in eff.items():
+            tag = info["from"]
+            line = f"  {k:<{width}}  {info['value']}"
+            (log.ok if tag in ("env", ".env") else log.step)(
+                f"{line}   [{tag}]" if tag != "default" else line)
+        log.out(eff)
         return 0
 
     # list
@@ -282,7 +304,8 @@ def cmd_recipe(args, cfg):
     if not args.file:
         log.err("--file is required")
         return 2
-    rec = recipe_mod.load(Path(args.file).expanduser())
+    rec = recipe_mod.apply_defaults(
+        recipe_mod.load(Path(args.file).expanduser()), cfg.defaults())
 
     manifest = None
     mpath = work / "manifest.json"
@@ -330,7 +353,8 @@ def cmd_recipe(args, cfg):
 def cmd_render(args, cfg):
     """Render a recipe into a video. Idempotent; re-runs redo only what changed."""
     work = _workdir(cfg)
-    rec = recipe_mod.load(Path(args.file).expanduser())
+    rec = recipe_mod.apply_defaults(
+        recipe_mod.load(Path(args.file).expanduser()), cfg.defaults())
 
     manifest = None
     mpath = work / "manifest.json"
@@ -422,6 +446,41 @@ def cmd_premiere(args, cfg):
         log.out(res)
         return 0 if not missing else 1
 
+    if args.action == "open":
+        target = args.project or cfg.remote.project_path
+        with spinner.spin(f"opening {target.rsplit('/', 1)[-1]}", 30):
+            res = p.open_project(target)
+        (log.ok if res.get("opened") else log.step)(
+            f"{res.get('name')} {'opened' if res.get('opened') else 'already open'}")
+        log.out(res)
+        return 0
+
+    if args.action == "presets":
+        found = p.list_presets(args.filter or "1080")
+        for f in found:
+            log.step(f.rsplit("/", 1)[-1])
+        log.out(found)
+        return 0
+
+    if args.action == "sequence":
+        name = args.name or "umcares_edit"
+        preset = args.preset or cfg.remote.sequence_preset
+        if not preset and not args.match:
+            log.err("give --preset (recommended) or --match <clip>")
+            log.warn("without either, Premiere opens a modal dialog and hangs")
+            log.warn("list options: umcares premiere presets")
+            return 2
+        with spinner.spin(f"creating sequence '{name}'", 30):
+            res = p.create_sequence(name, preset=preset, match_clip=args.match or "")
+        want_fps = args.fps or 0
+        if want_fps and abs(res.get("fps", 0) - want_fps) > 0.01:
+            log.warn(f"sequence is {res.get('fps')}fps but you asked for {want_fps} — "
+                     f"createNewSequenceFromClips does not inherit frame rate; "
+                     f"use an explicit --preset")
+        log.ok(f"{res['name']}: {res['width']}x{res['height']} @ {res['fps']}fps")
+        log.out(res)
+        return 0
+
     if args.action == "status":
         try:
             log.out(p.ping())
@@ -500,6 +559,26 @@ def cmd_media(args, cfg):
             return 2
         with spinner.spin(f"ken burns {len(args.photos)} stills", 40 * len(args.photos)):
             res = media.kenburns(t, args.out, args.photos, args.seconds)
+        log.out(res)
+        return 0
+
+    if args.action == "denoise":
+        if not args.file or not args.out:
+            log.err("need --file and --out")
+            return 2
+        with spinner.spin("cleaning speech", 60):
+            res = media.denoise(t, args.file, args.out,
+                                target_lufs=args.lufs, nr=args.nr)
+        log.ok(f"{res.get('before')} -> {res.get('after')}")
+        log.out(res)
+        return 0
+
+    if args.action == "extract-audio":
+        if not args.file or not args.out:
+            log.err("need --file and --out")
+            return 2
+        with spinner.spin("extracting audio", 30):
+            res = media.extract_audio(t, args.file, args.out)
         log.out(res)
         return 0
 
@@ -621,7 +700,11 @@ def build_parser() -> argparse.ArgumentParser:
     a.set_defaults(func=cmd_auth)
 
     c = sub.add_parser("config", help="read/write settings and credentials")
-    c.add_argument("action", choices=["set", "get", "list"])
+    c.add_argument("action",
+                   choices=["init", "sections", "set", "get", "list", "show"],
+                   help="init = interactive wizard over every setting")
+    c.add_argument("--section", action="append",
+                   help="wizard: configure only this section (repeatable)")
     c.add_argument("key", nargs="?")
     c.add_argument("value", nargs="?")
     c.add_argument("--reveal", action="store_true", help="print secrets unmasked")
@@ -656,7 +739,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     pr = sub.add_parser("premiere", help="control Premiere Pro")
     pr.add_argument("action",
-                    choices=["heal", "status", "report", "import", "build", "export"])
+                    choices=["heal", "status", "report", "open", "presets",
+                             "sequence", "import", "build", "export"])
+    pr.add_argument("--name", help="sequence name")
+    pr.add_argument("--match", help="clip to match when no preset is given")
+    pr.add_argument("--filter", help="substring filter for `presets`")
+    pr.add_argument("--fps", type=float, help="expected fps; warns on mismatch")
+    pr.add_argument("--project", help="path to a .prproj (default: config)")
     pr.add_argument("--files", nargs="*", default=[], help="remote paths to import")
     pr.add_argument("--plan", help="timeline plan JSON (for build)")
     pr.add_argument("--out", help="output path (for export)")
@@ -665,7 +754,10 @@ def build_parser() -> argparse.ArgumentParser:
     pr.set_defaults(func=cmd_premiere)
 
     m = sub.add_parser("media", help="probe / transcode / ken burns")
-    m.add_argument("action", choices=["probe", "prepare", "kenburns", "levels"])
+    m.add_argument("action", choices=["probe", "prepare", "kenburns", "levels",
+                                      "denoise", "extract-audio"])
+    m.add_argument("--lufs", type=float, default=-16.0)
+    m.add_argument("--nr", type=int, default=20, help="denoise strength")
     m.add_argument("--dir", help="remote source directory")
     m.add_argument("--dest", help="remote output directory")
     m.add_argument("--out", help="output file")

@@ -221,6 +221,11 @@ committed**. Prefer `umcares auth --setup-key` over storing a password at all.
 
 All optional; defaults are in `umcares/config.py`.
 
+Run `umcares config show` to see every effective value and where it came from
+(`[env]`, `[.env]`, `[derived]`, or a plain default). Nothing machine-specific
+is hardcoded — a different remote, Premiere version or project is config, not a
+code edit.
+
 | Variable | Meaning |
 |---|---|
 | `UMC_REMOTE_HOST` / `UMC_REMOTE_USER` | the Adobe machine |
@@ -228,8 +233,26 @@ All optional; defaults are in `umcares/config.py`.
 | `UMC_SSH_KEY` / `UMC_SSH_PASSWORD` | credentials (key preferred) |
 | `UMC_TMUX_SESSION` / `UMC_TMUX_PANE` | session name, or pin a pane like `%5` |
 | `UMC_CDP_PORT` | CEP DevTools port (default 9241) |
-| `UMC_REMOTE_ROOT` | project root on the remote |
+| `UMC_REMOTE_ROOT` / `UMC_MCP_REPO` | project root, MCP checkout |
+| `UMC_PREMIERE_APP` | e.g. `Adobe Premiere Pro 2026` — drives the app + preset paths |
+| `UMC_CEP_EXT_ID` | CEP extension id; the panel path derives from it |
+| `UMC_PROJECT` | `.prproj` to open — **point this at a scratch project** |
+| `UMC_PRESET` | export `.epr`; defaults to AVC-Intra Class100 1080 50p |
 | `UMC_NO_SPINNER=1` | disable the spinner |
+
+### Working on a scratch project
+
+`premiere build` **clears the timeline** before laying the new one, so never
+aim a recipe at a finished edit:
+
+```bash
+UMC_PROJECT=/path/to/scratch.prproj umcares premiere open
+UMC_PROJECT=/path/to/scratch.prproj umcares render --file recipe.json
+```
+
+`premiere open` is a no-op when that project is already open, and it does the
+real work rather than the MCP `premiere_open` tool, which reports
+`already_running` and never opens anything.
 
 
 ---

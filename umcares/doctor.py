@@ -16,6 +16,7 @@ from .transport import SSHTransport, TmuxTransport, Transport, connect
 # has to live outside them.
 TCC_DIRS = ["~/Downloads", "~/Documents", "~/Desktop"]
 
+# kept for backwards compatibility; the real value comes from Config.remote
 PRESET_1080P50 = ("/Applications/Adobe Premiere Pro 2026/Adobe Premiere Pro 2026.app/"
                   "Contents/Settings/EncoderPresets/ConsolidateAndTranscode/"
                   "AVC-Intra Class100 1080 50p.epr")
@@ -102,10 +103,11 @@ def _remote(t: Transport, cfg: Config) -> list:
                      f"port {cfg.remote.cdp_port} responding" if cdp else "no CDP endpoint",
                      "" if cdp else "copy .debug into the panel's dist/ and restart Premiere"))
 
-    rr = t.run(f"test -f {PRESET_1080P50!r} && echo yes || echo no".replace("'", '"'), timeout=45)
+    preset = cfg.remote.preset_path
+    rr = t.run(f'test -f "{preset}" && echo yes || echo no', timeout=45)
     have = rr.stdout.strip().endswith("yes")
-    out.append(Check("1080p50 export preset", have,
-                     "AVC-Intra Class100 1080 50p" if have else "not found",
+    out.append(Check("export preset", have,
+                     preset.rsplit("/", 1)[-1] if have else f"not found: {preset}",
                      "" if have else "pick another .epr under Contents/Settings/EncoderPresets"))
 
     rr = t.run(f"test -d {cfg.remote.root} && echo yes || echo no", timeout=45)
