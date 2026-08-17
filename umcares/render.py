@@ -49,8 +49,12 @@ class Renderer:
         self.cards_local = work / "cards"
         self.logo_local = cfg.root / "assets" / "logos"
 
+        # Load measurements ALWAYS, even under --force. Force means "regenerate
+        # the artifacts", not "forget how long everything else is": each stage
+        # overwrites its own keys after it re-measures, so keeping the rest is
+        # what makes `--only cards --force` safe to run on a finished cut.
         dpath = work / "durations.json"
-        if dpath.exists() and not force:
+        if dpath.exists():
             self.durations = json.loads(dpath.read_text(encoding="utf-8"))
 
     # -- helpers ------------------------------------------------------------
@@ -315,6 +319,30 @@ class Renderer:
         self.master = master
         return res
 
+    def _burn_pngs(self, subs: dict) -> list:
+        """Render caption images locally, push them, return remote paths.
+
+        Rendering happens on THIS machine because the remote has no imaging
+        library, and the remote only ever sees finished PNGs — so burning needs
+        nothing installed over there.
+        """
+        from . import burn as burn_mod
+
+        local_srt = self.work / "subtitles.srt"
+        if not local_srt.exists():
+            raise SystemExit("no subtitles.srt yet — run the `subs` stage first")
+        out_dir = self.work / "captions"
+        entries = burn_mod.render_cue_pngs(
+            local_srt, out_dir,
+            width=int((self.rec.get("meta") or {}).get("width") or 1920),
+            size=int(subs.get("font_size") or 46),
+            ink=(self.rec.get("style") or {}).get("ink", "#ffffff"))
+
+        dest_dir = self._remote("subtitles", "captions")
+        with spinner.spin(f"uploading {len(entries)} caption images", 60):
+            self.t.push_many([e["png"] for e in entries], dest_dir)
+        return [{**e, "png": f"{dest_dir}/{Path(e['png']).name}"} for e in entries]
+
     def stage_deliver(self):
         outcfg = self.rec.get("output") or {}
         music = self.rec.get("music") or {}
@@ -327,14 +355,14 @@ class Renderer:
         subs = self.rec.get("subtitles") or {}
         burn = str(subs.get("mode", "soft")).lower() == "burn"
         lang = subs.get("language", "msa")
-        style = self.rec.get("style") or {}
+        pngs = self._burn_pngs(subs) if burn else None
 
         if not music.get("file"):
             label = "burning subtitles in" if burn else "muxing subtitles"
             with spinner.spin(f"{label} (no music in recipe)",
                               600 if burn else 90):
                 return post.mux_subtitles_only(self.t, master, srt_remote, delivery,
-                                               lang=lang, burn=burn, style=style)
+                                               lang=lang, burn_pngs=pngs)
 
         music_path = self._remote("assets", "music", music["file"])
         with spinner.spin("mixing music + subtitles", 480 if burn else 360):
@@ -342,7 +370,7 @@ class Renderer:
                 self.t, master, music_path, srt_remote, delivery,
                 sections=music.get("ducking"),
                 music_start=float(music.get("start", 25)),
-                lang=lang, burn=burn, style=style)
+                lang=lang, burn_pngs=pngs)
 
 
 def run(t, cfg, rec: dict, work: Path, manifest: dict | None = None,

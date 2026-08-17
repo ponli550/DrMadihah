@@ -4,7 +4,7 @@
     "subtitle": "Lindungi Diri dan Keluarga daripada Scam Siber",
     "grant": "RU2025-T323A",
     "language": "ms-MY",
-    "_note": "v9 = the delivered v8 cut plus the client edit list. No timing is authored here: every duration is measured from the asset, and `recipe resolve` fits the rest around the narration. Narration text is taken from the DELIVERED SRT, not the original script, because the client edited that wording ('scam siber' -> 'penipuan siber') and it must survive a rebuild."
+    "_note": "v10 = the delivered v8 cut plus the client edit list. No timing is authored here: every duration is measured from the asset, and `recipe resolve` fits the rest around the narration. Narration text is taken from the DELIVERED SRT, not the original script, because the client edited that wording ('scam siber' -> 'penipuan siber') and it must survive a rebuild. Logos: the full MOHE lockup is used because the award criteria require the MOHE logo; the client's 'buang KPT' applies to card text, not the mark itself."
   },
   "voice": {
     "english_terms": [
@@ -30,7 +30,7 @@
       "footnote": "Universiti Malaya dengan kerjasama Adab Youth Garage  ·  No. Geran RU2025-T323A",
       "logos": [
         "logo_um_1.png",
-        "logo_mohe_mark.png",
+        "logo_mohe.png",
         "logo_ayg.png",
         "logo_yayasan_taqwa.png",
         "logo_icym.png",
@@ -46,7 +46,7 @@
       "footnote": "Dihasilkan oleh Universiti Malaya x UM Cares  ·  No. Geran RU2025-T323A",
       "logos": [
         "logo_um_1.png",
-        "logo_mohe_mark.png",
+        "logo_mohe.png",
         "logo_ayg.png",
         "logo_yayasan_taqwa.png",
         "logo_icym.png",
@@ -189,19 +189,19 @@
     },
     {
       "id": "testimoni",
-      "_edit": "CLIENT 2:42: keep the girl, add the three-kids-on-mic clip (C0017) after her. No narration runs across this block, so the real voices carry it; they sit on their own track as cleaned WAVs, exactly as v8 did. C0017 has NO caption yet - its spoken content still needs transcribing.",
+      "_edit": "CLIENT 2:42: add the boy-on-mic clip after the girl. C0018 and C0019 are the SAME girl in one continuous interview - putting C0017 between them cut her testimony in half. Order is girl (C0018 -> C0019), then boy (C0017). Three on-mic beneficiary interviews satisfy the award's three-testimonial requirement.",
       "visuals": [
         {
           "clip": "C0018.mp4",
           "duration": 13.9
         },
         {
-          "clip": "C0017.mp4",
-          "duration": 8.7
-        },
-        {
           "clip": "C0019.mp4",
           "duration": 9.6
+        },
+        {
+          "clip": "C0017.mp4",
+          "duration": 8.7
         }
       ],
       "audio": [
@@ -211,13 +211,13 @@
           "track": 2
         },
         {
-          "file": "vo/C0017_voice_clean.wav",
+          "file": "vo/C0019_voice_clean.wav",
           "at": 13.9,
           "track": 2
         },
         {
-          "file": "vo/C0019_voice_clean.wav",
-          "at": 22.6,
+          "file": "vo/C0017_voice_clean.wav",
+          "at": 23.5,
           "track": 2
         }
       ],
@@ -233,14 +233,24 @@
           "text": "Sekarang, saya tahu mesti semak dulu sebelum tekan mana-mana link.\""
         },
         {
-          "at": 23.6,
+          "at": 14.9,
           "duration": 4.4,
           "text": "\"kalau ada scammer, saya beritahu ibu ayah\""
         },
         {
-          "at": 28.2,
-          "duration": 4.1,
+          "at": 19.5,
+          "duration": 4.0,
           "text": "\"kena berhati-hati dengan orang yang minta maklumat peribadi.\""
+        },
+        {
+          "at": 24.0,
+          "duration": 3.2,
+          "text": "\"Apa awak dapat hari ini?\""
+        },
+        {
+          "at": 27.6,
+          "duration": 4.0,
+          "text": "\"Saya dapat main kuiz.\""
         }
       ]
     },
@@ -256,7 +266,7 @@
     },
     {
       "id": "s8_penutup",
-      "_edit": "CLIENT: crowd clip last. C0025 is MOVED to sit immediately before the closing card rather than added again - it was already in the cut at 3:27, so moving it costs 0s where adding a second copy costs 8.6s.",
+      "_edit": "CLIENT: crowd clip last. C0025 is MOVED to sit immediately before the closing card rather than added again - it was already in the cut at 3:27, so moving it costs 0s where adding a second copy costs 8.6s. CLIENT: the group shot keeps its own audio (the crowd), ducked under the narration rather than muted.",
       "narration": "Program ini bukan sekadar bengkel. Ia adalah langkah pertama untuk membina komuniti yang celik digital, amanah, dan berdaya tahan terhadap ancaman penipuan siber. Terima kasih kepada UM Cares, para penaja, dan semua pihak yang menjayakan program ini. Bersama, kita lindungi generasi muda di dunia digital.",
       "visuals": [
         {
@@ -265,7 +275,8 @@
         },
         {
           "clip": "C0025.mp4",
-          "duration": 8.6
+          "duration": 8.6,
+          "audio": "duck"
         },
         {
           "card": "close_v9",
@@ -304,11 +315,17 @@
   "subtitles": {
     "generate": true,
     "language": "msa",
-    "mode": "soft"
+    "mode": "burn",
+    "font_size": 46,
+    "_note": "Burned in: neither ffmpeg here has libass, so captions are rendered as PNG bands and overlaid in the same pass as the music mix - one encode, no extra generation. A soft track cannot be guaranteed to display in an assessor player."
   },
   "output": {
-    "master": "exports/master_v9.mxf",
-    "delivery": "exports/UMCares_RU2025-T323A_v9.mp4",
+    "master": "exports/master_v10.mxf",
+    "delivery": "exports/UMCares_RU2025-T323A_v10.mp4",
     "target_lufs": -16
+  },
+  "audio": {
+    "duck_db": -13,
+    "_note": "C0025 (group shot) is the only clip that keeps its own sound. It measures -11.6 LUFS, louder than the -16 narration, and builds to a shout; -13 dB puts the crowd under the closing line instead of on top of it."
   }
 }

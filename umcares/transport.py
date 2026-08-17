@@ -68,6 +68,29 @@ class Transport:
     def pull(self, remote: str, local: Path) -> None:
         raise NotImplementedError
 
+    def ensure_dir(self, remote_dir: str) -> None:
+        """`mkdir -p` a remote directory, once per session.
+
+        scp will not create a missing destination directory; it fails with a
+        bare "No such file or directory" that reads like the SOURCE is missing.
+        Results are cached because the alternative is an extra round trip on
+        every single file.
+        """
+        seen = getattr(self, "_dirs_made", None)
+        if seen is None:
+            seen = self._dirs_made = set()
+        if remote_dir in seen:
+            return
+        self.run(f"mkdir -p {shlex.quote(remote_dir)}", timeout=60)
+        seen.add(remote_dir)
+
+    def push_many(self, locals_: list, remote_dir: str) -> int:
+        """Upload many files into one directory. Override for a faster path."""
+        self.ensure_dir(remote_dir)
+        for f in locals_:
+            self.push(Path(f), f"{remote_dir.rstrip('/')}/{Path(f).name}")
+        return len(locals_)
+
     # -- helpers shared by both transports ---------------------------------
     def run_script(self, script: str, timeout: int = 600, shell: str = "bash") -> Result:
         """Run a multi-line script remotely.
@@ -233,12 +256,28 @@ class SSHTransport(Transport):
         return Result(p.returncode, p.stdout, p.stderr)
 
     def push(self, local: Path, remote: str) -> None:
+        parent = remote.rsplit("/", 1)[0]
+        if parent and parent != remote:
+            self.ensure_dir(parent)
         argv = (["sshpass", "-p", self.password] if self.password else []) + \
                ["scp", "-q"] + (["-i", self.key] if self.key else []) + \
                [str(local), f"{self.target}:{remote}"]
         p = subprocess.run(argv, capture_output=True, text=True, timeout=900)
         if p.returncode != 0:
             raise RuntimeError(f"scp push failed: {p.stderr.strip()[:300]}")
+
+    def push_many(self, locals_: list, remote_dir: str) -> int:
+        """One scp for the whole batch — 54 files should not be 54 connections."""
+        if not locals_:
+            return 0
+        self.ensure_dir(remote_dir)
+        argv = (["sshpass", "-p", self.password] if self.password else []) + \
+               ["scp", "-q"] + (["-i", self.key] if self.key else []) + \
+               [str(f) for f in locals_] + [f"{self.target}:{remote_dir.rstrip('/')}/"]
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=1800)
+        if p.returncode != 0:
+            raise RuntimeError(f"scp batch push failed: {p.stderr.strip()[:300]}")
+        return len(locals_)
 
     def pull(self, remote: str, local: Path) -> None:
         local.parent.mkdir(parents=True, exist_ok=True)

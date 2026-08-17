@@ -152,34 +152,54 @@ def content_box(path: Path, tol: int = 12) -> tuple:
 
 
 def build_strip(logo_dir: Path, filenames: list, out: Path,
-                pad_x: float = 0.86, pad_y: float = 0.74) -> Path:
-    """Row of logos on white, each trimmed then CONTAINED in its slot.
+                margin: float = 0.06, gap: float = 0.035,
+                max_h: float = 0.74) -> Path:
+    """Row of sponsor logos on white, all drawn at ONE shared height.
 
-    Matching logo heights is wrong: a wide mark overflows its slot and gets
-    clipped, while a mark that is small inside a large canvas looks tiny next
-    to its neighbours. Trim the whitespace, then fit by width AND height.
+    Three attempts got this wrong, each in its own way:
+
+      * Scaling every logo to a fixed height CLIPPED the wide ones.
+      * Contain-fitting each into an equal slot stopped the clipping but made
+        them look like different sizes, because the marks range from 2.0:1 to
+        4.7:1 -- a row of equal partners should not read as a hierarchy.
+      * Equal slots plus one shared height is the worst of both: the widest
+        mark (ICYM, 4.65:1) drags every other logo down to a third of the
+        available height.
+
+    So the row is laid out proportionally: every logo gets the SAME height, and
+    a width that follows its own aspect ratio. The shared height is simply the
+    largest one whose total width still fits the strip. Equal visual weight,
+    nothing clipped, no wasted vertical space.
     """
     n = len(filenames)
-    slot = STRIP_W // n
-    box_w, box_h = int(slot * pad_x), int(STRIP_H * pad_y)
+    for fn in filenames:
+        if not (logo_dir / fn).exists():
+            raise SystemExit(f"logo not found: {logo_dir / fn}")
+
+    boxes = [content_box(logo_dir / fn) for fn in filenames]
+    aspects = [cw / ch for _, _, cw, ch in boxes]
+
+    usable = STRIP_W * (1 - 2 * margin) - STRIP_W * gap * (n - 1)
+    height = min(STRIP_H * max_h, usable / sum(aspects))
+    widths = [max(1, int(round(height * a))) for a in aspects]
+    height = max(1, int(round(height)))
+
+    span = sum(widths) + int(STRIP_W * gap) * (n - 1)
+    x = (STRIP_W - span) // 2
 
     inputs = ["-f", "lavfi", "-i", f"color=white:s={STRIP_W}x{STRIP_H}"]
     for fn in filenames:
-        p = logo_dir / fn
-        if not p.exists():
-            raise SystemExit(f"logo not found: {p}")
-        inputs += ["-i", str(p)]
+        inputs += ["-i", str(logo_dir / fn)]
 
     fc, prev = [], "0:v"
     for i, fn in enumerate(filenames):
-        cx, cy_, cw, ch = content_box(logo_dir / fn)
-        scale = min(box_w / cw, box_h / ch)
-        tw, th = max(1, int(cw * scale)), max(1, int(ch * scale))
-        fc.append(f"[{i+1}:v]crop={cw}:{ch}:{cx}:{cy_},scale={tw}:{th}[l{i}]")
-        cxpos = slot * i + slot // 2
+        cx, cy_, cw, ch = boxes[i]
+        fc.append(f"[{i+1}:v]crop={cw}:{ch}:{cx}:{cy_},"
+                  f"scale={widths[i]}:{height}[l{i}]")
         tag = f"v{i}"
-        fc.append(f"[{prev}][l{i}]overlay=x={cxpos}-overlay_w/2:y=(H-overlay_h)/2[{tag}]")
+        fc.append(f"[{prev}][l{i}]overlay=x={x}:y=(H-overlay_h)/2[{tag}]")
         prev = tag
+        x += widths[i] + int(STRIP_W * gap)
 
     out.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(["ffmpeg", "-y", "-loglevel", "error"] + inputs +
