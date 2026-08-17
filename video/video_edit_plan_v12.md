@@ -1,9 +1,9 @@
-# Aliran Video — UM Cares RU2025-T323A (v11)
+# Aliran Video — UM Cares RU2025-T323A (v12)
 
 Dijana daripada `recipes/v10.json` melalui `umcares render`. Semua masa diambil
 terus daripada `.umcares/resolved.json`.
 
-**Fail akhir:** `UMCares_RU2025-T323A_v11.mp4`
+**Fail akhir:** `UMCares_RU2025-T323A_v12.mp4`
 **Durasi:** 237.06s (3:57.1) · 1920×1080 @ 50fps · sari kata **terbakar dalam video**
 
 ---
@@ -120,9 +120,15 @@ pada 230.44s.
    memaksa ICYM (4.65:1) mengecilkan semua yang lain.
 6. **Jalur logo berakhir pada y=905**, di atas sari kata terbakar (baris dua
    bermula ~y=918). Dalam v10 jalur itu bertindih dengan sari kata.
-7. **Masa sari kata mengikut panjang teks** yang dipetakan ke pertuturan
+7. **Sari kata dan suara kini sepadan.** Rakaman menyebut "scam cyber"
+   (ejaan SSML: "scam siber" dengan sebutan Inggeris). Sari kata dahulu
+   menulis "penipuan siber"; kini kedua-duanya "scam cyber". Audio TIDAK
+   dirakam semula — ia sudah betul, jadi hanya sari kata dibakar semula.
+   Kekal berbeza: testimoni peserta pada 2:35 ("penipuan alam maya") kerana
+   itu petikan sebenar dan belum ditranskripsikan semula.
+8. **Masa sari kata mengikut panjang teks** yang dipetakan ke pertuturan
    sebenar, bukan membelah span di titik tengah. Sebelum ini 7 kiu di bawah
    1.0s dan 17 kiu melebihi 25 aksara/saat (paling teruk 125); kini tiada.
-8. **Kad ditampal semasa penghantaran** (`output.patch_visuals`) kerana panel
+9. **Kad ditampal semasa penghantaran** (`output.patch_visuals`) kerana panel
    CEP Premiere tidak dapat dicapai. `master_v10.mxf` masih mengandungi kad
    lama — eksport semula untuk menyelaraskannya.

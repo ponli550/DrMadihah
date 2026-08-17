@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import shlex
 
-from . import log
+from . import log, safe
 from .transport import Transport
 
 
@@ -68,6 +68,9 @@ def mix(t: Transport, master: str, music: str, srt: str, out: str,
     """
     sections = sections or DEFAULT_SECTIONS
     gain = build_envelope(sections)
+    # Encode beside the target, not over it: a four-minute encode that fails
+    # part way should leave the previous delivery intact rather than truncated.
+    stage = safe.part_path(out)
 
     dur = _duration(t, master)
     mdur = _duration(t, music)
@@ -125,15 +128,20 @@ ffmpeg -y -loglevel error -i {_q(master)} -i {_q(music)} -i {_q(music)} {sub_in}
   {vmap} -map "[aout]" {sub_map} \
   -c:v libx264 -preset medium -crf {crf} -pix_fmt yuv420p \
   -c:a aac -b:a 192k -ac 2 {sub_codec} \
-  -movflags +faststart {_q(out)}
+  -movflags +faststart {_q(stage)}
 echo "---RESULT---"
 ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate \
-  -show_entries format=duration,size -of json {_q(out)}
-ffmpeg -hide_banner -i {_q(out)} -af ebur128=framelog=quiet -f null - 2>&1 \
+  -show_entries format=duration,size -of json {_q(stage)}
+ffmpeg -hide_banner -i {_q(stage)} -af ebur128=framelog=quiet -f null - 2>&1 \
   | grep -E "^\\s+(I|LRA):" | head -2
 '''
     r = t.run_script(script, timeout=timeout)
-    r.check("mix")
+    try:
+        r.check("mix")
+    except Exception:
+        safe.discard_remote(t, out)
+        raise
+    safe.commit_remote(t, out, min_bytes=1_000_000)
     return _parse_result(r.stdout, out)
 
 
@@ -147,6 +155,7 @@ def mux_subtitles_only(t: Transport, src: str, srt: str, out: str,
     change the mix. Burning cannot: painting pixels means re-encoding the video,
     which costs time and one generation of quality. Audio is still copied.
     """
+    stage = safe.part_path(out)
     if burn_pngs or patches:
         from . import burn as burn_mod
         nxt, chains, src_lbl, extra = 1, [], "0:v", []
@@ -166,13 +175,18 @@ set -e
 ffmpeg -y -loglevel error -i {_q(src)} {pngs} \
   -filter_complex "{chain}" -map "[vout]" -map 0:a \
   -c:v libx264 -preset medium -crf {crf} -pix_fmt yuv420p -c:a copy \
-  -movflags +faststart {_q(out)}
+  -movflags +faststart {_q(stage)}
 echo "---RESULT---"
 ffprobe -v error -select_streams v:0 -show_entries stream=width,height \
-  -show_entries format=duration,size -of json {_q(out)}
+  -show_entries format=duration,size -of json {_q(stage)}
 '''
         r = t.run_script(script, timeout=timeout)
-        r.check("subtitle burn")
+        try:
+            r.check("subtitle burn")
+        except Exception:
+            safe.discard_remote(t, out)
+            raise
+        safe.commit_remote(t, out, min_bytes=1_000_000)
         return _parse_result(r.stdout, out)
 
     script = f'''
@@ -180,13 +194,18 @@ set -e
 ffmpeg -y -loglevel error -i {_q(src)} -i {_q(srt)} \
   -map 0:v:0 -map 0:a:0 -map 1:0 -c:v copy -c:a copy \
   -c:s mov_text -metadata:s:s:0 language={lang} -disposition:s:0 default \
-  -movflags +faststart {_q(out)}
+  -movflags +faststart {_q(stage)}
 echo "---RESULT---"
 ffprobe -v error -select_streams v:0 -show_entries stream=width,height \
-  -show_entries format=duration,size -of json {_q(out)}
+  -show_entries format=duration,size -of json {_q(stage)}
 '''
     r = t.run_script(script, timeout=timeout)
-    r.check("subtitle mux")
+    try:
+        r.check("subtitle mux")
+    except Exception:
+        safe.discard_remote(t, out)
+        raise
+    safe.commit_remote(t, out, min_bytes=1_000_000)
     return _parse_result(r.stdout, out)
 
 

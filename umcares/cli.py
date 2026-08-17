@@ -64,6 +64,17 @@ def cmd_auth(args, cfg):
     return 0
 
 
+def cmd_verify(args, cfg):
+    """Verify the delivery without re-rendering anything."""
+    rec = recipe_mod.apply_defaults(
+        recipe_mod.load(Path(args.file).expanduser()), cfg.defaults())
+    work = cfg.root / ".umcares"
+    t = _transport(args, cfg)
+    out = render_mod.run(t, cfg, rec, work, stages=["verify"])
+    log.out(out.get("verify", out))
+    return 0
+
+
 def cmd_config(args, cfg):
     env_path = cfg.root / ".env"
     if args.action == "init":
@@ -698,6 +709,11 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--setup-key", action="store_true",
                    help="generate a dedicated key and install it on the remote")
     a.set_defaults(func=cmd_auth)
+
+    vf = sub.add_parser("verify",
+                        help="check a delivered file against the recipe's sources")
+    vf.add_argument("--file", required=True, help="recipe .json or .yml")
+    vf.set_defaults(func=cmd_verify)
 
     c = sub.add_parser("config", help="read/write settings and credentials")
     c.add_argument("action",

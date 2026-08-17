@@ -28,7 +28,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from . import log
+from . import log, safe
 
 DEFAULT_VOICE = "ms-MY-OsmanNeural"
 
@@ -205,12 +205,14 @@ def download_and_split(url: str, scene_ids: list, out_dir: Path,
     results = []
     for sid, (s, e) in zip(scene_ids, spans):
         dest = out_dir / f"{sid}.wav"
-        subprocess.run(
-            ["ffmpeg", "-y", "-loglevel", "error",
-             "-ss", f"{max(0.0, s - 0.05):.3f}", "-to", f"{e + 0.10:.3f}", "-i", str(src),
-             "-vn", "-af", f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11",
-             "-acodec", "pcm_s16le", "-ar", "48000", "-ac", "1", str(dest)],
-            check=True)
+        with safe.staged_local(dest, min_bytes=1000) as tmp:
+            subprocess.run(
+                ["ffmpeg", "-y", "-loglevel", "error",
+                 "-ss", f"{max(0.0, s - 0.05):.3f}", "-to", f"{e + 0.10:.3f}",
+                 "-i", str(src),
+                 "-vn", "-af", f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11",
+                 "-acodec", "pcm_s16le", "-ar", "48000", "-ac", "1", str(tmp)],
+                check=True)
         dur = float(subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
              "-of", "default=nk=1:nw=1", str(dest)],

@@ -28,7 +28,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from . import log
+from . import log, safe
 
 STYLE = {
     "surface": "#0d2847",
@@ -302,23 +302,27 @@ def split_and_composite(url: str, order: list, cards: dict, out_dir: Path,
         card = cards.get(cid, {})
         logos = card.get("logos") or []
 
-        if logos:
-            strip = build_strip(logo_dir, logos, out_dir / f"strip_{cid}.jpg")
-            sw, sh, sy = _fit_strip(strip)
-            subprocess.run(
-                ["ffmpeg", "-y", "-loglevel", "error",
-                 "-ss", f"{t:.3f}", "-t", f"{dur:.3f}", "-i", str(src),
-                 "-i", str(strip),
-                 "-filter_complex",
-                 f"[1:v]scale={sw}:{sh}[s];[0:v][s]overlay=x=(W-w)/2:y={sy}",
-                 "-c:v", "libx264", "-preset", "medium", "-crf", "17",
-                 "-r", "50", "-an", str(dest)], check=True)
-        else:
-            subprocess.run(
-                ["ffmpeg", "-y", "-loglevel", "error",
-                 "-ss", f"{t:.3f}", "-t", f"{dur:.3f}", "-i", str(src),
-                 "-c:v", "libx264", "-preset", "medium", "-crf", "17",
-                 "-r", "50", "-an", str(dest)], check=True)
+        # Staged: a card that already exists is the product of API credits that
+        # may not be available again -- as happened mid-session -- so it is only
+        # replaced once its successor is complete.
+        with safe.staged_local(dest, min_bytes=1000) as tmp:
+            if logos:
+                strip = build_strip(logo_dir, logos, out_dir / f"strip_{cid}.jpg")
+                sw, sh, sy = _fit_strip(strip)
+                subprocess.run(
+                    ["ffmpeg", "-y", "-loglevel", "error",
+                     "-ss", f"{t:.3f}", "-t", f"{dur:.3f}", "-i", str(src),
+                     "-i", str(strip),
+                     "-filter_complex",
+                     f"[1:v]scale={sw}:{sh}[s];[0:v][s]overlay=x=(W-w)/2:y={sy}",
+                     "-c:v", "libx264", "-preset", "medium", "-crf", "17",
+                     "-r", "50", "-an", str(tmp)], check=True)
+            else:
+                subprocess.run(
+                    ["ffmpeg", "-y", "-loglevel", "error",
+                     "-ss", f"{t:.3f}", "-t", f"{dur:.3f}", "-i", str(src),
+                     "-c:v", "libx264", "-preset", "medium", "-crf", "17",
+                     "-r", "50", "-an", str(tmp)], check=True)
 
         results.append({"card": cid, "file": str(dest), "duration": dur})
         t += dur

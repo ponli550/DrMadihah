@@ -14,7 +14,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from . import log
+from . import log, safe
 
 
 def duration(path: Path) -> float:
@@ -215,8 +215,14 @@ def build(recipe: dict, resolved: dict, vo_dir: Path, out: Path,
     body = "\n".join(
         f"{i}\n{ts(s)} --> {ts(e)}\n{txt}\n"
         for i, (s, e, txt) in enumerate(cues, 1))
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(body, encoding="utf-8")
+    # An SRT is cheap to regenerate and expensive to re-edit: the client has
+    # corrected this file by hand before. Keep the previous version beside it so
+    # a regeneration cannot quietly discard those corrections.
+    prev = safe.backup_local(out)
+    if prev:
+        log.step(f"previous subtitles kept at {prev.name}")
+    with safe.staged_local(out, min_bytes=1) as tmp:
+        tmp.write_text(body, encoding="utf-8")
 
     last = cues[-1][1] if cues else 0.0
     if last > resolved.get("total", 0) + 0.5:

@@ -8,6 +8,7 @@
   },
   "voice": {
     "english_terms": [
+      "scam cyber",
       "scam siber",
       "online",
       "link",
@@ -18,7 +19,8 @@
       "UM Press",
       "ICYM",
       "PPR"
-    ]
+    ],
+    "_note": "The delivered WAVs were rendered from 'scam siber' with an English pronunciation of 'scam cyber'. The captions now use that spelling too, so what is written matches what is heard; the audio itself did not need re-rendering."
   },
   "cards": {
     "open_v9": {
@@ -74,7 +76,7 @@
     },
     {
       "id": "s1_pembukaan",
-      "narration": "Amanah di Dunia Digital. Lindungi diri dan keluarga daripada penipuan cyber.",
+      "narration": "Amanah di Dunia Digital. Lindungi diri dan keluarga daripada scam cyber.",
       "visuals": [
         {
           "clip": "C0006.mp4",
@@ -88,7 +90,7 @@
     },
     {
       "id": "s2_konteks",
-      "narration": "Perkembangan teknologi membawa banyak manfaat. Tetapi, ia turut membawa risiko. Penipuan siber, penipuan dalam talian, dan kecurian identiti semakin meruncing, menjadikan golongan muda sebagai sasaran utama. Program ini dilahirkan untuk memberi mereka perisai digital yang kukuh.",
+      "narration": "Perkembangan teknologi membawa banyak manfaat. Tetapi, ia turut membawa risiko. Scam cyber, penipuan dalam talian, dan kecurian identiti semakin meruncing, menjadikan golongan muda sebagai sasaran utama. Program ini dilahirkan untuk memberi mereka perisai digital yang kukuh.",
       "visuals": [
         {
           "clip": "C0011.mp4",
@@ -130,7 +132,7 @@
     },
     {
       "id": "s4_aktiviti",
-      "narration": "Program dibahagikan kepada beberapa sesi. Ia bermula dengan perkongsian khas daripada Encik Mohd Firdaus Khairi dari Kementerian Digital. Kemudian, peserta menyertai Latihan Dalam Kumpulan, mengenal pasti ciri-ciri penipuan, dan menyertai kuiz interaktif yang menyeronokkan.",
+      "narration": "Program dibahagikan kepada beberapa sesi. Ia bermula dengan perkongsian khas daripada Encik Mohd Firdaus Khairi dari Kementerian Digital. Kemudian, peserta menyertai Latihan Dalam Kumpulan, mengenal pasti ciri-ciri scam, dan menyertai kuiz interaktif yang menyeronokkan.",
       "visuals": [
         {
           "clip": "C0010.mp4",
@@ -179,7 +181,7 @@
     },
     {
       "id": "s5_impak",
-      "narration": "Hasil tinjauan menunjukkan impak yang positif. Sebelum ini, majoriti peserta sudah tahu apa itu penipuan. Tetapi selepas bengkel, keyakinan mereka meningkat. Sebanyak 84 peratus berkata mereka akan lebih berhati-hati menggunakan internet, dan 88 peratus tahu tidak boleh tekan pautan pelik sewenang-wenangnya.",
+      "narration": "Hasil tinjauan menunjukkan impak yang positif. Sebelum ini, majoriti peserta sudah tahu apa itu scam. Tetapi selepas bengkel, keyakinan mereka meningkat. Sebanyak 84 peratus berkata mereka akan lebih berhati-hati menggunakan internet, dan 88 peratus tahu tidak boleh tekan pautan pelik sewenang-wenangnya.",
       "visuals": [
         {
           "card": "s5_impak",
@@ -267,7 +269,7 @@
     {
       "id": "s8_penutup",
       "_edit": "CLIENT: crowd clip last. C0025 is MOVED to sit immediately before the closing card rather than added again - it was already in the cut at 3:27, so moving it costs 0s where adding a second copy costs 8.6s. CLIENT: the group shot keeps its own audio (the crowd), ducked under the narration rather than muted.",
-      "narration": "Program ini bukan sekadar bengkel. Ia adalah langkah pertama untuk membina komuniti yang celik digital, amanah, dan berdaya tahan terhadap ancaman penipuan siber. Terima kasih kepada UM Cares, para penaja, dan semua pihak yang menjayakan program ini. Bersama, kita lindungi generasi muda di dunia digital.",
+      "narration": "Program ini bukan sekadar bengkel. Ia adalah langkah pertama untuk membina komuniti yang celik digital, amanah, dan berdaya tahan terhadap ancaman scam cyber. Terima kasih kepada UM Cares, para penaja, dan semua pihak yang menjayakan program ini. Bersama, kita lindungi generasi muda di dunia digital.",
       "visuals": [
         {
           "clip": "C0029.mp4",
@@ -321,7 +323,7 @@
   },
   "output": {
     "master": "exports/master_v10.mxf",
-    "delivery": "exports/UMCares_RU2025-T323A_v11.mp4",
+    "delivery": "exports/UMCares_RU2025-T323A_v12.mp4",
     "target_lufs": -16,
     "patch_visuals": [
       "open_v9",

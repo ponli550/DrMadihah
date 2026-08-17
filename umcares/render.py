@@ -12,6 +12,7 @@ re-running after an edit only redoes what actually changed:
     subs     write the SRT from the delivered audio
     export   master out of Premiere
     deliver  music bed + subtitles -> H.264
+    verify   compare the delivered file against its own sources
 
 `--from` and `--to` run a slice. `--force` regenerates even if outputs exist.
 
@@ -30,7 +31,7 @@ from . import voice as voice_mod
 from .premiere import Premiere
 
 STAGES = ["voice", "cards", "motion", "resolve", "import", "build",
-          "subs", "export", "deliver"]
+          "subs", "export", "deliver", "verify"]
 
 
 class Renderer:
@@ -390,6 +391,42 @@ class Renderer:
                 sections=music.get("ducking"),
                 music_start=float(music.get("start", 25)),
                 lang=lang, burn_pngs=pngs, patches=patches or None)
+
+
+    def stage_verify(self):
+        """Prove the delivery is the film the recipe describes."""
+        from . import verify as verify_mod
+        from . import burn as burn_mod
+
+        outcfg = self.rec.get("output") or {}
+        delivery = self._remote(outcfg.get("delivery", "exports/delivery.mp4"))
+        subs = self.rec.get("subtitles") or {}
+        burned = str(subs.get("mode", "soft")).lower() == "burn"
+
+        cues = []
+        srt_local = self.work / "subtitles.srt"
+        if burned and srt_local.exists():
+            cues = burn_mod.parse_srt(srt_local)
+
+        visuals = []
+        for v in self.resolved["video"]:
+            mid = v["start"] + v["duration"] / 2.0
+            visuals.append({
+                "ref": v["ref"], "start": v["start"], "duration": v["duration"],
+                "src": self._path_for(v),
+                "captioned": any(a <= mid <= b for a, b, _ in cues),
+            })
+
+        with spinner.spin(f"verifying {len(visuals)} visuals against their sources",
+                          40 + 2 * len(visuals)):
+            raw = verify_mod.collect(self.t, delivery, visuals,
+                                     self.resolved["scenes"])
+        res = verify_mod.check(self.resolved, raw, visuals, burned,
+                               target_lufs=float(outcfg.get("target_lufs", -16)))
+        verify_mod.report(res)
+        if not res["ok"]:
+            raise SystemExit("delivery failed verification — see the checks above")
+        return res
 
 
 def run(t, cfg, rec: dict, work: Path, manifest: dict | None = None,

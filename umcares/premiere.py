@@ -437,6 +437,17 @@ class Premiere:
         return json.loads(res)
 
     def export(self, out_path: str, preset: str, timeout: int = 1800) -> dict:
+        """Export the active sequence, without risking the previous master.
+
+        Premiere writes straight over its target. A failed or interrupted export
+        therefore destroys the master that was already there -- which is the one
+        file in this pipeline that costs minutes AND is the input to every
+        delivery. So it renders to a sibling `.part` file and that is moved into
+        place only once it exists and is non-empty.
+        """
+        from . import safe
+
+        final, out_path = out_path, safe.part_path(out_path)
         jsx = (
             "(function(){ try {"
             f"  if (!new File({json.dumps(preset)}).exists) return 'ERR preset missing';"
@@ -453,6 +464,10 @@ class Premiere:
             raise RuntimeError(f"export failed: {res}")
         info = json.loads(res)
         if not self.t.exists(out_path):
+            safe.discard_remote(self.t, final)
             raise RuntimeError("export reported success but no file was written")
         info["bytes"] = self.t.size(out_path)
+        # a master under a megabyte is a failed export, not a short film
+        safe.commit_remote(self.t, final, min_bytes=1_000_000)
+        info["out"] = final
         return info
