@@ -42,6 +42,7 @@ class Renderer:
         self.force = force
         self.remote = cfg.remote
         self.durations: dict = {}
+        self._resolved: dict | None = None
         self.report: dict = {"stages": {}}
 
         self.vo_local = work / "vo"
@@ -53,6 +54,27 @@ class Renderer:
             self.durations = json.loads(dpath.read_text(encoding="utf-8"))
 
     # -- helpers ------------------------------------------------------------
+    @property
+    def resolved(self) -> dict:
+        """The resolved timeline, loaded from disk if `resolve` ran earlier.
+
+        Without this, every stage from `import` onwards only works when
+        `resolve` runs in the SAME invocation — which defeats `--only` and
+        `--from`, the whole point of having stages.
+        """
+        if self._resolved is None:
+            path = self.work / "resolved.json"
+            if not path.exists():
+                raise SystemExit(
+                    "no resolved timeline yet — run `umcares render --only resolve` "
+                    "first (or include `resolve` in this run)")
+            self._resolved = json.loads(path.read_text(encoding="utf-8"))
+        return self._resolved
+
+    @resolved.setter
+    def resolved(self, value: dict) -> None:
+        self._resolved = value
+
     def _save_durations(self):
         (self.work / "durations.json").write_text(
             json.dumps(self.durations, indent=2), encoding="utf-8")
@@ -78,14 +100,23 @@ class Renderer:
             env = self.cfg.env
             if not env.get("JSON2VIDEO_API_KEY"):
                 raise SystemExit("JSON2VIDEO_API_KEY is required to render narration")
-            # render ALL scenes together: one API call, and the silence between
-            # scenes is what the splitter keys on
-            with spinner.spin(f"rendering narration ({len(scenes)} scenes)",
-                              20 + 6 * len(scenes)):
-                out = voice_mod.render(env, scenes, self.rec.get("voice") or {})
+            # Render only the scenes that are actually missing, in ONE call: the
+            # silence between them is what the splitter keys on, and a subset
+            # splits exactly like a full set.
+            #
+            # Re-rendering everything when one line changed would be wrong twice
+            # over: it burns quota on narration nobody edited, and a neural voice
+            # is not bit-identical between runs, so every untouched scene would
+            # come back a few frames longer or shorter and shift the whole cut.
+            log.step(f"{len(scenes) - len(missing)} narration file(s) reused, "
+                     f"{len(missing)} to render: "
+                     + ", ".join(s[0] for s in missing))
+            with spinner.spin(f"rendering narration ({len(missing)} scenes)",
+                              20 + 6 * len(missing)):
+                out = voice_mod.render(env, missing, self.rec.get("voice") or {})
             with spinner.spin("splitting narration per scene", 20):
                 files = voice_mod.download_and_split(
-                    out["url"], [s[0] for s in scenes], self.vo_local,
+                    out["url"], [s[0] for s in missing], self.vo_local,
                     target_lufs=float((self.rec.get("output") or {}).get(
                         "target_lufs", -16)))
             for f in files:
@@ -179,6 +210,15 @@ class Renderer:
         (self.work / "resolved.json").write_text(
             json.dumps(resolved, indent=2, ensure_ascii=False), encoding="utf-8")
         print(recipe_mod.summary(resolved), file=__import__("sys").stderr)
+        if resolved.get("short"):
+            raise SystemExit(
+                "cannot build: these scenes have less footage than narration, and "
+                "the shortfall would render as BLACK —\n  "
+                + "\n  ".join(
+                    f"{sh['scene']}: {sh['shortfall']}s short "
+                    f"({sh['visuals']}s of visuals, {sh['narration']}s of narration)"
+                    for sh in resolved["short"])
+                + "\n  add another visual to the scene, or shorten the narration.")
         if resolved["missing"]:
             raise SystemExit(
                 "cannot build: no measured duration for "

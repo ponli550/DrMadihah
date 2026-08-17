@@ -1,0 +1,62 @@
+{
+  "meta": {
+    "title": "Smoke test",
+    "subtitle": "umcares end-to-end orchestration check",
+    "language": "ms-MY"
+  },
+  "voice": {
+    "english_terms": ["scam cyber", "online", "link", "internet"],
+    "acronyms": ["UM Cares"]
+  },
+  "cards": {
+    "impak": {
+      "type": "stats",
+      "eyebrow": "IMPAK PROGRAM",
+      "tiles": [
+        {"value": "84%", "label": "akan lebih berhati-hati menggunakan internet"},
+        {"value": "88%", "label": "tahu tidak boleh tekan pautan pelik"}
+      ],
+      "footnote": "Perbandingan sebelum dan selepas bengkel"
+    }
+  },
+  "scenes": [
+    {
+      "id": "s1",
+      "narration": "Amanah di Dunia Digital. Lindungi diri dan keluarga daripada scam siber.",
+      "visuals": [
+        {"clip": "C0001.mp4"}
+      ]
+    },
+    {
+      "id": "s2",
+      "narration": "Teknologi membawa manfaat, tetapi turut membawa risiko.",
+      "visuals": [
+        {"kenburns": {
+          "id": "kb_risiko",
+          "photos": ["test_still_1.png", "test_still_2.png", "test_still_3.png"]
+        }, "duration": 8.0}
+      ]
+    },
+    {
+      "id": "s3",
+      "narration": "Hasil tinjauan menunjukkan impak yang positif.",
+      "visuals": [
+        {"card": "impak", "duration": 12.0},
+        {"clip": "C0018.mp4", "audio": "keep"}
+      ]
+    }
+  ],
+  "music": {
+    "file": "Steps_Toward_Common_Ground.mp3",
+    "start": 25,
+    "ducking": [
+      [12, -3],
+      [42, -20],
+      [9999, -3]
+    ]
+  },
+  "output": {
+    "master": "exports/master_smoke.mxf",
+    "delivery": "exports/UMCares_smoke.mp4"
+  }
+}

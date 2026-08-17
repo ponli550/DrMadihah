@@ -77,7 +77,10 @@ def split_sentences(text: str, max_chars: int = 62) -> list:
         words, line = sent.split(), ""
         for w in words:
             if len(line) + len(w) + 1 > max_chars and line:
-                out.append(line.strip() + ",")
+                # a continuation comma, unless the wrap already fell on
+                # punctuation -- otherwise the caption reads "tahun,,"
+                cut = line.strip()
+                out.append(cut if cut[-1] in ",.;:!?-" else cut + ",")
                 line = w
             else:
                 line = f"{line} {w}".strip()

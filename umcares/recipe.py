@@ -174,7 +174,7 @@ def resolve(recipe: dict, durations: dict) -> dict:
     pad = float((recipe.get("meta") or {}).get("scene_pad") or 0.5)
     vo_lead = float((recipe.get("meta") or {}).get("narration_lead") or 0.5)
 
-    video, audio, missing = [], [], []
+    video, audio, missing, short = [], [], [], []
     t = 0.0
     timeline = []
 
@@ -214,18 +214,45 @@ def resolve(recipe: dict, durations: dict) -> dict:
                           # duck = present but under narration, mute = silent
                           "audio": v.get("audio", "mute")})
 
-        # a scene must last at least as long as its narration plus the pad
+        # A scene must last at least as long as its narration plus the pad.
+        #
+        # Stretching is capped at each asset's REAL length. A clip asked to run
+        # longer than it is does not stretch, it ends -- and the rest of the
+        # slot is black. That is the single failure mode this resolver exists to
+        # make impossible, so an uncoverable scene is reported, never rendered.
+        def cap(f):
+            real = durations.get(f["key"])
+            return float(real) if real else None
+
         need = (vo_lead + vo_len + pad) if vo_len else 0.0
         have = sum(f["duration"] for f in fixed)
-        if open_slots and need > have:
-            extra = (need - have) / len(open_slots)
-            for idx in open_slots:
-                fixed[idx]["duration"] += extra
-            have = sum(f["duration"] for f in fixed)
-        elif need > have and fixed:
-            # stretch the last visual rather than leave the voice over black
-            fixed[-1]["duration"] += (need - have)
-            have = need
+        targets = open_slots or ([len(fixed) - 1] if fixed else [])
+        while need > have + 1e-6 and targets:
+            room = []
+            for idx in targets:
+                c = cap(fixed[idx])
+                if c is None or c > fixed[idx]["duration"] + 1e-6:
+                    room.append(idx)
+            if not room:
+                break
+            share = (need - have) / len(room)
+            grew = 0.0
+            for idx in room:
+                c = cap(fixed[idx])
+                add = share if c is None else min(share, c - fixed[idx]["duration"])
+                fixed[idx]["duration"] += add
+                grew += add
+            have += grew
+            if grew < 1e-6:
+                break
+
+        if need > have + 0.05:
+            short.append({
+                "scene": sid,
+                "narration": round(vo_len, 2),
+                "visuals": round(have, 2),
+                "shortfall": round(need - have, 2),
+            })
 
         for f in fixed:
             if f["duration"] <= 0:
@@ -258,6 +285,7 @@ def resolve(recipe: dict, durations: dict) -> dict:
         "audio": audio,
         "scenes": timeline,
         "missing": sorted(set(missing)),
+        "short": short,
     }
 
 
@@ -282,4 +310,7 @@ def summary(resolved: dict) -> str:
                      f"({s['duration']:.1f}s, narration {s['narration']:.1f}s)")
     if resolved["missing"]:
         lines.append(f"  MISSING durations: {', '.join(resolved['missing'])}")
+    for sh in resolved.get("short") or []:
+        lines.append(f"  SHORT {sh['scene']}: {sh['visuals']}s of visuals for "
+                     f"{sh['narration']}s of narration — {sh['shortfall']}s would be BLACK")
     return "\n".join(lines)

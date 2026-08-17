@@ -45,9 +45,14 @@ def mark_text(text: str, english_terms: list, acronyms: list,
 
     # acronyms first, so the <lang> wrapper cannot nest inside itself
     for acro in sorted(acronyms or [], key=len, reverse=True):
-        if acro.lower() == "um cares":
-            repl = ('<lang xml:lang="en-US">'
-                    '<say-as interpret-as="characters">UM</say-as> Cares</lang>')
+        head, _, tail = acro.partition(" ")
+        if tail and head.isupper():
+            # "UM Cares", "UM Press": spell the initialism, SAY the word after
+            # it. Treating the whole thing as characters gives "U-M-P-R-E-S-S",
+            # and treating none of it gives the Malay word "um".
+            repl = (f'<lang xml:lang="en-US">'
+                    f'<say-as interpret-as="characters">{esc(head)}</say-as>'
+                    f' {esc(tail)}</lang>')
         else:
             repl = f'<say-as interpret-as="characters">{esc(acro)}</say-as>'
         out = re.sub(re.escape(esc(acro)), repl, out)
