@@ -54,7 +54,7 @@ def mix(t: Transport, master: str, music: str, srt: str, out: str,
         sections: list | None = None, music_start: float = 25.0,
         fade_out_at: float | None = None, crf: int = 18,
         lang: str = "msa", burn_pngs: list | None = None,
-        timeout: int = 3600) -> dict:
+        patches: list | None = None, timeout: int = 3600) -> dict:
     """Lay music under a master, add subtitles, encode delivery H.264.
 
     Subtitles go in one of two ways:
@@ -90,11 +90,23 @@ def mix(t: Transport, master: str, music: str, srt: str, out: str,
         f"[voice][musg]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
     )
 
-    if burn_pngs:
+    if burn_pngs or patches:
         from . import burn as burn_mod
-        # PNG inputs follow master(0) + music(1) + music(2)
-        filt += ";" + burn_mod.overlay_chain(burn_pngs, 3, "0:v", "vout")
-        sub_in = " ".join(f"-i {_q(e['png'])}" for e in burn_pngs)
+        # extra inputs follow master(0) + music(1) + music(2)
+        nxt, chains, src = 3, [], "0:v"
+        extra_in = []
+        if patches:
+            # patches go UNDER the captions: a replaced card still gets captions
+            chains.append(burn_mod.patch_chain(patches, nxt, src, "patched"))
+            extra_in += [f"-i {_q(p['file'])}" for p in patches]
+            nxt += len(patches); src = "patched"
+        if burn_pngs:
+            chains.append(burn_mod.overlay_chain(burn_pngs, nxt, src, "vout"))
+            extra_in += [f"-i {_q(e['png'])}" for e in burn_pngs]
+        else:
+            chains.append(f"[{src}]null[vout]")
+        filt += ";" + ";".join(c for c in chains if c)
+        sub_in = " ".join(extra_in)
         vmap, sub_map, sub_codec = '-map "[vout]"', "", ""
     else:
         vmap = "-map 0:v:0"
@@ -127,6 +139,7 @@ ffmpeg -hide_banner -i {_q(out)} -af ebur128=framelog=quiet -f null - 2>&1 \
 
 def mux_subtitles_only(t: Transport, src: str, srt: str, out: str,
                        lang: str = "msa", burn_pngs: list | None = None,
+                       patches: list | None = None,
                        crf: int = 18, timeout: int = 1800) -> dict:
     """Replace the subtitle track without touching video or audio.
 
@@ -134,10 +147,20 @@ def mux_subtitles_only(t: Transport, src: str, srt: str, out: str,
     change the mix. Burning cannot: painting pixels means re-encoding the video,
     which costs time and one generation of quality. Audio is still copied.
     """
-    if burn_pngs:
+    if burn_pngs or patches:
         from . import burn as burn_mod
-        chain = burn_mod.overlay_chain(burn_pngs, 1, "0:v", "vout")
-        pngs = " ".join(f"-i {_q(e['png'])}" for e in burn_pngs)
+        nxt, chains, src_lbl, extra = 1, [], "0:v", []
+        if patches:
+            chains.append(burn_mod.patch_chain(patches, nxt, src_lbl, "patched"))
+            extra += [f"-i {_q(p['file'])}" for p in patches]
+            nxt += len(patches); src_lbl = "patched"
+        if burn_pngs:
+            chains.append(burn_mod.overlay_chain(burn_pngs, nxt, src_lbl, "vout"))
+            extra += [f"-i {_q(e['png'])}" for e in burn_pngs]
+        else:
+            chains.append(f"[{src_lbl}]null[vout]")
+        chain = ";".join(c for c in chains if c)
+        pngs = " ".join(extra)
         script = f'''
 set -e
 ffmpeg -y -loglevel error -i {_q(src)} {pngs} \

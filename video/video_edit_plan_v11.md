@@ -1,9 +1,9 @@
-# Aliran Video — UM Cares RU2025-T323A (v10)
+# Aliran Video — UM Cares RU2025-T323A (v11)
 
 Dijana daripada `recipes/v10.json` melalui `umcares render`. Semua masa diambil
 terus daripada `.umcares/resolved.json`.
 
-**Fail akhir:** `UMCares_RU2025-T323A_v10.mp4`
+**Fail akhir:** `UMCares_RU2025-T323A_v11.mp4`
 **Durasi:** 237.06s (3:57.1) · 1920×1080 @ 50fps · sari kata **terbakar dalam video**
 
 ---
@@ -114,5 +114,15 @@ pada 230.44s.
    ffmpeg di sini dibina tanpa libass mahupun libfreetype. Imej ditindih dalam
    graf penapis yang sama dengan campuran muzik, jadi hanya satu enkod.
 4. **`resolve` enggan membina** jika babak lebih pendek daripada naratifnya.
-5. Logo dijajar pada satu ketinggian sepunya dengan lebar mengikut nisbah
-   masing-masing — slot sama saiz akan memaksa ICYM (4.65:1) mengecilkan semua.
+5. **Logo disusun dua baris** pada satu ketinggian sepunya, lebar mengikut
+   nisbah masing-masing. Enam logo dalam satu baris hanya boleh setinggi ~59px;
+   dua baris menjadikannya 92px pada kad (dahulu 44px). Slot sama saiz akan
+   memaksa ICYM (4.65:1) mengecilkan semua yang lain.
+6. **Jalur logo berakhir pada y=905**, di atas sari kata terbakar (baris dua
+   bermula ~y=918). Dalam v10 jalur itu bertindih dengan sari kata.
+7. **Masa sari kata mengikut panjang teks** yang dipetakan ke pertuturan
+   sebenar, bukan membelah span di titik tengah. Sebelum ini 7 kiu di bawah
+   1.0s dan 17 kiu melebihi 25 aksara/saat (paling teruk 125); kini tiada.
+8. **Kad ditampal semasa penghantaran** (`output.patch_visuals`) kerana panel
+   CEP Premiere tidak dapat dicapai. `master_v10.mxf` masih mengandungi kad
+   lama — eksport semula untuk menyelaraskannya.

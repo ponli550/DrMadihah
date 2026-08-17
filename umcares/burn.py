@@ -177,3 +177,32 @@ def overlay_chain(entries: list, first_input: int, src_label: str,
             f"[{tag}]")
         prev = tag
     return ";".join(parts)
+
+
+def patch_chain(patches: list, first_input: int, src_label: str,
+                out_label: str) -> str:
+    """Replace whole stretches of picture with another clip, in the same pass.
+
+    Used when a visual changes but the Premiere master is expensive (or, as
+    happened here, impossible) to re-export: a title card is opaque and
+    full-frame, so overlaying it for exactly its own span replaces those frames
+    outright. `setpts` shifts the patch onto its timeline position, and
+    `enable` keeps it out of every other frame.
+
+    Honest limitation: the MASTER still contains the old picture. This patches
+    the DELIVERY only, so a master re-export is still the way to make the two
+    agree.
+    """
+    if not patches:
+        return ""
+    parts, prev = [], src_label
+    for i, p in enumerate(patches):
+        idx = first_input + i
+        at, dur = float(p["at"]), float(p["duration"])
+        parts.append(f"[{idx}:v]setpts=PTS-STARTPTS+{at}/TB[p{i}]")
+        tag = out_label if i == len(patches) - 1 else f"pv{i}"
+        parts.append(
+            f"[{prev}][p{i}]overlay=x=0:y=0:eof_action=pass:"
+            f"enable='between(t\\,{at}\\,{at + dur})'[{tag}]")
+        prev = tag
+    return ";".join(parts)

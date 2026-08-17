@@ -321,8 +321,13 @@
   },
   "output": {
     "master": "exports/master_v10.mxf",
-    "delivery": "exports/UMCares_RU2025-T323A_v10.mp4",
-    "target_lufs": -16
+    "delivery": "exports/UMCares_RU2025-T323A_v11.mp4",
+    "target_lufs": -16,
+    "patch_visuals": [
+      "open_v9",
+      "close_v9"
+    ],
+    "_note": "patch_visuals: the two logo cards were rebuilt after the master was exported (json2video ran out of credits and Premiere CEP was down), so they are composited in at delivery. Re-export the master to make the two agree."
   },
   "audio": {
     "duck_db": -13,

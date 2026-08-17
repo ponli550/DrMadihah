@@ -357,12 +357,31 @@ class Renderer:
         lang = subs.get("language", "msa")
         pngs = self._burn_pngs(subs) if burn else None
 
+        # `patch_visuals` re-composites named visuals into the delivery without
+        # re-exporting the master. For a static card that changed after export
+        # this turns a 12-minute round trip into a 4-minute one — at the cost of
+        # the master no longer matching the delivery, which is why it is opt-in
+        # and named in the recipe rather than inferred.
+        patches = []
+        for ref in (outcfg.get("patch_visuals") or []):
+            hits = [v for v in self.resolved["video"] if v["ref"] == ref]
+            if not hits:
+                raise SystemExit(f"patch_visuals: no visual named `{ref}` in the cut")
+            for v in hits:
+                patches.append({"file": self._path_for(v), "at": v["start"],
+                                "duration": v["duration"]})
+        if patches:
+            log.warn(f"patching {len(patches)} visual(s) into the delivery "
+                     f"({', '.join(outcfg['patch_visuals'])}) — the master still "
+                     f"holds the previous picture")
+
         if not music.get("file"):
             label = "burning subtitles in" if burn else "muxing subtitles"
             with spinner.spin(f"{label} (no music in recipe)",
                               600 if burn else 90):
                 return post.mux_subtitles_only(self.t, master, srt_remote, delivery,
-                                               lang=lang, burn_pngs=pngs)
+                                               lang=lang, burn_pngs=pngs,
+                                               patches=patches or None)
 
         music_path = self._remote("assets", "music", music["file"])
         with spinner.spin("mixing music + subtitles", 480 if burn else 360):
@@ -370,7 +389,7 @@ class Renderer:
                 self.t, master, music_path, srt_remote, delivery,
                 sections=music.get("ducking"),
                 music_start=float(music.get("start", 25)),
-                lang=lang, burn_pngs=pngs)
+                lang=lang, burn_pngs=pngs, patches=patches or None)
 
 
 def run(t, cfg, rec: dict, work: Path, manifest: dict | None = None,

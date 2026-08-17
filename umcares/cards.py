@@ -39,6 +39,15 @@ STYLE = {
 }
 STRIP_W, STRIP_H = 1600, 250
 
+# A burned caption of two lines reaches roughly y=918 on a 1080 frame, so the
+# logo strip must finish above that or the two collide -- which is exactly what
+# happened on the v10 closing card.
+LOGO_BOTTOM = 905
+LOGO_MAX_W = 1480
+# The footnote sits at y=620 and runs to about 655, so the strip starts below
+# that; 905 - 235 = 670 leaves clearance at both ends.
+LOGO_MAX_H = 235
+
 
 def cy(screen_y: int) -> int:
     """On-screen centre -> json2video y offset."""
@@ -152,54 +161,68 @@ def content_box(path: Path, tol: int = 12) -> tuple:
 
 
 def build_strip(logo_dir: Path, filenames: list, out: Path,
-                margin: float = 0.06, gap: float = 0.035,
-                max_h: float = 0.74) -> Path:
-    """Row of sponsor logos on white, all drawn at ONE shared height.
+                margin: float = 0.04, gap: float = 0.03,
+                row_gap: int = 34, vpad: int = 16,
+                rows: int | None = None) -> Path:
+    """Sponsor logos on white, all at ONE shared height, over one or two rows.
 
-    Three attempts got this wrong, each in its own way:
+    History, because each attempt fixed the previous one and broke something:
 
-      * Scaling every logo to a fixed height CLIPPED the wide ones.
+      * Fixed height for every logo CLIPPED the wide marks.
       * Contain-fitting each into an equal slot stopped the clipping but made
-        them look like different sizes, because the marks range from 2.0:1 to
-        4.7:1 -- a row of equal partners should not read as a hierarchy.
-      * Equal slots plus one shared height is the worst of both: the widest
-        mark (ICYM, 4.65:1) drags every other logo down to a third of the
-        available height.
+        them look like different sizes -- these marks run 2.0:1 to 4.7:1, and a
+        row of partners should not read as a hierarchy.
+      * Equal slots at one shared height let the widest mark (ICYM, 4.65:1)
+        drag every other logo down to a quarter of the available height.
+      * One row of six is itself the limit: six marks averaging 3.2:1 across
+        1600px can only ever be ~59px tall, which reads as tiny on a 1080 frame.
 
-    So the row is laid out proportionally: every logo gets the SAME height, and
-    a width that follows its own aspect ratio. The shared height is simply the
-    largest one whose total width still fits the strip. Equal visual weight,
-    nothing clipped, no wasted vertical space.
+    So: proportional widths at one shared height, and **two rows** once there
+    are five or more logos. Halving the marks per row nearly doubles the height
+    each one can take. The canvas is sized to the content instead of being a
+    fixed 250px band, so nothing downstream has to guess how much of it is
+    whitespace.
     """
     n = len(filenames)
     for fn in filenames:
         if not (logo_dir / fn).exists():
             raise SystemExit(f"logo not found: {logo_dir / fn}")
+    if rows is None:
+        rows = 2 if n >= 5 else 1
 
     boxes = [content_box(logo_dir / fn) for fn in filenames]
     aspects = [cw / ch for _, _, cw, ch in boxes]
 
-    usable = STRIP_W * (1 - 2 * margin) - STRIP_W * gap * (n - 1)
-    height = min(STRIP_H * max_h, usable / sum(aspects))
-    widths = [max(1, int(round(height * a))) for a in aspects]
+    per = -(-n // rows)                      # ceil, so row 1 is never short
+    groups = [list(range(i, min(i + per, n))) for i in range(0, n, per)]
+    rows = len(groups)
+
+    # tallest height every ROW can take while still fitting the strip width
+    height = min(
+        (STRIP_W * (1 - 2 * margin) - STRIP_W * gap * (len(g) - 1)) /
+        sum(aspects[i] for i in g)
+        for g in groups)
     height = max(1, int(round(height)))
+    widths = [max(1, int(round(height * a))) for a in aspects]
 
-    span = sum(widths) + int(STRIP_W * gap) * (n - 1)
-    x = (STRIP_W - span) // 2
-
-    inputs = ["-f", "lavfi", "-i", f"color=white:s={STRIP_W}x{STRIP_H}"]
+    canvas_h = rows * height + (rows - 1) * row_gap + 2 * vpad
+    inputs = ["-f", "lavfi", "-i", f"color=white:s={STRIP_W}x{canvas_h}"]
     for fn in filenames:
         inputs += ["-i", str(logo_dir / fn)]
 
     fc, prev = [], "0:v"
-    for i, fn in enumerate(filenames):
-        cx, cy_, cw, ch = boxes[i]
-        fc.append(f"[{i+1}:v]crop={cw}:{ch}:{cx}:{cy_},"
-                  f"scale={widths[i]}:{height}[l{i}]")
-        tag = f"v{i}"
-        fc.append(f"[{prev}][l{i}]overlay=x={x}:y=(H-overlay_h)/2[{tag}]")
-        prev = tag
-        x += widths[i] + int(STRIP_W * gap)
+    for r, g in enumerate(groups):
+        span = sum(widths[i] for i in g) + int(STRIP_W * gap) * (len(g) - 1)
+        x = (STRIP_W - span) // 2
+        y = vpad + r * (height + row_gap)
+        for i in g:
+            cx, cy_, cw, ch = boxes[i]
+            fc.append(f"[{i+1}:v]crop={cw}:{ch}:{cx}:{cy_},"
+                      f"scale={widths[i]}:{height}[l{i}]")
+            tag = f"v{i}"
+            fc.append(f"[{prev}][l{i}]overlay=x={x}:y={y}[{tag}]")
+            prev = tag
+            x += widths[i] + int(STRIP_W * gap)
 
     out.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(["ffmpeg", "-y", "-loglevel", "error"] + inputs +
@@ -252,8 +275,20 @@ def render(env: dict, cards: dict, durations: dict, style: dict | None = None,
     raise RuntimeError(f"card render timed out (project {pid})")
 
 
+def _fit_strip(path: Path) -> tuple:
+    """Scale a strip into the logo box and return (w, h, y) for the overlay."""
+    dims = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=width,height", "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True).stdout.strip().split(",")
+    sw, sh = int(dims[0]), int(dims[1])
+    scale = min(LOGO_MAX_W / sw, LOGO_MAX_H / sh)
+    w, h = int(sw * scale) & ~1, int(sh * scale) & ~1
+    return w, h, LOGO_BOTTOM - h
+
+
 def split_and_composite(url: str, order: list, cards: dict, out_dir: Path,
-                        logo_dir: Path, strip_y: int = 862) -> list:
+                        logo_dir: Path) -> list:
     """Cut the movie into one clip per card, overlaying logo strips."""
     out_dir.mkdir(parents=True, exist_ok=True)
     src = out_dir / "_cards_full.mp4"
@@ -269,12 +304,13 @@ def split_and_composite(url: str, order: list, cards: dict, out_dir: Path,
 
         if logos:
             strip = build_strip(logo_dir, logos, out_dir / f"strip_{cid}.jpg")
+            sw, sh, sy = _fit_strip(strip)
             subprocess.run(
                 ["ffmpeg", "-y", "-loglevel", "error",
                  "-ss", f"{t:.3f}", "-t", f"{dur:.3f}", "-i", str(src),
                  "-i", str(strip),
                  "-filter_complex",
-                 f"[1:v]scale=1200:188[s];[0:v][s]overlay=x=(W-w)/2:y={strip_y}",
+                 f"[1:v]scale={sw}:{sh}[s];[0:v][s]overlay=x=(W-w)/2:y={sy}",
                  "-c:v", "libx264", "-preset", "medium", "-crf", "17",
                  "-r", "50", "-an", str(dest)], check=True)
         else:
