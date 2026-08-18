@@ -64,6 +64,10 @@ class Spinner:
             self._thread.start()
         return self
 
+    def update(self, label: str) -> None:
+        """Change the running label (thread-safe)."""
+        self.label = label
+
     def __exit__(self, exc_type, exc, tb):
         self._stop.set()
         if self._thread:

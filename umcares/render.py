@@ -12,6 +12,7 @@ re-running after an edit only redoes what actually changed:
     subs     write the SRT from the delivered audio
     export   master out of Premiere
     deliver  music bed + subtitles -> H.264
+    verify   compare the delivered file against its own sources
 
 `--from` and `--to` run a slice. `--force` regenerates even if outputs exist.
 
@@ -30,7 +31,7 @@ from . import voice as voice_mod
 from .premiere import Premiere
 
 STAGES = ["voice", "cards", "motion", "resolve", "import", "build",
-          "subs", "export", "deliver"]
+          "subs", "export", "deliver", "verify"]
 
 
 class Renderer:
@@ -42,17 +43,44 @@ class Renderer:
         self.force = force
         self.remote = cfg.remote
         self.durations: dict = {}
+        self._resolved: dict | None = None
         self.report: dict = {"stages": {}}
+        self._changed_paths: set = set()
 
         self.vo_local = work / "vo"
         self.cards_local = work / "cards"
         self.logo_local = cfg.root / "assets" / "logos"
 
+        # Load measurements ALWAYS, even under --force. Force means "regenerate
+        # the artifacts", not "forget how long everything else is": each stage
+        # overwrites its own keys after it re-measures, so keeping the rest is
+        # what makes `--only cards --force` safe to run on a finished cut.
         dpath = work / "durations.json"
-        if dpath.exists() and not force:
+        if dpath.exists():
             self.durations = json.loads(dpath.read_text(encoding="utf-8"))
 
     # -- helpers ------------------------------------------------------------
+    @property
+    def resolved(self) -> dict:
+        """The resolved timeline, loaded from disk if `resolve` ran earlier.
+
+        Without this, every stage from `import` onwards only works when
+        `resolve` runs in the SAME invocation — which defeats `--only` and
+        `--from`, the whole point of having stages.
+        """
+        if self._resolved is None:
+            path = self.work / "resolved.json"
+            if not path.exists():
+                raise SystemExit(
+                    "no resolved timeline yet — run `umcares render --only resolve` "
+                    "first (or include `resolve` in this run)")
+            self._resolved = json.loads(path.read_text(encoding="utf-8"))
+        return self._resolved
+
+    @resolved.setter
+    def resolved(self, value: dict) -> None:
+        self._resolved = value
+
     def _save_durations(self):
         (self.work / "durations.json").write_text(
             json.dumps(self.durations, indent=2), encoding="utf-8")
@@ -78,28 +106,42 @@ class Renderer:
             env = self.cfg.env
             if not env.get("JSON2VIDEO_API_KEY"):
                 raise SystemExit("JSON2VIDEO_API_KEY is required to render narration")
-            # render ALL scenes together: one API call, and the silence between
-            # scenes is what the splitter keys on
-            with spinner.spin(f"rendering narration ({len(scenes)} scenes)",
-                              20 + 6 * len(scenes)):
-                out = voice_mod.render(env, scenes, self.rec.get("voice") or {})
+            # Render only the scenes that are actually missing, in ONE call: the
+            # silence between them is what the splitter keys on, and a subset
+            # splits exactly like a full set.
+            #
+            # Re-rendering everything when one line changed would be wrong twice
+            # over: it burns quota on narration nobody edited, and a neural voice
+            # is not bit-identical between runs, so every untouched scene would
+            # come back a few frames longer or shorter and shift the whole cut.
+            log.step(f"{len(scenes) - len(missing)} narration file(s) reused, "
+                     f"{len(missing)} to render: "
+                     + ", ".join(s[0] for s in missing))
+            with spinner.spin(f"rendering narration ({len(missing)} scenes)",
+                              20 + 6 * len(missing)):
+                out = voice_mod.render(env, missing, self.rec.get("voice") or {})
             with spinner.spin("splitting narration per scene", 20):
                 files = voice_mod.download_and_split(
-                    out["url"], [s[0] for s in scenes], self.vo_local,
+                    out["url"], [s[0] for s in missing], self.vo_local,
                     target_lufs=float((self.rec.get("output") or {}).get(
                         "target_lufs", -16)))
             for f in files:
                 log.debug(f"  {f['scene']}: {f['duration']}s")
 
         # measure and upload
+        rendered_ids = {s[0] for s in missing}
         for sid, _, _ in scenes:
             wav = self.vo_local / f"{sid}.wav"
             if not wav.exists():
                 continue
             self.durations[f"vo:{sid}"] = srt_mod.duration(wav)
             dest = self._remote("assets", "vo", f"{sid}.wav")
-            if not self._have_remote(dest):
+            # A file we just rendered must overwrite any remote copy, otherwise
+            # a stale file on the remote can be mixed into the delivery even
+            # though the local copy is correct.
+            if sid in rendered_ids or not self._have_remote(dest):
                 self.t.push(wav, dest)
+                self._changed_paths.add(dest)
         self._save_durations()
         return {"rendered": len(scenes)}
 
@@ -123,14 +165,16 @@ class Renderer:
         else:
             log.ok(f"cards: {len(cards)} already rendered")
 
+        rendered_cards = set(need)
         for cid in cards:
             f = self.cards_local / f"card_{cid}.mp4"
             if not f.exists():
                 continue
             self.durations[f"card:{cid}"] = srt_mod.duration(f)
             dest = self._remote("assets", "cards", f"card_{cid}.mp4")
-            if not self._have_remote(dest):
+            if cid in rendered_cards or not self._have_remote(dest):
                 self.t.push(f, dest)
+                self._changed_paths.add(dest)
         self._save_durations()
         return {"rendered": len(need)}
 
@@ -161,6 +205,7 @@ class Renderer:
                               20 + 25 * len(photos)):
                 res = media.kenburns(self.t, dest, paths, dur)
             self.durations[f"kenburns:{kid}"] = res["duration"]
+            self._changed_paths.add(dest)
             built += 1
         self._save_durations()
         return {"built": built, "total": len(jobs)}
@@ -179,6 +224,15 @@ class Renderer:
         (self.work / "resolved.json").write_text(
             json.dumps(resolved, indent=2, ensure_ascii=False), encoding="utf-8")
         print(recipe_mod.summary(resolved), file=__import__("sys").stderr)
+        if resolved.get("short"):
+            raise SystemExit(
+                "cannot build: these scenes have less footage than narration, and "
+                "the shortfall would render as BLACK —\n  "
+                + "\n  ".join(
+                    f"{sh['scene']}: {sh['shortfall']}s short "
+                    f"({sh['visuals']}s of visuals, {sh['narration']}s of narration)"
+                    for sh in resolved["short"])
+                + "\n  add another visual to the scene, or shorten the narration.")
         if resolved["missing"]:
             raise SystemExit(
                 "cannot build: no measured duration for "
@@ -212,6 +266,11 @@ class Renderer:
         with spinner.spin("healing Premiere + importing assets", 30 + 2 * len(paths)):
             p.heal()
             n = p.import_files(paths)
+            if self._changed_paths:
+                refresh = sorted(self._changed_paths & set(paths))
+                if refresh:
+                    log.step(f"refreshing {len(refresh)} changed project item(s)")
+                    p.refresh_media(refresh)
         return {"imported": n, "requested": len(paths)}
 
     def stage_build(self):
@@ -270,10 +329,34 @@ class Renderer:
         preset = outcfg.get("preset_path") or self.remote.preset_path
         self.t.run(f"mkdir -p {self._remote('exports')}", timeout=60)
         p = Premiere(self.t, self.remote)
-        with spinner.spin("exporting master from Premiere", 480):
-            res = p.export(master, preset, timeout=2400)
+        with spinner.spin("exporting master from Premiere", 480) as sp:
+            res = p.export(master, preset, timeout=2400, spinner=sp)
         self.master = master
         return res
+
+    def _burn_pngs(self, subs: dict) -> list:
+        """Render caption images locally, push them, return remote paths.
+
+        Rendering happens on THIS machine because the remote has no imaging
+        library, and the remote only ever sees finished PNGs — so burning needs
+        nothing installed over there.
+        """
+        from . import burn as burn_mod
+
+        local_srt = self.work / "subtitles.srt"
+        if not local_srt.exists():
+            raise SystemExit("no subtitles.srt yet — run the `subs` stage first")
+        out_dir = self.work / "captions"
+        entries = burn_mod.render_cue_pngs(
+            local_srt, out_dir,
+            width=int((self.rec.get("meta") or {}).get("width") or 1920),
+            size=int(subs.get("font_size") or 46),
+            ink=(self.rec.get("style") or {}).get("ink", "#ffffff"))
+
+        dest_dir = self._remote("subtitles", "captions")
+        with spinner.spin(f"uploading {len(entries)} caption images", 60):
+            self.t.push_many([e["png"] for e in entries], dest_dir)
+        return [{**e, "png": f"{dest_dir}/{Path(e['png']).name}"} for e in entries]
 
     def stage_deliver(self):
         outcfg = self.rec.get("output") or {}
@@ -287,14 +370,33 @@ class Renderer:
         subs = self.rec.get("subtitles") or {}
         burn = str(subs.get("mode", "soft")).lower() == "burn"
         lang = subs.get("language", "msa")
-        style = self.rec.get("style") or {}
+        pngs = self._burn_pngs(subs) if burn else None
+
+        # `patch_visuals` re-composites named visuals into the delivery without
+        # re-exporting the master. For a static card that changed after export
+        # this turns a 12-minute round trip into a 4-minute one — at the cost of
+        # the master no longer matching the delivery, which is why it is opt-in
+        # and named in the recipe rather than inferred.
+        patches = []
+        for ref in (outcfg.get("patch_visuals") or []):
+            hits = [v for v in self.resolved["video"] if v["ref"] == ref]
+            if not hits:
+                raise SystemExit(f"patch_visuals: no visual named `{ref}` in the cut")
+            for v in hits:
+                patches.append({"file": self._path_for(v), "at": v["start"],
+                                "duration": v["duration"]})
+        if patches:
+            log.warn(f"patching {len(patches)} visual(s) into the delivery "
+                     f"({', '.join(outcfg['patch_visuals'])}) — the master still "
+                     f"holds the previous picture")
 
         if not music.get("file"):
             label = "burning subtitles in" if burn else "muxing subtitles"
             with spinner.spin(f"{label} (no music in recipe)",
                               600 if burn else 90):
                 return post.mux_subtitles_only(self.t, master, srt_remote, delivery,
-                                               lang=lang, burn=burn, style=style)
+                                               lang=lang, burn_pngs=pngs,
+                                               patches=patches or None)
 
         music_path = self._remote("assets", "music", music["file"])
         with spinner.spin("mixing music + subtitles", 480 if burn else 360):
@@ -302,7 +404,44 @@ class Renderer:
                 self.t, master, music_path, srt_remote, delivery,
                 sections=music.get("ducking"),
                 music_start=float(music.get("start", 25)),
-                lang=lang, burn=burn, style=style)
+                lang=lang, burn_pngs=pngs, patches=patches or None)
+
+
+    def stage_verify(self):
+        """Prove the delivery is the film the recipe describes."""
+        from . import verify as verify_mod
+        from . import burn as burn_mod
+
+        outcfg = self.rec.get("output") or {}
+        delivery = self._remote(outcfg.get("delivery", "exports/delivery.mp4"))
+        subs = self.rec.get("subtitles") or {}
+        burned = str(subs.get("mode", "soft")).lower() == "burn"
+
+        cues = []
+        srt_local = self.work / "subtitles.srt"
+        if burned and srt_local.exists():
+            cues = burn_mod.parse_srt(srt_local)
+
+        visuals = []
+        for v in self.resolved["video"]:
+            mid = v["start"] + v["duration"] / 2.0
+            visuals.append({
+                "ref": v["ref"], "start": v["start"], "duration": v["duration"],
+                "src": self._path_for(v),
+                "captioned": any(a <= mid <= b for a, b, _ in cues),
+            })
+
+        with spinner.spin(f"verifying {len(visuals)} visuals against their sources",
+                          40 + 2 * len(visuals)):
+            raw = verify_mod.collect(self.t, delivery, visuals,
+                                     self.resolved["scenes"])
+        res = verify_mod.check(self.resolved, raw, visuals, burned,
+                               target_lufs=float(outcfg.get("target_lufs", -16)),
+                               recipe=self.rec)
+        verify_mod.report(res)
+        if not res["ok"]:
+            raise SystemExit("delivery failed verification — see the checks above")
+        return res
 
 
 def run(t, cfg, rec: dict, work: Path, manifest: dict | None = None,

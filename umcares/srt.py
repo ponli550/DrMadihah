@@ -14,7 +14,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from . import log
+from . import log, safe
 
 
 def duration(path: Path) -> float:
@@ -45,44 +45,113 @@ def speech_spans(path: Path, min_sil: float = 0.16) -> tuple:
     return spans, total
 
 
-def fit(spans: list, n: int, total: float) -> list:
-    """Force the detected spans to exactly n caption slots."""
+def _to_wall(spans: list, x: float, is_start: bool) -> float:
+    """Map a position measured in SPEECH time onto the real timeline.
+
+    Silences are skipped, so `x` seconds of speaking maps to wherever the
+    speaker actually was at that point. A boundary landing exactly on the end
+    of a span is pushed to the start of the next one when it begins a cue, so
+    a caption never appears during a pause.
+    """
+    rem = x
+    for i, (a, b) in enumerate(spans):
+        d = b - a
+        if rem < d - 1e-6:
+            return a + rem
+        if abs(rem - d) <= 1e-6:
+            if is_start and i + 1 < len(spans):
+                return spans[i + 1][0]
+            return b
+        rem -= d
+    return spans[-1][1]
+
+
+def allocate(spans: list, lines: list, total: float) -> list:
+    """Give each caption line a slice of the detected speech.
+
+    Forcing the detected spans to equal the number of lines -- merging across
+    the smallest gap, splitting the longest span down the middle -- is a guess,
+    and it is wrong whenever the counts differ, which is most of the time: a
+    speaker pauses mid-sentence, or runs two sentences together. The midpoint
+    of a span has no relationship to where one sentence ends and the next
+    begins, so captions drift early or late.
+
+    Instead each line takes a share of the total SPEAKING time proportional to
+    its length, and that share is mapped back onto the timeline with the
+    silences skipped. Longer lines get more time because they take longer to
+    say, and every cue still lands inside real speech.
+    """
+    if not lines:
+        return []
     if not spans:
-        step = total / max(1, n)
-        return [(i * step, (i + 1) * step) for i in range(n)]
-    spans = list(spans)
-    while len(spans) > n:                       # merge across the smallest gap
-        gaps = [(spans[i + 1][0] - spans[i][1], i) for i in range(len(spans) - 1)]
-        _, idx = min(gaps)
-        spans[idx] = (spans[idx][0], spans[idx + 1][1])
-        del spans[idx + 1]
-    while len(spans) < n:                       # split the longest span
-        lengths = [(e - s, i) for i, (s, e) in enumerate(spans)]
-        _, idx = max(lengths)
-        s, e = spans[idx]
-        mid = (s + e) / 2
-        spans[idx] = (s, mid)
-        spans.insert(idx + 1, (mid, e))
-    return spans
+        step = total / len(lines)
+        return [(i * step, (i + 1) * step) for i in range(len(lines))]
+
+    # A floor on the weight, not just on the final duration: a five-character
+    # remnant like "kuiz." is proportionally almost nothing, and a caption that
+    # flashes for a quarter of a second is worse than a slightly uneven one.
+    weights = [max(MIN_WEIGHT, len(l)) for l in lines]
+    tot_w = float(sum(weights))
+    speech = sum(b - a for a, b in spans)
+
+    bounds, acc = [0.0], 0.0
+    for w in weights:
+        acc += w
+        bounds.append(speech * acc / tot_w)
+
+    out = []
+    for i in range(len(lines)):
+        s0 = _to_wall(spans, bounds[i], True)
+        e0 = _to_wall(spans, bounds[i + 1], False)
+        if e0 <= s0:
+            e0 = min(total, s0 + 0.6)
+        out.append((s0, e0))
+    return out
+
+
+MIN_WEIGHT = 14          # shortest line length used for timing purposes
+
+
+def _wrap(sent: str, width: int) -> list:
+    words, out, line = sent.split(), [], ""
+    for w in words:
+        if len(line) + len(w) + 1 > width and line:
+            out.append(line.strip())
+            line = w
+        else:
+            line = f"{line} {w}".strip()
+    if line:
+        out.append(line.strip())
+    return out
 
 
 def split_sentences(text: str, max_chars: int = 62) -> list:
-    """Sentences, further wrapped so no caption line runs too long to read."""
+    """Sentences, wrapped into balanced caption lines.
+
+    Greedy wrapping fills each line to the limit and leaves the remainder on the
+    last one, which strands orphans: "...cemerlang dalam kuiz." wraps to a final
+    line of just "kuiz.". An orphan reads badly and, once cue timing follows
+    text length, it also gets almost no time on screen.
+
+    So wrap twice: once greedily to learn how many lines the sentence needs,
+    then again at an even width for that many lines.
+    """
     sents = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text.strip()) if s.strip()]
     out = []
     for sent in sents:
         if len(sent) <= max_chars:
             out.append(sent)
             continue
-        words, line = sent.split(), ""
-        for w in words:
-            if len(line) + len(w) + 1 > max_chars and line:
-                out.append(line.strip() + ",")
-                line = w
-            else:
-                line = f"{line} {w}".strip()
-        if line:
-            out.append(line)
+        n = len(_wrap(sent, max_chars))
+        even = min(max_chars, max(20, -(-len(sent) // n) + 6))
+        lines = _wrap(sent, even)
+        while len(lines) > n and even < max_chars:      # keep the line count
+            even = min(max_chars, even + 3)
+            lines = _wrap(sent, even)
+        # No invented punctuation on continuation lines. Appending a comma
+        # produced captions like "serta hadiah kepada," — text the speaker
+        # never said, in a file the client proofreads line by line.
+        out.extend(lines)
     return out or [text.strip()]
 
 
@@ -125,7 +194,7 @@ def build(recipe: dict, resolved: dict, vo_dir: Path, out: Path,
             continue
         lines = split_sentences(text, max_chars)
         spans, total = speech_spans(wav, min_sil=min_silence)
-        spans = fit(spans, len(lines), total)
+        spans = allocate(spans, lines, total)
         for (s, e), line in zip(spans, lines):
             cues.append((entry["start"] + s, entry["start"] + e, line))
 
@@ -146,8 +215,14 @@ def build(recipe: dict, resolved: dict, vo_dir: Path, out: Path,
     body = "\n".join(
         f"{i}\n{ts(s)} --> {ts(e)}\n{txt}\n"
         for i, (s, e, txt) in enumerate(cues, 1))
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(body, encoding="utf-8")
+    # An SRT is cheap to regenerate and expensive to re-edit: the client has
+    # corrected this file by hand before. Keep the previous version beside it so
+    # a regeneration cannot quietly discard those corrections.
+    prev = safe.backup_local(out)
+    if prev:
+        log.step(f"previous subtitles kept at {prev.name}")
+    with safe.staged_local(out, min_bytes=1) as tmp:
+        tmp.write_text(body, encoding="utf-8")
 
     last = cues[-1][1] if cues else 0.0
     if last > resolved.get("total", 0) + 0.5:

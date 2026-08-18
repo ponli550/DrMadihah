@@ -360,7 +360,7 @@ back to a real filename.
 
 ## Rendering (`umcares render`)
 
-Nine stages, run in order, each idempotent — a re-run redoes only what changed:
+Ten stages, run in order, each idempotent — a re-run redoes only what changed:
 
 | stage | does |
 |---|---|
@@ -372,7 +372,8 @@ Nine stages, run in order, each idempotent — a re-run redoes only what changed
 | `build` | lay the timeline, mute sync audio, sweep orphans |
 | `subs` | SRT timed from the delivered audio |
 | `export` | master out of Premiere |
-| `deliver` | music bed + soft subtitles -> H.264 |
+| `deliver` | music bed + subtitles -> H.264 |
+| `verify` | compare the delivered file against its own sources |
 
 ```bash
 umcares render --file recipe.json --only voice   # one stage
@@ -394,3 +395,84 @@ so the timeline is built from what exists rather than what was hoped for.
 
 A scene is stretched to cover `narration_lead + narration + scene_pad`. Visuals
 with an explicit `duration` are respected; the rest absorb the slack.
+
+Stretching is capped at each asset's real length. A clip asked to run longer
+than it is does not stretch, it ends — and the rest of the slot is black. So a
+scene that cannot cover its narration is reported and the build refuses:
+
+```
+SHORT s3_pengenalan: 22.0s of visuals for 23.53s of narration — 2.53s would be BLACK
+```
+
+## Verifying a delivery (`umcares verify`)
+
+Every other stage reports success from an exit code, which is not the same as
+being right. A card patch once went to a dead code path: ffmpeg ran for four
+minutes and returned the correct duration, the correct loudness and the correct
+byte count, with the wrong picture. Nothing failed.
+
+`verify` compares the delivered file against the things it was made from:
+
+| check | catches |
+|---|---|
+| picture | a visual that is missing, stale, out of order, or black — each one sampled mid-shot and compared with its source asset |
+| captions | a burn that silently did nothing, or captions at the wrong time |
+| loudness | per scene, not integrated: an integrated figure once looked fine while the opening card sat at −39 dB |
+| duration | drift from the resolved timeline |
+| black | gaps nothing else noticed |
+
+```bash
+umcares verify --file recipe.json      # no re-render; ~40s for a 4-minute cut
+```
+
+It runs as the last render stage too, so `umcares render --file recipe.json`
+will not report success on a delivery it cannot vouch for.
+
+Frames are compared as coarse greyscale thumbnails — the question is "is this
+the right shot", not "is this bit-identical", which after re-encoding it never
+will be. The caption strip is sampled separately and excluded from the picture
+comparison only while a cue is actually on screen; excluding it always is how
+the stale card slipped through in the first place.
+
+## Staged writes
+
+Nothing overwrites an output in place. Anything that costs minutes, costs API
+credits, or holds a human's edits is written to a sibling `.part` file and moved
+over the original only once it is complete and non-empty:
+
+| output | why it is staged |
+|---|---|
+| `master.mxf` | minutes to export, and the input to every delivery |
+| delivery `.mp4` | a four-minute encode; a failure used to truncate the good one |
+| cards | each one is spent json2video credits, which can run out mid-session |
+| narration WAVs | metered too |
+| `subtitles.srt` | cheap to regenerate, expensive to re-edit — the previous version is kept as `.srt.prev` |
+
+The reason is not hypothetical. Two title cards were deleted to force a
+regeneration, the render API turned out to be out of credits, and the originals
+no longer existed — recovering them meant extracting a text layer back out of a
+6.8 GB master. A failed render now leaves the previous file exactly as it was.
+
+An empty or suspiciously small result is refused rather than committed, so a
+broken encode cannot replace a working master with a 4 KB stub.
+
+## Tests
+
+```bash
+python3 -m unittest discover -s tests -t .     # 123 tests, no network, ~6ms
+```
+
+Every test is a regression test for a bug that actually shipped: the resolver
+stretching a clip past its own length into black, captions split at the
+midpoint of a pause, `UM Press` spelled out letter by letter, an orphaned
+one-word caption line, music lifting before the last sentence ended. The suite
+covers the pure logic — resolution, caption timing, SSML, filter strings,
+loudness envelopes, config precedence, staged writes — none of which needs a
+remote, Premiere, or an API key.
+
+Two suites are about wiring rather than logic, because the worst bug of the
+project was a feature passed to a branch that never runs: ffmpeg encoded for
+four minutes, reported the right duration and loudness, and produced the wrong
+picture. `test_delivery_wiring.py` asserts on the ffmpeg invocation itself —
+that patches and captions reach the filter graph, that the encode targets a
+staged path, and that the destination changes only through a commit.

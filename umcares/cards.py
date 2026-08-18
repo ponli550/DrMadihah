@@ -28,7 +28,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from . import log
+from . import log, safe
 
 STYLE = {
     "surface": "#0d2847",
@@ -38,6 +38,15 @@ STYLE = {
     "font": "Inter",
 }
 STRIP_W, STRIP_H = 1600, 250
+
+# A burned caption of two lines reaches roughly y=918 on a 1080 frame, so the
+# logo strip must finish above that or the two collide -- which is exactly what
+# happened on the v10 closing card.
+LOGO_BOTTOM = 905
+LOGO_MAX_W = 1480
+# The footnote sits at y=620 and runs to about 655, so the strip starts below
+# that; 905 - 235 = 670 leaves clearance at both ends.
+LOGO_MAX_H = 235
 
 
 def cy(screen_y: int) -> int:
@@ -152,34 +161,68 @@ def content_box(path: Path, tol: int = 12) -> tuple:
 
 
 def build_strip(logo_dir: Path, filenames: list, out: Path,
-                pad_x: float = 0.86, pad_y: float = 0.74) -> Path:
-    """Row of logos on white, each trimmed then CONTAINED in its slot.
+                margin: float = 0.04, gap: float = 0.03,
+                row_gap: int = 34, vpad: int = 16,
+                rows: int | None = None) -> Path:
+    """Sponsor logos on white, all at ONE shared height, over one or two rows.
 
-    Matching logo heights is wrong: a wide mark overflows its slot and gets
-    clipped, while a mark that is small inside a large canvas looks tiny next
-    to its neighbours. Trim the whitespace, then fit by width AND height.
+    History, because each attempt fixed the previous one and broke something:
+
+      * Fixed height for every logo CLIPPED the wide marks.
+      * Contain-fitting each into an equal slot stopped the clipping but made
+        them look like different sizes -- these marks run 2.0:1 to 4.7:1, and a
+        row of partners should not read as a hierarchy.
+      * Equal slots at one shared height let the widest mark (ICYM, 4.65:1)
+        drag every other logo down to a quarter of the available height.
+      * One row of six is itself the limit: six marks averaging 3.2:1 across
+        1600px can only ever be ~59px tall, which reads as tiny on a 1080 frame.
+
+    So: proportional widths at one shared height, and **two rows** once there
+    are five or more logos. Halving the marks per row nearly doubles the height
+    each one can take. The canvas is sized to the content instead of being a
+    fixed 250px band, so nothing downstream has to guess how much of it is
+    whitespace.
     """
     n = len(filenames)
-    slot = STRIP_W // n
-    box_w, box_h = int(slot * pad_x), int(STRIP_H * pad_y)
-
-    inputs = ["-f", "lavfi", "-i", f"color=white:s={STRIP_W}x{STRIP_H}"]
     for fn in filenames:
-        p = logo_dir / fn
-        if not p.exists():
-            raise SystemExit(f"logo not found: {p}")
-        inputs += ["-i", str(p)]
+        if not (logo_dir / fn).exists():
+            raise SystemExit(f"logo not found: {logo_dir / fn}")
+    if rows is None:
+        rows = 2 if n >= 5 else 1
+
+    boxes = [content_box(logo_dir / fn) for fn in filenames]
+    aspects = [cw / ch for _, _, cw, ch in boxes]
+
+    per = -(-n // rows)                      # ceil, so row 1 is never short
+    groups = [list(range(i, min(i + per, n))) for i in range(0, n, per)]
+    rows = len(groups)
+
+    # tallest height every ROW can take while still fitting the strip width
+    height = min(
+        (STRIP_W * (1 - 2 * margin) - STRIP_W * gap * (len(g) - 1)) /
+        sum(aspects[i] for i in g)
+        for g in groups)
+    height = max(1, int(round(height)))
+    widths = [max(1, int(round(height * a))) for a in aspects]
+
+    canvas_h = rows * height + (rows - 1) * row_gap + 2 * vpad
+    inputs = ["-f", "lavfi", "-i", f"color=white:s={STRIP_W}x{canvas_h}"]
+    for fn in filenames:
+        inputs += ["-i", str(logo_dir / fn)]
 
     fc, prev = [], "0:v"
-    for i, fn in enumerate(filenames):
-        cx, cy_, cw, ch = content_box(logo_dir / fn)
-        scale = min(box_w / cw, box_h / ch)
-        tw, th = max(1, int(cw * scale)), max(1, int(ch * scale))
-        fc.append(f"[{i+1}:v]crop={cw}:{ch}:{cx}:{cy_},scale={tw}:{th}[l{i}]")
-        cxpos = slot * i + slot // 2
-        tag = f"v{i}"
-        fc.append(f"[{prev}][l{i}]overlay=x={cxpos}-overlay_w/2:y=(H-overlay_h)/2[{tag}]")
-        prev = tag
+    for r, g in enumerate(groups):
+        span = sum(widths[i] for i in g) + int(STRIP_W * gap) * (len(g) - 1)
+        x = (STRIP_W - span) // 2
+        y = vpad + r * (height + row_gap)
+        for i in g:
+            cx, cy_, cw, ch = boxes[i]
+            fc.append(f"[{i+1}:v]crop={cw}:{ch}:{cx}:{cy_},"
+                      f"scale={widths[i]}:{height}[l{i}]")
+            tag = f"v{i}"
+            fc.append(f"[{prev}][l{i}]overlay=x={x}:y={y}[{tag}]")
+            prev = tag
+            x += widths[i] + int(STRIP_W * gap)
 
     out.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(["ffmpeg", "-y", "-loglevel", "error"] + inputs +
@@ -232,8 +275,20 @@ def render(env: dict, cards: dict, durations: dict, style: dict | None = None,
     raise RuntimeError(f"card render timed out (project {pid})")
 
 
+def _fit_strip(path: Path) -> tuple:
+    """Scale a strip into the logo box and return (w, h, y) for the overlay."""
+    dims = subprocess.run(
+        ["ffprobe", "-v", "error", "-select_streams", "v:0",
+         "-show_entries", "stream=width,height", "-of", "csv=p=0", str(path)],
+        capture_output=True, text=True).stdout.strip().split(",")
+    sw, sh = int(dims[0]), int(dims[1])
+    scale = min(LOGO_MAX_W / sw, LOGO_MAX_H / sh)
+    w, h = int(sw * scale) & ~1, int(sh * scale) & ~1
+    return w, h, LOGO_BOTTOM - h
+
+
 def split_and_composite(url: str, order: list, cards: dict, out_dir: Path,
-                        logo_dir: Path, strip_y: int = 862) -> list:
+                        logo_dir: Path) -> list:
     """Cut the movie into one clip per card, overlaying logo strips."""
     out_dir.mkdir(parents=True, exist_ok=True)
     src = out_dir / "_cards_full.mp4"
@@ -247,22 +302,27 @@ def split_and_composite(url: str, order: list, cards: dict, out_dir: Path,
         card = cards.get(cid, {})
         logos = card.get("logos") or []
 
-        if logos:
-            strip = build_strip(logo_dir, logos, out_dir / f"strip_{cid}.jpg")
-            subprocess.run(
-                ["ffmpeg", "-y", "-loglevel", "error",
-                 "-ss", f"{t:.3f}", "-t", f"{dur:.3f}", "-i", str(src),
-                 "-i", str(strip),
-                 "-filter_complex",
-                 f"[1:v]scale=1200:188[s];[0:v][s]overlay=x=(W-w)/2:y={strip_y}",
-                 "-c:v", "libx264", "-preset", "medium", "-crf", "17",
-                 "-r", "50", "-an", str(dest)], check=True)
-        else:
-            subprocess.run(
-                ["ffmpeg", "-y", "-loglevel", "error",
-                 "-ss", f"{t:.3f}", "-t", f"{dur:.3f}", "-i", str(src),
-                 "-c:v", "libx264", "-preset", "medium", "-crf", "17",
-                 "-r", "50", "-an", str(dest)], check=True)
+        # Staged: a card that already exists is the product of API credits that
+        # may not be available again -- as happened mid-session -- so it is only
+        # replaced once its successor is complete.
+        with safe.staged_local(dest, min_bytes=1000) as tmp:
+            if logos:
+                strip = build_strip(logo_dir, logos, out_dir / f"strip_{cid}.jpg")
+                sw, sh, sy = _fit_strip(strip)
+                subprocess.run(
+                    ["ffmpeg", "-y", "-loglevel", "error",
+                     "-ss", f"{t:.3f}", "-t", f"{dur:.3f}", "-i", str(src),
+                     "-i", str(strip),
+                     "-filter_complex",
+                     f"[1:v]scale={sw}:{sh}[s];[0:v][s]overlay=x=(W-w)/2:y={sy}",
+                     "-c:v", "libx264", "-preset", "medium", "-crf", "17",
+                     "-r", "50", "-an", str(tmp)], check=True)
+            else:
+                subprocess.run(
+                    ["ffmpeg", "-y", "-loglevel", "error",
+                     "-ss", f"{t:.3f}", "-t", f"{dur:.3f}", "-i", str(src),
+                     "-c:v", "libx264", "-preset", "medium", "-crf", "17",
+                     "-r", "50", "-an", str(tmp)], check=True)
 
         results.append({"card": cid, "file": str(dest), "duration": dur})
         t += dur

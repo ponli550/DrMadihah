@@ -19,6 +19,7 @@ from . import __version__
 from .config import Config
 from .premiere import Premiere
 from .transport import connect
+from . import voice as voice_mod
 
 PRESET_1080P50 = doctor.PRESET_1080P50
 
@@ -61,6 +62,38 @@ def cmd_auth(args, cfg):
         log.warn("UMC_SSH_PASSWORD is set but sshpass is missing: "
                  "brew install hudochenkov/sshpass/sshpass")
     log.out(info)
+    return 0
+
+
+def cmd_verify(args, cfg):
+    """Verify the delivery without re-rendering anything."""
+    rec = recipe_mod.apply_defaults(
+        recipe_mod.load(Path(args.file).expanduser()), cfg.defaults())
+    work = cfg.root / ".umcares"
+    t = _transport(args, cfg)
+    out = render_mod.run(t, cfg, rec, work, stages=["verify"])
+    log.out(out.get("verify", out))
+    return 0
+
+
+def cmd_preview(args, cfg):
+    """Render one phrase to a WAV so pronunciation can be checked quickly."""
+    text = " ".join(args.text)
+    if not text:
+        log.err("give some text to preview")
+        return 2
+
+    voice_cfg = {}
+    if args.voice:
+        vpath = Path(args.voice).expanduser()
+        vdata = recipe_mod.load(vpath) if vpath.exists() else {}
+        voice_cfg = vdata.get("voice") if "voice" in vdata else vdata
+
+    out_dir = cfg.root / ".umcares" / "previews"
+    with spinner.spin("rendering preview", 60):
+        wav = voice_mod.preview(cfg.env, text, voice_cfg, out_dir)
+    log.ok(f"preview: {wav}")
+    log.out({"wav": str(wav), "text": text})
     return 0
 
 
@@ -233,6 +266,13 @@ def _workdir(cfg) -> Path:
     return d
 
 
+def _load_durations(work: Path) -> dict:
+    dpath = work / "durations.json"
+    if dpath.exists():
+        return json.loads(dpath.read_text(encoding="utf-8"))
+    return {}
+
+
 def cmd_inspect(args, cfg):
     """Probe the media and render contact sheets so an AI can see it."""
     t = _transport(args, cfg)
@@ -315,7 +355,8 @@ def cmd_recipe(args, cfg):
         log.warn("no manifest yet — run `umcares inspect` to check media references too")
 
     if args.action == "validate":
-        problems = recipe_mod.validate(rec, manifest)
+        durations = _load_durations(work)
+        problems = recipe_mod.validate(rec, manifest, durations)
         if problems:
             for pr in problems:
                 log.err(pr)
@@ -361,7 +402,8 @@ def cmd_render(args, cfg):
     if mpath.exists():
         manifest = json.loads(mpath.read_text(encoding="utf-8"))
 
-    problems = recipe_mod.validate(rec, manifest)
+    durations = _load_durations(work)
+    problems = recipe_mod.validate(rec, manifest, durations)
     if problems:
         for pr in problems:
             log.err(pr)
@@ -386,6 +428,25 @@ def cmd_render(args, cfg):
     t = _transport(args, cfg)
     res = render_mod.run(t, cfg, rec, work, manifest=manifest,
                          stages=stages, force=args.force)
+
+    # Pull a local delivery copy whenever the pipeline produced one.
+    if "deliver" in stages and "deliver" in res:
+        outcfg = rec.get("output") or {}
+        remote_delivery = f"{cfg.remote.root.rstrip('/')}/" \
+                          f"{outcfg.get('delivery', 'exports/delivery.mp4').lstrip('/')}"
+        local_dir = cfg.root / "deliveries"
+        local_dir.mkdir(parents=True, exist_ok=True)
+        local_path = local_dir / Path(remote_delivery).name
+        try:
+            with spinner.spin(f"pulling delivery to {local_path.name}", 120):
+                t.pull(remote_delivery, local_path)
+            log.ok(f"local delivery: {local_path}")
+            log.step(f"remote delivery: {remote_delivery}")
+            res["local_delivery"] = str(local_path)
+        except Exception as e:
+            log.warn(f"could not copy delivery locally: {e}")
+            log.step(f"remote delivery: {remote_delivery}")
+
     log.out(res)
     return 0
 
@@ -521,8 +582,8 @@ def cmd_premiere(args, cfg):
         out = args.out or f"{cfg.remote.exports}/master.mxf"
         preset = args.preset or PRESET_1080P50
         t.run(f"mkdir -p {cfg.remote.exports}", timeout=60)
-        with spinner.spin("exporting master from Premiere", 450):
-            res = p.export(out, preset, timeout=args.timeout)
+        with spinner.spin("exporting master from Premiere", 450) as sp:
+            res = p.export(out, preset, timeout=args.timeout, spinner=sp)
         log.out(res)
         return 0
 
@@ -698,6 +759,16 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--setup-key", action="store_true",
                    help="generate a dedicated key and install it on the remote")
     a.set_defaults(func=cmd_auth)
+
+    vf = sub.add_parser("verify",
+                        help="check a delivered file against the recipe's sources")
+    vf.add_argument("--file", required=True, help="recipe .json or .yml")
+    vf.set_defaults(func=cmd_verify)
+
+    pr = sub.add_parser("preview", help="render one phrase to WAV for pronunciation review")
+    pr.add_argument("text", nargs="+", help="phrase to render")
+    pr.add_argument("--voice", help="recipe or voice config JSON")
+    pr.set_defaults(func=cmd_preview)
 
     c = sub.add_parser("config", help="read/write settings and credentials")
     c.add_argument("action",

@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import shlex
 
-from . import log
+from . import log, safe
 from .transport import Transport
 
 
@@ -50,50 +50,27 @@ DEFAULT_SECTIONS = [
 ]
 
 
-def _require_libass(t: Transport) -> None:
-    """Burning needs libass. Fail here with a fix, not inside ffmpeg's output."""
-    r = t.run("ffmpeg -hide_banner -filters 2>/dev/null | grep -c ' subtitles '",
-              timeout=60)
-    if (r.stdout.strip() or "0") == "0":
-        raise SystemExit(
-            "this ffmpeg has no `subtitles` filter (built without libass), so "
-            "subtitles cannot be burned in.\n"
-            "  brew install ffmpeg      # the bottle includes libass\n"
-            "  or set subtitle mode to `soft` (umcares config init --section subtitles)")
-
-
-def _ass_arg(srt: str, style: dict | None) -> str:
-    """An ffmpeg `subtitles=` argument, with the path escaped for the filter.
-
-    Colons and commas separate filter options, so a path containing either
-    truncates the filter instead of erroring — hence the escaping.
-    """
-    path = srt.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
-    style = style or {}
-    ink = str(style.get("ink", "#ffffff")).lstrip("#")
-    # ASS colours are &HBBGGRR, i.e. reversed from hex RGB
-    bgr = ink[4:6] + ink[2:4] + ink[0:2] if len(ink) == 6 else "ffffff"
-    force = (f"FontName={style.get('font', 'Inter')},Fontsize=22,"
-             f"PrimaryColour=&H00{bgr},OutlineColour=&H90000000,"
-             f"BorderStyle=3,Outline=1,Shadow=0,MarginV=48")
-    return f"'{path}':force_style='{force}'"
-
-
 def mix(t: Transport, master: str, music: str, srt: str, out: str,
         sections: list | None = None, music_start: float = 25.0,
         fade_out_at: float | None = None, crf: int = 18,
-        lang: str = "msa", burn: bool = False, style: dict | None = None,
-        timeout: int = 3600) -> dict:
+        lang: str = "msa", burn_pngs: list | None = None,
+        patches: list | None = None, timeout: int = 3600) -> dict:
     """Lay music under a master, add subtitles, encode delivery H.264.
 
     Subtitles go in one of two ways:
       soft (default) a real track the viewer can switch off, and which
                      stays editable — a typo is a remux, not a re-render
-      burn           painted into the picture, for players and social
-                     platforms that ignore subtitle tracks entirely
+      burn           painted into the picture, for players that hide or
+                     ignore subtitle tracks. Passed in as pre-rendered PNG
+                     bands (see burn.py) because this ffmpeg has no libass;
+                     they join the SAME filter graph as the music mix, so the
+                     delivery is still encoded exactly once.
     """
     sections = sections or DEFAULT_SECTIONS
     gain = build_envelope(sections)
+    # Encode beside the target, not over it: a four-minute encode that fails
+    # part way should leave the previous delivery intact rather than truncated.
+    stage = safe.part_path(out)
 
     dur = _duration(t, master)
     mdur = _duration(t, music)
@@ -116,16 +93,33 @@ def mix(t: Transport, master: str, music: str, srt: str, out: str,
         f"[voice][musg]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
     )
 
-    if srt and burn:
-        _require_libass(t)
-        filt += f";[0:v]subtitles={_ass_arg(srt, style)}[vout]"
-        vmap, sub_in, sub_map, sub_codec = '-map "[vout]"', "", "", ""
+    if burn_pngs or patches:
+        from . import burn as burn_mod
+        # extra inputs follow master(0) + music(1) + music(2)
+        nxt, chains, src = 3, [], "0:v"
+        extra_in = []
+        if patches:
+            # patches go UNDER the captions: a replaced card still gets captions
+            chains.append(burn_mod.patch_chain(patches, nxt, src, "patched"))
+            extra_in += [f"-i {_q(p['file'])}" for p in patches]
+            nxt += len(patches); src = "patched"
+        if burn_pngs:
+            chains.append(burn_mod.overlay_chain(burn_pngs, nxt, src, "vout"))
+            extra_in += [f"-i {_q(e['png'])}" for e in burn_pngs]
+        else:
+            chains.append(f"[{src}]null[vout]")
+        filt += ";" + ";".join(c for c in chains if c)
+        sub_in = " ".join(extra_in)
+        vmap, sub_map, sub_codec = '-map "[vout]"', "", ""
     else:
         vmap = "-map 0:v:0"
         sub_in = f"-i {_q(srt)}" if srt else ""
         sub_map = "-map 3:0" if srt else ""
+        # `default` matters: a subtitle track without it is present but hidden
+        # in most players, which looks identical to having no subtitles at all
         sub_codec = (f"-c:s mov_text -metadata:s:s:0 language={lang} "
-                     f'-metadata:s:s:0 title="Bahasa Malaysia"') if srt else ""
+                     f'-metadata:s:s:0 title="Bahasa Malaysia" '
+                     f"-disposition:s:0 default") if srt else ""
 
     script = f'''
 set -e
@@ -134,56 +128,84 @@ ffmpeg -y -loglevel error -i {_q(master)} -i {_q(music)} -i {_q(music)} {sub_in}
   {vmap} -map "[aout]" {sub_map} \
   -c:v libx264 -preset medium -crf {crf} -pix_fmt yuv420p \
   -c:a aac -b:a 192k -ac 2 {sub_codec} \
-  -movflags +faststart {_q(out)}
+  -movflags +faststart {_q(stage)}
 echo "---RESULT---"
 ffprobe -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate \
-  -show_entries format=duration,size -of json {_q(out)}
-ffmpeg -hide_banner -i {_q(out)} -af ebur128=framelog=quiet -f null - 2>&1 \
+  -show_entries format=duration,size -of json {_q(stage)}
+ffmpeg -hide_banner -i {_q(stage)} -af ebur128=framelog=quiet -f null - 2>&1 \
   | grep -E "^\\s+(I|LRA):" | head -2
 '''
     r = t.run_script(script, timeout=timeout)
-    r.check("mix")
+    try:
+        r.check("mix")
+    except Exception:
+        safe.discard_remote(t, out)
+        raise
+    safe.commit_remote(t, out, min_bytes=1_000_000)
     return _parse_result(r.stdout, out)
 
 
 def mux_subtitles_only(t: Transport, src: str, srt: str, out: str,
-                       lang: str = "msa", burn: bool = False,
-                       style: dict | None = None, crf: int = 18,
-                       timeout: int = 1800) -> dict:
+                       lang: str = "msa", burn_pngs: list | None = None,
+                       patches: list | None = None,
+                       crf: int = 18, timeout: int = 1800) -> dict:
     """Replace the subtitle track without touching video or audio.
 
     Soft subtitles stream-copy both video and audio, so this is fast and cannot
     change the mix. Burning cannot: painting pixels means re-encoding the video,
     which costs time and one generation of quality. Audio is still copied.
     """
-    if burn:
-        _require_libass(t)
+    stage = safe.part_path(out)
+    if burn_pngs or patches:
+        from . import burn as burn_mod
+        nxt, chains, src_lbl, extra = 1, [], "0:v", []
+        if patches:
+            chains.append(burn_mod.patch_chain(patches, nxt, src_lbl, "patched"))
+            extra += [f"-i {_q(p['file'])}" for p in patches]
+            nxt += len(patches); src_lbl = "patched"
+        if burn_pngs:
+            chains.append(burn_mod.overlay_chain(burn_pngs, nxt, src_lbl, "vout"))
+            extra += [f"-i {_q(e['png'])}" for e in burn_pngs]
+        else:
+            chains.append(f"[{src_lbl}]null[vout]")
+        chain = ";".join(c for c in chains if c)
+        pngs = " ".join(extra)
         script = f'''
 set -e
-ffmpeg -y -loglevel error -i {_q(src)} \
-  -vf "subtitles={_ass_arg(srt, style)}" \
+ffmpeg -y -loglevel error -i {_q(src)} {pngs} \
+  -filter_complex "{chain}" -map "[vout]" -map 0:a \
   -c:v libx264 -preset medium -crf {crf} -pix_fmt yuv420p -c:a copy \
-  -movflags +faststart {_q(out)}
+  -movflags +faststart {_q(stage)}
 echo "---RESULT---"
 ffprobe -v error -select_streams v:0 -show_entries stream=width,height \
-  -show_entries format=duration,size -of json {_q(out)}
+  -show_entries format=duration,size -of json {_q(stage)}
 '''
         r = t.run_script(script, timeout=timeout)
-        r.check("subtitle burn")
+        try:
+            r.check("subtitle burn")
+        except Exception:
+            safe.discard_remote(t, out)
+            raise
+        safe.commit_remote(t, out, min_bytes=1_000_000)
         return _parse_result(r.stdout, out)
 
     script = f'''
 set -e
 ffmpeg -y -loglevel error -i {_q(src)} -i {_q(srt)} \
   -map 0:v:0 -map 0:a:0 -map 1:0 -c:v copy -c:a copy \
-  -c:s mov_text -metadata:s:s:0 language={lang} \
-  -movflags +faststart {_q(out)}
+  -c:s mov_text -metadata:s:s:0 language={lang} -disposition:s:0 default \
+  -movflags +faststart {_q(stage)}
 echo "---RESULT---"
 ffprobe -v error -select_streams v:0 -show_entries stream=width,height \
-  -show_entries format=duration,size -of json {_q(out)}
+  -show_entries format=duration,size -of json {_q(stage)}
 '''
     r = t.run_script(script, timeout=timeout)
-    r.check("subtitle mux")
+    try:
+        r.check("subtitle mux")
+    except Exception:
+        safe.discard_remote(t, out)
+        raise
+    safe.commit_remote(t, out, min_bytes=1_000_000)
     return _parse_result(r.stdout, out)
 
 

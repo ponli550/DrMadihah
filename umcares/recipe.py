@@ -77,13 +77,18 @@ def apply_defaults(recipe: dict, defaults: dict) -> dict:
 VISUAL_KINDS = ("clip", "card", "kenburns", "still", "black")
 
 
-def validate(recipe: dict, manifest: dict | None = None) -> list:
+def validate(recipe: dict, manifest: dict | None = None,
+             durations: dict | None = None) -> list:
     """Return a list of problems. Empty means the recipe is renderable.
 
     When a manifest is supplied, referenced media is checked for existence and
     for the VP9 trap, so a bad reference is caught before any rendering starts.
+    When durations are supplied, every referenced asset is checked for a
+    measured duration, so missing or zero-length entries are caught early.
     """
     problems = []
+    durations = durations or {}
+    check_durations = bool(durations)
     AUDIO_MODES = ("keep", "duck", "mute")
     known, unusable = set(), set()
     if manifest:
@@ -135,6 +140,28 @@ def validate(recipe: dict, manifest: dict | None = None) -> list:
             if kind == "card" and v["card"] not in cards:
                 problems.append(f"{sid}.visuals[{j}]: card `{v['card']}` is not defined")
 
+            # compute the same key the resolver uses
+            if kind == "clip":
+                key = f"clip:{v['clip']}"
+            elif kind == "card":
+                key = f"card:{v['card']}"
+            elif kind == "kenburns":
+                ref = (v["kenburns"] or {}).get("id") or f"{sid}_kb{j}"
+                key = f"kenburns:{ref}"
+            else:
+                key = f"{kind}:{v.get(kind)}"
+
+            # duration checks: missing durations produce black frames
+            if check_durations and kind != "black":
+                if key not in durations:
+                    problems.append(
+                        f"{sid}.visuals[{j}]: no measured duration for `{key}` — "
+                        f"run the relevant render stage first")
+                elif float(durations.get(key) or 0) <= 0:
+                    problems.append(
+                        f"{sid}.visuals[{j}]: duration for `{key}` is zero — "
+                        f"re-render or check the source")
+
             if kind == "kenburns":
                 photos = (v["kenburns"] or {}).get("photos") or []
                 if len(photos) < 2:
@@ -144,6 +171,26 @@ def validate(recipe: dict, manifest: dict | None = None) -> list:
                         if ph not in known:
                             problems.append(
                                 f"{sid}.visuals[{j}]: photo `{ph}` not in the media dir")
+
+        # narration and extra audio also need real durations
+        if check_durations and scene.get("narration"):
+            vo_key = f"vo:{sid}"
+            if vo_key not in durations:
+                problems.append(
+                    f"{sid}: narration has no measured duration for `{vo_key}` — "
+                    f"run the `voice` stage first")
+            elif float(durations.get(vo_key) or 0) <= 0:
+                problems.append(f"{sid}: narration duration for `{vo_key}` is zero")
+
+        if check_durations:
+            for k, extra in enumerate(scene.get("audio") or []):
+                akey = f"audio:{extra['file']}"
+                if akey not in durations:
+                    problems.append(
+                        f"{sid}.audio[{k}]: no measured duration for `{akey}`")
+                elif float(durations.get(akey) or 0) <= 0:
+                    problems.append(
+                        f"{sid}.audio[{k}]: duration for `{akey}` is zero")
 
     music = recipe.get("music") or {}
     if music.get("file") and music.get("ducking"):
@@ -174,7 +221,7 @@ def resolve(recipe: dict, durations: dict) -> dict:
     pad = float((recipe.get("meta") or {}).get("scene_pad") or 0.5)
     vo_lead = float((recipe.get("meta") or {}).get("narration_lead") or 0.5)
 
-    video, audio, missing = [], [], []
+    video, audio, missing, short = [], [], [], []
     t = 0.0
     timeline = []
 
@@ -214,18 +261,45 @@ def resolve(recipe: dict, durations: dict) -> dict:
                           # duck = present but under narration, mute = silent
                           "audio": v.get("audio", "mute")})
 
-        # a scene must last at least as long as its narration plus the pad
+        # A scene must last at least as long as its narration plus the pad.
+        #
+        # Stretching is capped at each asset's REAL length. A clip asked to run
+        # longer than it is does not stretch, it ends -- and the rest of the
+        # slot is black. That is the single failure mode this resolver exists to
+        # make impossible, so an uncoverable scene is reported, never rendered.
+        def cap(f):
+            real = durations.get(f["key"])
+            return float(real) if real else None
+
         need = (vo_lead + vo_len + pad) if vo_len else 0.0
         have = sum(f["duration"] for f in fixed)
-        if open_slots and need > have:
-            extra = (need - have) / len(open_slots)
-            for idx in open_slots:
-                fixed[idx]["duration"] += extra
-            have = sum(f["duration"] for f in fixed)
-        elif need > have and fixed:
-            # stretch the last visual rather than leave the voice over black
-            fixed[-1]["duration"] += (need - have)
-            have = need
+        targets = open_slots or ([len(fixed) - 1] if fixed else [])
+        while need > have + 1e-6 and targets:
+            room = []
+            for idx in targets:
+                c = cap(fixed[idx])
+                if c is None or c > fixed[idx]["duration"] + 1e-6:
+                    room.append(idx)
+            if not room:
+                break
+            share = (need - have) / len(room)
+            grew = 0.0
+            for idx in room:
+                c = cap(fixed[idx])
+                add = share if c is None else min(share, c - fixed[idx]["duration"])
+                fixed[idx]["duration"] += add
+                grew += add
+            have += grew
+            if grew < 1e-6:
+                break
+
+        if need > have + 0.05:
+            short.append({
+                "scene": sid,
+                "narration": round(vo_len, 2),
+                "visuals": round(have, 2),
+                "shortfall": round(need - have, 2),
+            })
 
         for f in fixed:
             if f["duration"] <= 0:
@@ -258,6 +332,7 @@ def resolve(recipe: dict, durations: dict) -> dict:
         "audio": audio,
         "scenes": timeline,
         "missing": sorted(set(missing)),
+        "short": short,
     }
 
 
@@ -282,4 +357,7 @@ def summary(resolved: dict) -> str:
                      f"({s['duration']:.1f}s, narration {s['narration']:.1f}s)")
     if resolved["missing"]:
         lines.append(f"  MISSING durations: {', '.join(resolved['missing'])}")
+    for sh in resolved.get("short") or []:
+        lines.append(f"  SHORT {sh['scene']}: {sh['visuals']}s of visuals for "
+                     f"{sh['narration']}s of narration — {sh['shortfall']}s would be BLACK")
     return "\n".join(lines)
