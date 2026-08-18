@@ -28,6 +28,8 @@ import time
 import urllib.request
 from pathlib import Path
 
+import hashlib
+
 from . import log, safe
 
 DEFAULT_VOICE = "ms-MY-OsmanNeural"
@@ -38,9 +40,11 @@ def esc(t: str) -> str:
 
 
 def mark_text(text: str, english_terms: list, acronyms: list,
-              spelling: dict | None = None) -> str:
-    """Tag acronyms and English loanwords for correct pronunciation."""
+              spelling: dict | None = None,
+              phoneme_terms: dict | None = None) -> str:
+    """Tag acronyms, English loanwords and explicit IPA pronunciations."""
     spelling = spelling or {"scam siber": "scam cyber"}
+    phoneme_terms = phoneme_terms or {}
     out = esc(text)
 
     # acronyms first, so the <lang> wrapper cannot nest inside itself
@@ -56,6 +60,13 @@ def mark_text(text: str, english_terms: list, acronyms: list,
         else:
             repl = f'<say-as interpret-as="characters">{esc(acro)}</say-as>'
         out = re.sub(re.escape(esc(acro)), repl, out)
+
+    # explicit IPA overrides take precedence over language switching
+    for term in sorted(phoneme_terms, key=len, reverse=True):
+        ipa = phoneme_terms[term]
+        out = re.sub(re.escape(esc(term)),
+                     f'<phoneme alphabet="ipa" ph="{esc(ipa)}">{esc(term)}</phoneme>',
+                     out, flags=re.IGNORECASE)
 
     for term in sorted(english_terms or [], key=len, reverse=True):
         spoken = spelling.get(term, term)
@@ -95,12 +106,14 @@ def build_ssml(text: str, voice_cfg: dict, emphasis: str | None = None) -> str:
     rate = voice_cfg.get("rate", "0%")
     body = flow(
         mark_text(text, voice_cfg.get("english_terms") or [],
-                  voice_cfg.get("acronyms") or []),
+                  voice_cfg.get("acronyms") or [],
+                  phoneme_terms=voice_cfg.get("phoneme_terms") or {}),
         fillers=bool(voice_cfg.get("fillers")))
 
     if emphasis:
         marked = mark_text(emphasis, voice_cfg.get("english_terms") or [],
-                           voice_cfg.get("acronyms") or [])
+                           voice_cfg.get("acronyms") or [],
+                           phoneme_terms=voice_cfg.get("phoneme_terms") or {})
         if marked in body:
             body = body.replace(
                 marked,
@@ -229,3 +242,28 @@ def from_recipe(recipe: dict) -> list:
         if text:
             out.append((scene["id"], text, scene.get("emphasis")))
     return out
+
+
+def preview(env: dict, text: str, voice_cfg: dict, out_dir: Path) -> Path:
+    """Render one phrase to a local WAV for pronunciation review."""
+    if not env.get("JSON2VIDEO_API_KEY"):
+        raise SystemExit("JSON2VIDEO_API_KEY is required to render preview")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tag = hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
+    wav = out_dir / f"preview_{tag}.wav"
+    mp4 = out_dir / f"preview_{tag}.mp4"
+
+    out = render(env, [("preview", text, None)], voice_cfg)
+    url = out.get("url")
+    if not url:
+        raise RuntimeError("preview render returned no url")
+
+    with urllib.request.urlopen(url, timeout=600) as r, open(mp4, "wb") as fh:
+        fh.write(r.read())
+
+    subprocess.run(
+        ["ffmpeg", "-y", "-loglevel", "error", "-i", str(mp4),
+         "-vn", "-acodec", "pcm_s16le", "-ar", "48000", "-ac", "1", str(wav)],
+        check=True)
+    mp4.unlink(missing_ok=True)
+    return wav

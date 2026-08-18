@@ -77,13 +77,18 @@ def apply_defaults(recipe: dict, defaults: dict) -> dict:
 VISUAL_KINDS = ("clip", "card", "kenburns", "still", "black")
 
 
-def validate(recipe: dict, manifest: dict | None = None) -> list:
+def validate(recipe: dict, manifest: dict | None = None,
+             durations: dict | None = None) -> list:
     """Return a list of problems. Empty means the recipe is renderable.
 
     When a manifest is supplied, referenced media is checked for existence and
     for the VP9 trap, so a bad reference is caught before any rendering starts.
+    When durations are supplied, every referenced asset is checked for a
+    measured duration, so missing or zero-length entries are caught early.
     """
     problems = []
+    durations = durations or {}
+    check_durations = bool(durations)
     AUDIO_MODES = ("keep", "duck", "mute")
     known, unusable = set(), set()
     if manifest:
@@ -135,6 +140,28 @@ def validate(recipe: dict, manifest: dict | None = None) -> list:
             if kind == "card" and v["card"] not in cards:
                 problems.append(f"{sid}.visuals[{j}]: card `{v['card']}` is not defined")
 
+            # compute the same key the resolver uses
+            if kind == "clip":
+                key = f"clip:{v['clip']}"
+            elif kind == "card":
+                key = f"card:{v['card']}"
+            elif kind == "kenburns":
+                ref = (v["kenburns"] or {}).get("id") or f"{sid}_kb{j}"
+                key = f"kenburns:{ref}"
+            else:
+                key = f"{kind}:{v.get(kind)}"
+
+            # duration checks: missing durations produce black frames
+            if check_durations and kind != "black":
+                if key not in durations:
+                    problems.append(
+                        f"{sid}.visuals[{j}]: no measured duration for `{key}` — "
+                        f"run the relevant render stage first")
+                elif float(durations.get(key) or 0) <= 0:
+                    problems.append(
+                        f"{sid}.visuals[{j}]: duration for `{key}` is zero — "
+                        f"re-render or check the source")
+
             if kind == "kenburns":
                 photos = (v["kenburns"] or {}).get("photos") or []
                 if len(photos) < 2:
@@ -144,6 +171,26 @@ def validate(recipe: dict, manifest: dict | None = None) -> list:
                         if ph not in known:
                             problems.append(
                                 f"{sid}.visuals[{j}]: photo `{ph}` not in the media dir")
+
+        # narration and extra audio also need real durations
+        if check_durations and scene.get("narration"):
+            vo_key = f"vo:{sid}"
+            if vo_key not in durations:
+                problems.append(
+                    f"{sid}: narration has no measured duration for `{vo_key}` — "
+                    f"run the `voice` stage first")
+            elif float(durations.get(vo_key) or 0) <= 0:
+                problems.append(f"{sid}: narration duration for `{vo_key}` is zero")
+
+        if check_durations:
+            for k, extra in enumerate(scene.get("audio") or []):
+                akey = f"audio:{extra['file']}"
+                if akey not in durations:
+                    problems.append(
+                        f"{sid}.audio[{k}]: no measured duration for `{akey}`")
+                elif float(durations.get(akey) or 0) <= 0:
+                    problems.append(
+                        f"{sid}.audio[{k}]: duration for `{akey}` is zero")
 
     music = recipe.get("music") or {}
     if music.get("file") and music.get("ducking"):

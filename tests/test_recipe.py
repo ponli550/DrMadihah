@@ -69,6 +69,34 @@ class Validate(unittest.TestCase):
         r = rec([{"id": "s1", "visuals": [{"kenburns": {"photos": ["a.jpg"]}}]}])
         self.assertTrue(any(">= 2 photos" in p for p in recipe.validate(r)))
 
+    def test_missing_durations_are_ignored_when_no_durations_dict_given(self):
+        """First-run structural validation must not require rendered files."""
+        r = rec([{"id": "s1", "narration": "hi",
+                  "visuals": [{"clip": "a.mp4"}]}])
+        self.assertEqual(recipe.validate(r, durations={}), [])
+
+    def test_flags_missing_visual_duration_when_durations_exist(self):
+        r = rec([{"id": "s1", "visuals": [{"clip": "a.mp4"}]}])
+        problems = recipe.validate(r, durations={"clip:other.mp4": 5.0})
+        self.assertTrue(any("no measured duration" in p for p in problems))
+
+    def test_flags_zero_visual_duration(self):
+        r = rec([{"id": "s1", "visuals": [{"clip": "a.mp4"}]}])
+        problems = recipe.validate(r, durations={"clip:a.mp4": 0})
+        self.assertTrue(any("duration for `clip:a.mp4` is zero" in p for p in problems))
+
+    def test_flags_missing_narration_duration(self):
+        r = rec([{"id": "s1", "narration": "hi",
+                  "visuals": [{"clip": "a.mp4", "duration": 10}]}])
+        problems = recipe.validate(r, durations={"clip:a.mp4": 10.0})
+        self.assertTrue(any("narration has no measured duration" in p for p in problems))
+
+    def test_flags_missing_scene_audio_duration(self):
+        r = rec([{"id": "s1", "visuals": [{"clip": "a.mp4", "duration": 10}],
+                  "audio": [{"file": "x.wav"}]}])
+        problems = recipe.validate(r, durations={"clip:a.mp4": 10.0})
+        self.assertTrue(any("audio[0]: no measured duration" in p for p in problems))
+
 
 class Resolve(unittest.TestCase):
     def test_places_visuals_back_to_back(self):

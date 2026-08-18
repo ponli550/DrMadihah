@@ -22,6 +22,7 @@ installs a small dispatcher plus the helpers the CLI needs.
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 from . import log
@@ -108,6 +109,17 @@ $.global.umFind = function (mediaPath) {
   };
   walk(app.project.rootItem);
   return hit;
+};
+
+$.global.umRefresh = function (pathsJson) {
+  var paths = JSON.parse(pathsJson);
+  var ok = [], missing = [], failed = [];
+  for (var i = 0; i < paths.length; i++) {
+    var it = umFind(paths[i]);
+    if (!it) { missing.push(paths[i]); continue; }
+    try { it.refreshMedia(); ok.push(paths[i]); } catch (e) { failed.push(paths[i] + ': ' + String(e)); }
+  }
+  return JSON.stringify({ok: ok, missing: missing, failed: failed});
 };
 
 $.global.umClear = function () {
@@ -254,7 +266,7 @@ class Premiere:
             f"  $.evalFile(new File({json.dumps(core)}));"
             "  " + HELPERS_JSX +
             "  return JSON.stringify({core: typeof importFiles, dispatch: typeof mcpDispatch,"
-            "    place: typeof umPlace, report: typeof umReport});"
+            "    place: typeof umPlace, report: typeof umReport, refresh: typeof umRefresh});"
             "} catch(e){ return 'ERR ' + String(e); } })()"
         )
         res = self.eval_jsx(jsx, timeout=90)
@@ -378,6 +390,20 @@ class Premiere:
             raise RuntimeError(f"import failed: {res}")
         return int(res or 0)
 
+    def refresh_media(self, paths: list) -> dict:
+        """Force Premiere to reload changed files already in the project."""
+        if not paths:
+            return {"ok": [], "missing": [], "failed": []}
+        jsx = (
+            "(function(){ try {"
+            f"  return umRefresh({json.dumps(json.dumps(paths))});"
+            "} catch(e){ return 'ERR ' + String(e); } })()"
+        )
+        res = self.eval_jsx(jsx, timeout=120)
+        if res.startswith("ERR"):
+            raise RuntimeError(f"refresh failed: {res}")
+        return json.loads(res)
+
     def build(self, plan: dict) -> dict:
         """Lay out video/audio from a plan, then tidy and report.
 
@@ -436,7 +462,8 @@ class Premiere:
             raise RuntimeError(f"build failed: {res}")
         return json.loads(res)
 
-    def export(self, out_path: str, preset: str, timeout: int = 1800) -> dict:
+    def export(self, out_path: str, preset: str, timeout: int = 1800,
+               spinner=None) -> dict:
         """Export the active sequence, without risking the previous master.
 
         Premiere writes straight over its target. A failed or interrupted export
@@ -459,7 +486,53 @@ class Premiere:
             "    seconds: Math.round((new Date().getTime()-t0)/1000)});"
             "} catch(e){ return 'ERR ' + String(e); } })()"
         )
-        res = self.eval_jsx(jsx, timeout=timeout)
+
+        # eval_jsx blocks until Premiere finishes. Run it in a thread so the
+        # main thread can poll the growing part file and update the spinner.
+        import threading
+        result = {"value": None}
+
+        def _run_export():
+            result["value"] = self.eval_jsx(jsx, timeout=timeout)
+
+        t = threading.Thread(target=_run_export, daemon=True)
+        t.start()
+
+        def _size() -> int:
+            try:
+                return self.t.size(out_path)
+            except Exception:
+                return 0
+
+        def _fmt_size(n: int) -> str:
+            if n > 1_000_000_000:
+                return f"{n / 1_000_000_000:.2f}GB"
+            if n > 1_000_000:
+                return f"{n / 1_000_000:.1f}MB"
+            if n > 1_000:
+                return f"{n / 1_000:.1f}kB"
+            return f"{n}B"
+
+        last_size, last_time = 0, time.time()
+        poll_interval = 10
+        while t.is_alive():
+            t.join(timeout=poll_interval)
+            if not t.is_alive():
+                break
+            now = time.time()
+            size = _size()
+            if spinner and size > last_size and now > last_time + 1:
+                elapsed = now - last_time
+                rate = (size - last_size) / elapsed
+                label = f"exporting master — {_fmt_size(size)}"
+                if rate > 0:
+                    label += f" @ {_fmt_size(int(rate))}/s"
+                spinner.update(label)
+                last_size, last_time = size, now
+
+        res = result["value"]
+        if res is None:
+            raise RuntimeError("export thread did not return a result")
         if not res.startswith("{"):
             raise RuntimeError(f"export failed: {res}")
         info = json.loads(res)

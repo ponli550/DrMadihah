@@ -168,9 +168,6 @@ class Transport:
 class SSHTransport(Transport):
     name = "ssh"
 
-    def __init__(self, target: str):
-        self.target = target
-
     def __init__(self, target: str, password: str = "", key: str = ""):
         self.target = target
         self.password = password
@@ -207,6 +204,16 @@ class SSHTransport(Transport):
             log.debug("UMC_SSH_PASSWORD set but sshpass is not installed")
             pw = ""
 
+        # If we have a key and the agent appears empty, load the key once.
+        # This fixes the common case where scripts pass transport=None and the
+        # agent has not been populated yet.
+        if key and not SSHTransport._agent_has_identities():
+            try:
+                subprocess.run(["ssh-add", key], capture_output=True, timeout=15)
+                log.debug("ssh-add loaded configured key")
+            except Exception as e:
+                log.debug(f"ssh-add failed: {e}")
+
         targets = [c for c in (remote.ssh_alias, f"{remote.user}@{remote.host}") if c]
         for use_pw in ([False, True] if pw else [False]):
             for target in targets:
@@ -224,6 +231,14 @@ class SSHTransport(Transport):
                 except (subprocess.TimeoutExpired, FileNotFoundError) as e:
                     log.debug(f"ssh '{target}' unavailable: {e}")
         return None
+
+    @staticmethod
+    def _agent_has_identities() -> bool:
+        try:
+            p = subprocess.run(["ssh-add", "-l"], capture_output=True, text=True, timeout=10)
+            return p.returncode == 0
+        except Exception:
+            return False
 
     def _login_path(self) -> str:
         """PATH as an interactive login shell sees it.
@@ -497,12 +512,13 @@ def _b64_text(blob: str) -> str:
 
 
 # --------------------------------------------------------------------------
-def connect(remote: Remote, prefer: str = "auto") -> Transport:
+def connect(remote: Remote, prefer: str | None = "auto") -> Transport:
     """Pick the best available transport.
 
     'auto' tries ssh first because it gives clean stdout and real exit codes,
     then falls back to an already-open tmux ssh pane.
     """
+    prefer = prefer or "auto"
     if prefer in ("auto", "ssh"):
         t = SSHTransport.probe(remote)
         if t:

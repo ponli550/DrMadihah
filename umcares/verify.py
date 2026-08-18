@@ -8,9 +8,9 @@ wrong picture. Nothing failed. It was caught by a human looking at a frame.
 
 So this compares the delivery against its sources:
 
-  picture   sample a frame at the middle of every visual and compare it with the
-            same moment of the source asset. Catches a visual that is missing,
-            stale, out of order, or black.
+  picture   sample three frames per visual (near start, middle, near end) and
+            compare them with the same moments of the source asset. Catches a
+            visual that is missing, stale, out of order, or black.
   captions  the same samples, lower band only. Where a cue is on screen the
             delivery must DIFFER from the source; where none is, it must match.
             Catches a burn that silently did nothing, and captions burned at the
@@ -31,6 +31,7 @@ import json
 import shlex
 
 from . import log
+from . import voice as voice_mod
 
 # One sample is a 64x24 greyscale image built from two crops stacked together:
 #
@@ -69,6 +70,22 @@ PICTURE_MATCH = 14.0
 CAPTION_MARGIN = 4.0
 
 
+def thresholds(recipe: dict | None = None) -> dict:
+    """Return active thresholds from env, recipe meta, or defaults."""
+    t = {"picture": PICTURE_MATCH, "caption": CAPTION_MARGIN}
+    env = __import__("os").environ
+    if env.get("UMC_VERIFY_PICTURE_MATCH"):
+        t["picture"] = float(env["UMC_VERIFY_PICTURE_MATCH"])
+    if env.get("UMC_VERIFY_CAPTION_MARGIN"):
+        t["caption"] = float(env["UMC_VERIFY_CAPTION_MARGIN"])
+    cfg = ((recipe or {}).get("meta") or {}).get("verify") or {}
+    if cfg.get("picture_match") is not None:
+        t["picture"] = float(cfg["picture_match"])
+    if cfg.get("caption_margin") is not None:
+        t["caption"] = float(cfg["caption_margin"])
+    return t
+
+
 def _q(p: str) -> str:
     return shlex.quote(p)
 
@@ -99,13 +116,19 @@ def _sample_lines(items: list) -> str:
     return "\n".join(out)
 
 
+def _sample_offsets(duration: float) -> list:
+    """Three sample points per visual: near start, middle, near end."""
+    d = max(0.0, duration)
+    return [min(0.5, d / 3.0), d / 2.0, max(d - 0.5, d * 2.0 / 3.0)]
+
+
 def collect(t, delivery: str, visuals: list, scenes: list) -> dict:
     """Run every measurement in ONE remote script and parse the results."""
     samples = []
     for i, v in enumerate(visuals):
-        mid = v["duration"] / 2.0
-        samples.append((f"d{i}", delivery, v["start"] + mid))
-        samples.append((f"s{i}", v["src"], mid))
+        for k, off in enumerate(_sample_offsets(v["duration"])):
+            samples.append((f"d{i}_{k}", delivery, v["start"] + off))
+            samples.append((f"s{i}_{k}", v["src"], off))
 
     lufs = "\n".join(
         f'echo "L|{s["scene"]}|$(ffmpeg -hide_banner -ss {s["start"]:.2f} '
@@ -143,10 +166,54 @@ ffmpeg -hide_banner -i {_q(delivery)} -vf blackdetect=d=0.4:pic_th=0.98 -f null 
             "lufs": lufs_by_scene, "black": blacks}
 
 
+def _is_testimoni(v: dict, scenes: list) -> bool:
+    """Testimonials have their own dialogue; caption checks are unreliable."""
+    if v.get("audio") == "keep":
+        return True
+    scene = next((s for s in scenes if s.get("scene") == v.get("scene")), {})
+    tags = scene.get("tags") or []
+    if isinstance(tags, str):
+        tags = [tags]
+    return "testimoni" in [str(t).lower() for t in tags]
+
+
+def check_text(recipe: dict) -> list:
+    """Warn when a narration term is not wrapped in the expected SSML tag."""
+    voice_cfg = recipe.get("voice") or {}
+    if not voice_cfg:
+        return []
+    checks = []
+    terms = []
+    for term in voice_cfg.get("acronyms") or []:
+        terms.append((term, "say-as"))
+    for term in voice_cfg.get("english_terms") or []:
+        terms.append((term, "lang"))
+    for term in voice_cfg.get("phoneme_terms") or []:
+        terms.append((term, "phoneme"))
+    for term in voice_cfg.get("arabic_terms") or []:
+        terms.append((term, "phoneme"))
+    for scene in recipe.get("scenes") or []:
+        text = (scene.get("narration") or "").strip()
+        if not text:
+            continue
+        ssml = voice_mod.build_ssml(text, voice_cfg)
+        for term, tag in terms:
+            if term.lower() not in text.lower():
+                continue
+            # crude: the SSML should contain the term inside the expected tag
+            if f"<{tag}" not in ssml:
+                checks.append(
+                    f"{scene.get('id')}: `{term}` not wrapped in <{tag}>"
+                )
+    return checks
+
+
 def check(resolved: dict, raw: dict, visuals: list, burned: bool,
-          target_lufs: float = -16.0, tolerance: float = 4.0) -> dict:
+          target_lufs: float = -16.0, tolerance: float = 4.0,
+          recipe: dict | None = None) -> dict:
     """Turn raw measurements into pass/fail findings."""
     findings, ok = [], True
+    thresh = thresholds(recipe)
 
     def add(name, passed, detail):
         nonlocal ok
@@ -160,28 +227,36 @@ def check(resolved: dict, raw: dict, visuals: list, burned: bool,
         f"{got:.2f}s (timeline says {want:.2f}s)")
 
     bad_pic, missing, cap_bad = [], [], []
+    scenes = resolved.get("scenes") or []
     for i, v in enumerate(visuals):
-        d, s = raw["thumbs"].get(f"d{i}"), raw["thumbs"].get(f"s{i}")
-        if not d or not s or len(d) < TW * TH or len(s) < TW * TH:
-            missing.append(v["ref"])
-            continue
-        band = PICTURE_ABOVE_CAPTION if (burned and v["captioned"]) else PICTURE_FULL
-        top = mad(_band(d, *band), _band(s, *band))
-        if top > PICTURE_MATCH:
-            bad_pic.append(f"{v['ref']}@{v['start']:.1f}s (diff {top:.1f})")
-        if burned:
-            low = mad(_band(d, *CAPTION_BAND), _band(s, *CAPTION_BAND))
-            # what the strip adds over and above plain re-encoding noise
-            delta = low - mad(_band(d, *PICTURE_ABOVE_CAPTION),
-                              _band(s, *PICTURE_ABOVE_CAPTION))
-            if v["captioned"] and delta < CAPTION_MARGIN:
-                cap_bad.append(
-                    f"{v['ref']}@{v['start']:.1f}s cue due but strip unchanged "
-                    f"(+{delta:.1f})")
-            elif not v["captioned"] and delta > PICTURE_MATCH:
-                cap_bad.append(
-                    f"{v['ref']}@{v['start']:.1f}s no cue but strip differs "
-                    f"(+{delta:.1f})")
+        testimoni = _is_testimoni(v, scenes)
+        diffs = []
+        for k in range(len(_sample_offsets(v["duration"]))):
+            d, s = raw["thumbs"].get(f"d{i}_{k}"), raw["thumbs"].get(f"s{i}_{k}")
+            if not d or not s or len(d) < TW * TH or len(s) < TW * TH:
+                missing.append(f"{v['ref']}@{k}")
+                continue
+            band = PICTURE_ABOVE_CAPTION if (burned and v["captioned"]) else PICTURE_FULL
+            top = mad(_band(d, *band), _band(s, *band))
+            diffs.append(top)
+            if top > thresh["picture"]:
+                bad_pic.append(f"{v['ref']} sample{k} (diff {top:.1f})")
+
+        if burned and not testimoni and diffs:
+            # caption check uses the middle sample; the edge samples are for
+            # picture robustness only
+            d = raw["thumbs"].get(f"d{i}_1")
+            s = raw["thumbs"].get(f"s{i}_1")
+            if d and s:
+                low = mad(_band(d, *CAPTION_BAND), _band(s, *CAPTION_BAND))
+                delta = low - mad(_band(d, *PICTURE_ABOVE_CAPTION),
+                                  _band(s, *PICTURE_ABOVE_CAPTION))
+                if v["captioned"] and delta < thresh["caption"]:
+                    cap_bad.append(
+                        f"{v['ref']} cue due but strip unchanged (+{delta:.1f})")
+                elif not v["captioned"] and delta > thresh["picture"]:
+                    cap_bad.append(
+                        f"{v['ref']} no cue but strip differs (+{delta:.1f})")
 
     add("picture matches sources", not bad_pic,
         "every visual matches its source" if not bad_pic
@@ -206,6 +281,13 @@ def check(resolved: dict, raw: dict, visuals: list, burned: bool,
 
     add("no black gaps", not raw["black"],
         "none detected" if not raw["black"] else "; ".join(raw["black"][:5]))
+
+    if recipe:
+        text_warnings = check_text(recipe)
+        if text_warnings:
+            findings.append({"check": "narration terms tagged",
+                             "ok": True,
+                             "detail": "warnings: " + "; ".join(text_warnings[:5])})
 
     return {"ok": ok, "checks": findings,
             "failed": [f for f in findings if not f["ok"]]}

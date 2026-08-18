@@ -45,6 +45,7 @@ class Renderer:
         self.durations: dict = {}
         self._resolved: dict | None = None
         self.report: dict = {"stages": {}}
+        self._changed_paths: set = set()
 
         self.vo_local = work / "vo"
         self.cards_local = work / "cards"
@@ -128,14 +129,19 @@ class Renderer:
                 log.debug(f"  {f['scene']}: {f['duration']}s")
 
         # measure and upload
+        rendered_ids = {s[0] for s in missing}
         for sid, _, _ in scenes:
             wav = self.vo_local / f"{sid}.wav"
             if not wav.exists():
                 continue
             self.durations[f"vo:{sid}"] = srt_mod.duration(wav)
             dest = self._remote("assets", "vo", f"{sid}.wav")
-            if not self._have_remote(dest):
+            # A file we just rendered must overwrite any remote copy, otherwise
+            # a stale file on the remote can be mixed into the delivery even
+            # though the local copy is correct.
+            if sid in rendered_ids or not self._have_remote(dest):
                 self.t.push(wav, dest)
+                self._changed_paths.add(dest)
         self._save_durations()
         return {"rendered": len(scenes)}
 
@@ -159,14 +165,16 @@ class Renderer:
         else:
             log.ok(f"cards: {len(cards)} already rendered")
 
+        rendered_cards = set(need)
         for cid in cards:
             f = self.cards_local / f"card_{cid}.mp4"
             if not f.exists():
                 continue
             self.durations[f"card:{cid}"] = srt_mod.duration(f)
             dest = self._remote("assets", "cards", f"card_{cid}.mp4")
-            if not self._have_remote(dest):
+            if cid in rendered_cards or not self._have_remote(dest):
                 self.t.push(f, dest)
+                self._changed_paths.add(dest)
         self._save_durations()
         return {"rendered": len(need)}
 
@@ -197,6 +205,7 @@ class Renderer:
                               20 + 25 * len(photos)):
                 res = media.kenburns(self.t, dest, paths, dur)
             self.durations[f"kenburns:{kid}"] = res["duration"]
+            self._changed_paths.add(dest)
             built += 1
         self._save_durations()
         return {"built": built, "total": len(jobs)}
@@ -257,6 +266,11 @@ class Renderer:
         with spinner.spin("healing Premiere + importing assets", 30 + 2 * len(paths)):
             p.heal()
             n = p.import_files(paths)
+            if self._changed_paths:
+                refresh = sorted(self._changed_paths & set(paths))
+                if refresh:
+                    log.step(f"refreshing {len(refresh)} changed project item(s)")
+                    p.refresh_media(refresh)
         return {"imported": n, "requested": len(paths)}
 
     def stage_build(self):
@@ -315,8 +329,8 @@ class Renderer:
         preset = outcfg.get("preset_path") or self.remote.preset_path
         self.t.run(f"mkdir -p {self._remote('exports')}", timeout=60)
         p = Premiere(self.t, self.remote)
-        with spinner.spin("exporting master from Premiere", 480):
-            res = p.export(master, preset, timeout=2400)
+        with spinner.spin("exporting master from Premiere", 480) as sp:
+            res = p.export(master, preset, timeout=2400, spinner=sp)
         self.master = master
         return res
 
@@ -422,7 +436,8 @@ class Renderer:
             raw = verify_mod.collect(self.t, delivery, visuals,
                                      self.resolved["scenes"])
         res = verify_mod.check(self.resolved, raw, visuals, burned,
-                               target_lufs=float(outcfg.get("target_lufs", -16)))
+                               target_lufs=float(outcfg.get("target_lufs", -16)),
+                               recipe=self.rec)
         verify_mod.report(res)
         if not res["ok"]:
             raise SystemExit("delivery failed verification — see the checks above")

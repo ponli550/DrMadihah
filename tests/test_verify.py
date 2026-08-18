@@ -20,7 +20,17 @@ def visual(ref="a.mp4", start=0.0, duration=10.0, captioned=False):
 
 
 def raw(thumbs, duration=10.0, lufs=None, black=None):
-    return {"duration": duration, "thumbs": thumbs,
+    # The verifier now samples three frames per visual; expand single-frame
+    # test fixtures so existing cases keep exercising the decision logic.
+    expanded = {}
+    for key, val in thumbs.items():
+        if "_" in key or not (key.startswith("d") or key.startswith("s")):
+            expanded[key] = val
+            continue
+        prefix, idx = key[0], key[1:]
+        for s in range(3):
+            expanded[f"{prefix}{idx}_{s}"] = val
+    return {"duration": duration, "thumbs": expanded,
             "lufs": lufs if lufs is not None else {}, "black": black or []}
 
 
@@ -151,6 +161,59 @@ class Check(unittest.TestCase):
         r = raw({"d0": thumb(), "s0": thumb()},
                 black=["black_start:12.0 black_end:14.5"])
         self.assertIn("no black gaps", failed(verify.check(self.RESOLVED, r, v, False)))
+
+    def test_testimoni_skips_caption_band_check(self):
+        """Testimonials have their own dialogue; caption checks are unreliable."""
+        # delivery and source differ only in the caption strip
+        d = bytes([100]) * (verify.TW * (verify.FULL_ROWS - 2)) + \
+            bytes([255]) * (verify.TW * 2) + \
+            bytes([255]) * (verify.TW * verify.CAP_ROWS)
+        r = raw({"d0": d, "s0": thumb(full=100, caption=100)})
+        v = [visual(captioned=True)]
+        # mark as testimoni via audio=keep
+        v[0]["audio"] = "keep"
+        res = verify.check(self.RESOLVED, r, v, burned=True)
+        self.assertTrue(res["ok"], "testimoni must skip caption-band checks")
+
+
+class Thresholds(unittest.TestCase):
+    def test_defaults_are_returned_without_config(self):
+        t = verify.thresholds(None)
+        self.assertEqual(t["picture"], verify.PICTURE_MATCH)
+        self.assertEqual(t["caption"], verify.CAPTION_MARGIN)
+
+    def test_recipe_meta_overrides_defaults(self):
+        rec = {"meta": {"verify": {"picture_match": 5.0, "caption_margin": 1.0}}}
+        t = verify.thresholds(rec)
+        self.assertEqual(t["picture"], 5.0)
+        self.assertEqual(t["caption"], 1.0)
+
+
+class TextCheck(unittest.TestCase):
+    def test_no_warning_when_english_term_is_wrapped_by_build_ssml(self):
+        rec = {"voice": {"english_terms": ["garage"]},
+               "scenes": [{"id": "s1", "narration": "park at the garage"}]}
+        self.assertEqual(verify.check_text(rec), [])
+
+    def test_no_warning_when_term_is_properly_wrapped_in_source(self):
+        rec = {"voice": {"english_terms": ["garage"]},
+               "scenes": [{"id": "s1",
+                           "narration": "park at the <lang xml:lang=\"en-US\">garage</lang>"}]}
+        self.assertEqual(verify.check_text(rec), [])
+
+    def test_warns_when_ssml_lacks_expected_tag(self):
+        """Regression guard: if build_ssml stops wrapping a term, warn."""
+        rec = {"voice": {"english_terms": ["garage"]},
+               "scenes": [{"id": "s1", "narration": "park at the garage"}]}
+        # Simulate a regression where the SSML somehow omits the tag entirely.
+        import umcares.voice as voice_mod
+        original = voice_mod.build_ssml
+        try:
+            voice_mod.build_ssml = lambda text, cfg: "<speak>park at the garage</speak>"
+            warnings = verify.check_text(rec)
+        finally:
+            voice_mod.build_ssml = original
+        self.assertTrue(any("garage" in w and "<lang" in w for w in warnings))
 
 
 if __name__ == "__main__":
