@@ -14,12 +14,15 @@ def thumb(full: int = 100, caption: int = 100) -> bytes:
             bytes([caption]) * (verify.TW * verify.CAP_ROWS))
 
 
-def visual(ref="a.mp4", start=0.0, duration=10.0, captioned=False):
+def visual(ref="a.mp4", start=0.0, duration=10.0, captioned=False,
+           kind="clip", audio="mute", scene="s1"):
     return {"ref": ref, "start": start, "duration": duration,
-            "src": f"/src/{ref}", "captioned": captioned}
+            "src": f"/src/{ref}", "captioned": captioned,
+            "kind": kind, "audio": audio, "scene": scene}
 
 
-def raw(thumbs, duration=10.0, lufs=None, black=None):
+def raw(thumbs, duration=10.0, lufs=None, black=None, regions=None,
+        edges=None, sync=None):
     # The verifier now samples three frames per visual; expand single-frame
     # test fixtures so existing cases keep exercising the decision logic.
     expanded = {}
@@ -31,7 +34,8 @@ def raw(thumbs, duration=10.0, lufs=None, black=None):
         for s in range(3):
             expanded[f"{prefix}{idx}_{s}"] = val
     return {"duration": duration, "thumbs": expanded,
-            "lufs": lufs if lufs is not None else {}, "black": black or []}
+            "lufs": lufs if lufs is not None else {}, "black": black or [],
+            "regions": regions or {}, "edges": edges or {}, "sync": sync or {}}
 
 
 def failed(result):
@@ -214,6 +218,153 @@ class TextCheck(unittest.TestCase):
         finally:
             voice_mod.build_ssml = original
         self.assertTrue(any("garage" in w and "<lang" in w for w in warnings))
+
+
+def region_thumb(v: int = 100, n: int = 64 * 24) -> bytes:
+    return bytes([v]) * n
+
+
+def edge_thumb(fill: int, edge: int = -1) -> bytes:
+    """64x18 grey thumb; rows filled with `fill`, or `edge` in the outer rows."""
+    rows = [[fill] * verify.TW for _ in range(verify.FULL_ROWS)]
+    if edge >= 0:
+        for r in range(verify.EDGE_ROWS):
+            rows[r] = [edge] * verify.TW
+        for r in range(verify.FULL_ROWS - verify.EDGE_ROWS, verify.FULL_ROWS):
+            rows[r] = [edge] * verify.TW
+    return b"".join(bytes(r) for r in rows)
+
+
+class Correlate(unittest.TestCase):
+    # a non-periodic envelope with a single loud burst at 0.75s
+    BURST = [0.0] * 30 + [1.0] * 12 + [0.0] * 22
+
+    def test_aligned_envelopes_have_zero_offset(self):
+        off, peak = verify.correlate_offset(self.BURST, self.BURST)
+        self.assertEqual(off, 0.0)
+        self.assertGreater(peak, 0.99)
+
+    def test_late_source_audio_is_reported_positive(self):
+        late = [0.0] * 6 + self.BURST[:len(self.BURST) - 6]
+        off, peak = verify.correlate_offset(self.BURST, late)
+        self.assertAlmostEqual(off, 6 * verify.SYNC_BIN, places=2)
+        self.assertGreater(peak, 0.8)
+
+    def test_early_source_audio_is_reported_negative(self):
+        early = self.BURST[6:] + [0.0] * 6
+        off, peak = verify.correlate_offset(self.BURST, early)
+        self.assertAlmostEqual(off, -6 * verify.SYNC_BIN, places=2)
+        self.assertGreater(peak, 0.8)
+
+    def test_unrelated_envelopes_score_low_peak(self):
+        a = [1.0 if i % 3 == 0 else 0.0 for i in range(64)]
+        b = [1.0 if i % 7 == 0 else 0.0 for i in range(64)]
+        off, peak = verify.correlate_offset(a, b)
+        self.assertLess(peak, 0.6)
+
+
+class Regions(unittest.TestCase):
+    RESOLVED = {"total": 10.0, "scenes": []}
+    REC = {"meta": {"verify": {"regions": {
+        "taqwa_logo": {"scene": "s1", "box": [0.1, 0.2, 0.3, 0.15]}}}},
+        "scenes": []}
+
+    def check(self, r, v):
+        return verify.check(self.RESOLVED, r, v, False, recipe=self.REC)
+
+    def test_region_matching_source_passes(self):
+        v = [visual(kind="card", scene="s1")]
+        r = raw({"d0": thumb(), "s0": thumb()},
+                regions={"taqwa_logo:d0": region_thumb(),
+                         "taqwa_logo:s0": region_thumb()})
+        self.assertTrue(self.check(r, v)["ok"])
+
+    def test_region_differing_from_source_fails(self):
+        v = [visual(kind="card", scene="s1")]
+        r = raw({"d0": thumb(), "s0": thumb()},
+                regions={"taqwa_logo:d0": region_thumb(200),
+                         "taqwa_logo:s0": region_thumb(50)})
+        res = self.check(r, v)
+        self.assertIn("qc region taqwa_logo", failed(res))
+
+    def test_region_gone_blank_in_delivery_fails(self):
+        v = [visual(kind="card", scene="s1")]
+        structured = bytearray(region_thumb(90))
+        structured[0:80] = bytes([255] * 80)   # a strong blob: sd well above 5
+        flat = region_thumb(90)
+        r = raw({"d0": thumb(), "s0": thumb()},
+                regions={"taqwa_logo:d0": bytes(flat),
+                         "taqwa_logo:s0": bytes(structured)})
+        res = self.check(r, v)
+        self.assertIn("qc region taqwa_logo", failed(res))
+
+    def test_region_missing_samples_fail_not_skip(self):
+        v = [visual(kind="card", scene="s1")]
+        r = raw({"d0": thumb(), "s0": thumb()}, regions={})
+        res = self.check(r, v)
+        self.assertIn("qc region taqwa_logo", failed(res))
+
+    def test_region_scene_with_no_visual_fails(self):
+        v = [visual(kind="card", scene="s2")]
+        r = raw({"d0": thumb(), "s0": thumb()},
+                regions={"taqwa_logo:d0": region_thumb(),
+                         "taqwa_logo:s0": region_thumb()})
+        res = self.check(r, v)
+        self.assertIn("qc region taqwa_logo", failed(res))
+
+
+class Edges(unittest.TestCase):
+    RESOLVED = {"total": 10.0, "scenes": []}
+
+    def test_flat_card_passes(self):
+        v = [visual(kind="card", scene="s1")]
+        r = raw({"d0": thumb(), "s0": thumb()}, edges={"0": edge_thumb(60)})
+        self.assertTrue(verify.check(self.RESOLVED, r, v, False)["ok"])
+
+    def test_content_touching_top_edge_fails(self):
+        v = [visual(kind="card", scene="s1")]
+        r = raw({"d0": thumb(), "s0": thumb()},
+                edges={"0": edge_thumb(60, edge=255)})
+        res = verify.check(self.RESOLVED, r, v, False)
+        self.assertIn("card edges clean", failed(res))
+
+    def test_clip_visuals_are_not_edge_checked(self):
+        v = [visual(kind="clip", scene="s1")]
+        r = raw({"d0": thumb(), "s0": thumb()}, edges={})
+        self.assertTrue(verify.check(self.RESOLVED, r, v, False)["ok"])
+
+
+class Sync(unittest.TestCase):
+    RESOLVED = {"total": 10.0, "scenes": []}
+
+    def test_aligned_kept_audio_passes(self):
+        env = [0.0] * 50 + [1.0] * 10 + [0.0] * 40
+        v = [visual(audio="keep")]
+        r = raw({"d0": thumb(), "s0": thumb()},
+                sync={"0": {"d": env, "s": env}})
+        self.assertTrue(verify.check(self.RESOLVED, r, v, False)["ok"])
+
+    def test_drifted_kept_audio_fails(self):
+        env = [0.0] * 50 + [1.0] * 10 + [0.0] * 40
+        late = [0.0] * 16 + env[:len(env) - 16]   # 16 bins * 25ms = 0.4s late
+        v = [visual(audio="keep")]
+        r = raw({"d0": thumb(), "s0": thumb()},
+                sync={"0": {"d": env, "s": late}})
+        res = verify.check(self.RESOLVED, r, v, False)
+        self.assertIn("audio sync with source", failed(res))
+
+    def test_low_peak_envelopes_are_skipped_not_failed(self):
+        a = [1.0 if i % 3 == 0 else 0.0 for i in range(64)]
+        b = [1.0 if i % 7 == 0 else 0.0 for i in range(64)]
+        v = [visual(audio="keep")]
+        r = raw({"d0": thumb(), "s0": thumb()},
+                sync={"0": {"d": a, "s": b}})
+        self.assertTrue(verify.check(self.RESOLVED, r, v, False)["ok"])
+
+    def test_muted_clips_are_not_sync_checked(self):
+        v = [visual(audio="mute")]
+        r = raw({"d0": thumb(), "s0": thumb()}, sync={})
+        self.assertTrue(verify.check(self.RESOLVED, r, v, False)["ok"])
 
 
 if __name__ == "__main__":

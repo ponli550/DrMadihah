@@ -19,6 +19,17 @@ So this compares the delivery against its sources:
             while the opening card sat at -39 dB.
   duration  against the resolved timeline.
   black     ffmpeg blackdetect, for gaps nothing else noticed.
+  regions   recipe `meta.verify.regions` — named boxes on specific scenes. The
+            box is cropped from the delivery AND the source at the visual's
+            middle sample and compared. Catches a logo that was swapped,
+            dropped, or rendered from a stale card, at a resolution the whole
+            frame averages away.
+  edges     card visuals only. The outer strips of the frame must be flat: a
+            design surface with content touching the edge is a logo cut off.
+  sync      clips whose own audio is kept (`audio: keep`, testimonials). The
+            scene's audio window is extracted from the delivery and from the
+            source clip, decimated to envelopes, and cross-correlated. A lag
+            beyond `sync_sec` means the clip's audio drifted from its picture.
 
 Frames are compared as coarse greyscale thumbnails. That is deliberate:
 the question is "is this the right shot", not "is this bit-identical", and
@@ -69,20 +80,44 @@ PICTURE_MATCH = 14.0
 # the overlay.
 CAPTION_MARGIN = 4.0
 
+# Logo QC. A design surface is flat by design, so any structure in the outer
+# strips of a card frame is either a cut-off logo or text bleeding to the edge.
+# Strips are judged by variance (glyphs) OR by mean shift (a solid bright bar).
+EDGE_ROWS = 2          # rows at the top and bottom of the 18-row frame sample
+EDGE_COLS = 2          # columns at the left and right
+EDGE_STD = 12.0        # grey stdev inside a strip
+EDGE_MEAN = 40.0       # |strip mean - frame mean|
+
+# A/V source sync. Log-energy envelopes are cross-correlated; a lag beyond this
+# is a clip whose own audio no longer matches its picture.
+SYNC_SEC = 0.2
+SYNC_PEAK = 0.4        # below this the envelopes share no structure; skip
+SYNC_BIN = 0.025       # envelope bin width in seconds
+SYNC_RATE = 4000       # decimation rate for envelope extraction
+SYNC_MAX_WINDOW = 60.0 # cap the extracted window (testimonials are short)
+SYNC_SEARCH = 8.0      # max drift looked for, seconds each way
+
 
 def thresholds(recipe: dict | None = None) -> dict:
     """Return active thresholds from env, recipe meta, or defaults."""
-    t = {"picture": PICTURE_MATCH, "caption": CAPTION_MARGIN}
+    t = {"picture": PICTURE_MATCH, "caption": CAPTION_MARGIN,
+         "edge_std": EDGE_STD, "edge_mean": EDGE_MEAN,
+         "sync_sec": SYNC_SEC, "sync_peak": SYNC_PEAK}
     env = __import__("os").environ
-    if env.get("UMC_VERIFY_PICTURE_MATCH"):
-        t["picture"] = float(env["UMC_VERIFY_PICTURE_MATCH"])
-    if env.get("UMC_VERIFY_CAPTION_MARGIN"):
-        t["caption"] = float(env["UMC_VERIFY_CAPTION_MARGIN"])
+    for key, val in (("picture", "UMC_VERIFY_PICTURE_MATCH"),
+                     ("caption", "UMC_VERIFY_CAPTION_MARGIN"),
+                     ("edge_std", "UMC_VERIFY_EDGE_STD"),
+                     ("edge_mean", "UMC_VERIFY_EDGE_MEAN"),
+                     ("sync_sec", "UMC_VERIFY_SYNC_SEC"),
+                     ("sync_peak", "UMC_VERIFY_SYNC_PEAK")):
+        if env.get(val):
+            t[key] = float(env[val])
     cfg = ((recipe or {}).get("meta") or {}).get("verify") or {}
-    if cfg.get("picture_match") is not None:
-        t["picture"] = float(cfg["picture_match"])
-    if cfg.get("caption_margin") is not None:
-        t["caption"] = float(cfg["caption_margin"])
+    for key, name in (("picture", "picture_match"), ("caption", "caption_margin"),
+                      ("edge_std", "edge_std"), ("edge_mean", "edge_mean"),
+                      ("sync_sec", "sync_sec"), ("sync_peak", "sync_peak")):
+        if cfg.get(name) is not None:
+            t[key] = float(cfg[name])
     return t
 
 
@@ -99,6 +134,53 @@ def mad(a: list, b: list) -> float:
     if not a or not b or len(a) != len(b):
         return 999.0
     return sum(abs(x - y) for x, y in zip(a, b)) / len(a)
+
+
+def _stats(values: list) -> tuple:
+    if not values:
+        return (None, None)
+    m = sum(values) / len(values)
+    var = sum((x - m) ** 2 for x in values) / len(values)
+    return (m, var ** 0.5)
+
+
+def correlate_offset(d: list, s: list, bin_sec: float = SYNC_BIN,
+                     max_lag_sec: float = 1.0) -> tuple:
+    """Best-alignment lag of `s` within `d`, and the peak correlation.
+
+    Returns (offset_seconds, peak). A positive offset means the source audio
+    appears LATER in the delivery than the timeline says (the clip is late);
+    negative means it is early. `peak` in [0,1]; a low peak means the
+    envelopes share no structure, so the result is not evidence of drift.
+    """
+    if len(d) < 4 or len(s) < 4:
+        return (0.0, 0.0)
+    n = min(len(d), len(s))
+    d, s = d[:n], s[:n]
+
+    def unit(a):
+        m = sum(a) / len(a)
+        a = [x - m for x in a]
+        e = (sum(x * x for x in a)) ** 0.5
+        return [x / e for x in a] if e else a
+
+    best_lag, best = 0, -1.0
+    max_lag = max(1, int(max_lag_sec / bin_sec))
+    min_overlap = max(8, n // 4)   # shorter windows self-correlate by chance
+    for lag in range(-max_lag, max_lag + 1):
+        if lag < 0:
+            dd, ss = d[-lag:], s[:lag]
+        elif lag > 0:
+            dd, ss = d[:-lag], s[lag:]
+        else:
+            dd, ss = d, s
+        if len(dd) < min_overlap:
+            continue
+        dd, ss = unit(dd), unit(ss)
+        c = sum(a * b for a, b in zip(dd, ss))
+        if c > best:
+            best, best_lag = c, lag
+    return (round(best_lag * bin_sec, 3), round(max(0.0, best), 3))
 
 
 def _sample_lines(items: list) -> str:
@@ -122,7 +204,74 @@ def _sample_offsets(duration: float) -> list:
     return [min(0.5, d / 3.0), d / 2.0, max(d - 0.5, d * 2.0 / 3.0)]
 
 
-def collect(t, delivery: str, visuals: list, scenes: list) -> dict:
+def _region_lines(regions: dict, visuals: list, delivery: str) -> str:
+    """Crops of each qc region from delivery and source, middle sample."""
+    out = []
+    for name, spec in (regions or {}).items():
+        box = spec.get("box") or []
+        if len(box) != 4:
+            continue
+        x, y, w, h = box
+        vf = (f"crop=iw*{w}:ih*{h}:iw*{x}:ih*{y},"
+              f"scale={TW}:{TH},format=gray")
+        for i, v in enumerate(visuals):
+            if spec.get("scene") and v.get("scene") != spec.get("scene"):
+                continue
+            at = v["start"] + v["duration"] / 2.0
+            for tag, path in (("d", delivery), ("s", v["src"])):
+                out.append(
+                    f'echo "R|{name}:{tag}{i}|$(ffmpeg -v error -ss {at:.3f} '
+                    f'-i {_q(path)} -frames:v 1 '
+                    f'-filter_complex {shlex.quote(vf)} -f rawvideo - '
+                    f'2>/dev/null | base64 | tr -d "\\n")"')
+    return "\n".join(out)
+
+
+def _edge_lines(visuals: list, delivery: str) -> str:
+    """Full-frame grey thumbs of card visuals, for edge-strip inspection."""
+    out = []
+    for i, v in enumerate(visuals):
+        if v.get("kind") != "card":
+            continue
+        at = v["start"] + v["duration"] / 2.0
+        vf = f"scale={TW}:{FULL_ROWS},format=gray"
+        out.append(
+            f'echo "E|{i}|$(ffmpeg -v error -ss {at:.3f} -i {_q(delivery)} '
+            f'-frames:v 1 -filter_complex {shlex.quote(vf)} -f rawvideo - '
+            f'2>/dev/null | base64 | tr -d "\\n")"')
+    return "\n".join(out)
+
+
+def _sync_lines(visuals: list, delivery: str) -> str:
+    """Log-energy envelopes of kept-audio clips, delivery vs source."""
+    env = (
+        "python3 -c 'import sys,struct,math\n"
+        f"BIN={int(SYNC_BIN * SYNC_RATE)}\n"
+        "raw=sys.stdin.buffer.read()\n"
+        "n=len(raw)//2\n"
+        "s=struct.unpack(\"<%dh\"%n, raw[:n*2]) if n else ()\n"
+        "env=[math.sqrt(sum(x*x for x in s[i:i+BIN])/max(1,len(s[i:i+BIN])))"
+        " for i in range(0,n,BIN)]\n"
+        "print(\"|\".join(\"%.2f\"%math.log10(v+1e-9) for v in env))'")
+    out = []
+    for i, v in enumerate(visuals):
+        if v.get("kind") != "clip" or v.get("audio") != "keep":
+            continue
+        dur = min(float(v["duration"]), SYNC_MAX_WINDOW)
+        af = (f"aresample={SYNC_RATE},"
+              f"aformat=channel_layouts=mono:sample_fmts=s16")
+        out.append(
+            f'echo "Y|{i}|d|$(ffmpeg -v error -ss {v["start"]:.3f} '
+            f'-t {dur:.3f} -i {_q(delivery)} -af {af} -f s16le - 2>/dev/null '
+            f'| {env})"')
+        out.append(
+            f'echo "Y|{i}|s|$(ffmpeg -v error -t {dur:.3f} '
+            f'-i {_q(v["src"])} -af {af} -f s16le - 2>/dev/null | {env})"')
+    return "\n".join(out)
+
+
+def collect(t, delivery: str, visuals: list, scenes: list,
+            regions: dict | None = None) -> dict:
     """Run every measurement in ONE remote script and parse the results."""
     samples = []
     for i, v in enumerate(visuals):
@@ -141,6 +290,9 @@ def collect(t, delivery: str, visuals: list, scenes: list) -> dict:
 set -u
 echo "DUR|$(ffprobe -v error -show_entries format=duration -of default=nk=1:nw=1 {_q(delivery)})"
 {_sample_lines(samples)}
+{_region_lines(regions, visuals, delivery)}
+{_edge_lines(visuals, delivery)}
+{_sync_lines(visuals, delivery)}
 {lufs}
 ffmpeg -hide_banner -i {_q(delivery)} -vf blackdetect=d=0.4:pic_th=0.98 -f null - 2>&1 \\
   | grep -o "black_start:[0-9.]* black_end:[0-9.]*" | sed "s/^/B|/" || true
@@ -149,8 +301,10 @@ ffmpeg -hide_banner -i {_q(delivery)} -vf blackdetect=d=0.4:pic_th=0.98 -f null 
     r.check("verify")
 
     thumbs, lufs_by_scene, blacks, duration = {}, {}, [], 0.0
+    edges, sync = {}, {}
+    regions_out = {}
     for line in r.stdout.splitlines():
-        parts = line.strip().split("|")
+        parts = line.strip().split("|", 3)
         if parts[0] == "DUR" and len(parts) > 1:
             duration = float(parts[1] or 0)
         elif parts[0] == "T" and len(parts) > 2 and parts[2]:
@@ -158,12 +312,30 @@ ffmpeg -hide_banner -i {_q(delivery)} -vf blackdetect=d=0.4:pic_th=0.98 -f null 
                 thumbs[parts[1]] = base64.b64decode(parts[2])
             except Exception:
                 pass
+        elif parts[0] == "R" and len(parts) > 2 and parts[2]:
+            try:
+                regions_out[parts[1]] = base64.b64decode(parts[2])
+            except Exception:
+                pass
+        elif parts[0] == "E" and len(parts) > 2 and parts[2]:
+            try:
+                edges[parts[1]] = base64.b64decode(parts[2])
+            except Exception:
+                pass
+        elif parts[0] == "Y" and len(parts) > 3 and parts[3]:
+            try:
+                env_vals = [float(x) for x in parts[3].split("|") if x]
+                if env_vals:
+                    sync.setdefault(parts[1], {})[parts[2]] = env_vals
+            except ValueError:
+                pass
         elif parts[0] == "L" and len(parts) > 2:
             lufs_by_scene[parts[1]] = parts[2].strip()
         elif parts[0] == "B":
             blacks.append(parts[1].strip())
     return {"duration": duration, "thumbs": thumbs,
-            "lufs": lufs_by_scene, "black": blacks}
+            "lufs": lufs_by_scene, "black": blacks,
+            "regions": regions_out, "edges": edges, "sync": sync}
 
 
 def _is_testimoni(v: dict, scenes: list) -> bool:
@@ -281,6 +453,101 @@ def check(resolved: dict, raw: dict, visuals: list, burned: bool,
 
     add("no black gaps", not raw["black"],
         "none detected" if not raw["black"] else "; ".join(raw["black"][:5]))
+
+    # -- qc regions: named boxes on specific scenes -------------------------
+    regions = ((recipe or {}).get("meta") or {}).get("verify", {}).get("regions") or {}
+    for name, spec in regions.items():
+        box = spec.get("box") or []
+        if len(box) != 4:
+            add(f"qc region {name}", False, "bad `box` — want [x, y, w, h]")
+            continue
+        hits = [i for i, v in enumerate(visuals)
+                if not spec.get("scene") or v.get("scene") == spec.get("scene")]
+        if not hits:
+            add(f"qc region {name}", False,
+                f"scene `{spec.get('scene')}` has no visual in the resolved timeline")
+            continue
+        bad, missing_region, warnings = [], [], []
+        for i in hits:
+            d = raw.get("regions", {}).get(f"{name}:d{i}")
+            s = raw.get("regions", {}).get(f"{name}:s{i}")
+            if not d or not s or len(d) < TW * TH or len(s) < TW * TH:
+                missing_region.append(f"visual {i}")
+                continue
+            diff = mad(list(d), list(s))
+            s_mean, s_sd = _stats(list(s))
+            d_mean, d_sd = _stats(list(d))
+            if diff > thresh["picture"]:
+                bad.append(f"visual {i} (diff {diff:.1f})")
+            elif s_sd is not None and s_sd > 5.0 and d_sd is not None and d_sd < 2.0:
+                bad.append(f"visual {i} (region went blank in the delivery)")
+            elif s_sd is not None and s_sd < 2.0:
+                warnings.append(f"visual {i}: region flat in the source — "
+                                f"the box may miss the content")
+        if missing_region:
+            add(f"qc region {name}", False,
+                f"could not sample: {', '.join(missing_region)}")
+        else:
+            add(f"qc region {name}", not bad,
+                ("matches the source" if not bad else "; ".join(bad))
+                + ("  (warn: " + "; ".join(warnings) + ")" if warnings else ""))
+
+    # -- card edges: a design surface must not touch the frame edge ---------
+    edge_bad = []
+    for i, v in enumerate(visuals):
+        if v.get("kind") != "card":
+            continue
+        e = raw.get("edges", {}).get(str(i))
+        if not e or len(e) < TW * FULL_ROWS:
+            continue
+        rows = [list(e[r * TW:(r + 1) * TW]) for r in range(FULL_ROWS)]
+        frame_mean = sum(sum(r) for r in rows) / (FULL_ROWS * TW)
+        strips = [("top", [x for r in rows[:EDGE_ROWS] for x in r]),
+                  ("left", [r[c] for r in rows for c in range(EDGE_COLS)]),
+                  ("right", [r[c] for r in rows
+                             for c in range(TW - EDGE_COLS, TW)])]
+        if not v.get("captioned"):
+            strips.append(
+                ("bottom", [x for r in rows[FULL_ROWS - EDGE_ROWS:] for x in r]))
+        for name, vals in strips:
+            m, sd = _stats(vals)
+            if sd is None:
+                continue
+            if sd > thresh["edge_std"] or abs(m - frame_mean) > thresh["edge_mean"]:
+                edge_bad.append(f"{v['ref']} {name} (sd {sd:.1f}, {m:.0f} vs {frame_mean:.0f})")
+    if any(v.get("kind") == "card" for v in visuals):
+        add("card edges clean", not edge_bad,
+            "no content touching frame edges" if not edge_bad
+            else "; ".join(edge_bad[:5]))
+
+    # -- A/V source sync: kept audio must line up with its picture ----------
+    sync_bad, sync_skipped = [], []
+    for i, v in enumerate(visuals):
+        if v.get("kind") != "clip" or v.get("audio") != "keep":
+            continue
+        pair = raw.get("sync", {}).get(str(i))
+        if not pair or not pair.get("d") or not pair.get("s"):
+            sync_skipped.append(v["ref"])
+            continue
+        offset, peak = correlate_offset(pair["d"], pair["s"],
+                                        bin_sec=SYNC_BIN,
+                                        max_lag_sec=SYNC_SEARCH)
+        if peak < thresh["sync_peak"]:
+            sync_skipped.append(f"{v['ref']} (no common envelope)")
+            continue
+        if abs(offset) > thresh["sync_sec"]:
+            sync_bad.append(
+                f"{v['ref']} {'late' if offset > 0 else 'early'} by "
+                f"{abs(offset):.2f}s (peak {peak:.2f})")
+    if any(v.get("kind") == "clip" and v.get("audio") == "keep"
+           for v in visuals):
+        add("audio sync with source", not sync_bad,
+            "kept-audio clips line up" if not sync_bad
+            else "; ".join(sync_bad[:5]))
+        if sync_skipped:
+            findings.append({"check": "audio sync with source",
+                             "ok": True,
+                             "detail": "skipped: " + "; ".join(sync_skipped[:5])})
 
     if recipe:
         text_warnings = check_text(recipe)

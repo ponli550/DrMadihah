@@ -339,5 +339,9 @@ class Config:
             "style.font":      (y.font, src("UMC_STYLE_FONT")),
             "api.json2video":  ("set" if _get(self.env, "JSON2VIDEO_API_KEY")
                                 else "MISSING", src("JSON2VIDEO_API_KEY")),
+            "ingest.csv_url":  ("set" if _get(self.env, "UMC_INGEST_CSV_URL")
+                                else "", src("UMC_INGEST_CSV_URL")),
+            "ingest.notebook": (_get(self.env, "UMC_INGEST_NOTEBOOK_URL") or "",
+                                src("UMC_INGEST_NOTEBOOK_URL")),
         }
         return {k: {"value": v, "from": s} for k, (v, s) in rows.items()}

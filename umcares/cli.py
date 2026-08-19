@@ -658,6 +658,55 @@ def cmd_media(args, cfg):
     return 2
 
 
+def cmd_ingest(args, cfg):
+    """Fetch pre-production material into a brief for the recipe author."""
+    from . import ingest as ingest_mod
+
+    sources = []
+    if args.csv:
+        sources.append(("csv", args.csv))
+    if args.form:
+        sources.append(("form", args.form))
+    csv_url = cfg.optional("UMC_INGEST_CSV_URL")
+    if not sources and csv_url:
+        sources.append(("csv", csv_url))
+
+    if args.form and not any(kind == "csv" for kind, _ in sources):
+        # Responses to a Google Form are private to its owner; the CLI will not
+        # impersonate a logged-in session. The owner links the sheet and shares
+        # the export URL instead, once, in config.
+        log.err("a form's responses are private — export them as CSV first:")
+        log.err("  Forms -> Responses -> Link to Sheets, share the sheet with")
+        log.err("  'anyone with link', then copy the `export?format=csv` URL:")
+        log.err(f"  umcares config set UMC_INGEST_CSV_URL <url>")
+        log.err("  or pass --csv <file|url>")
+        return 2
+    if not sources:
+        log.err("give --csv <file|url> (or --form, or set UMC_INGEST_CSV_URL)")
+        return 2
+
+    csv_source = next((src for kind, src in sources if kind == "csv"), "")
+    notebook = args.notebook or cfg.optional("UMC_INGEST_NOTEBOOK_URL")
+    out = Path(args.out).expanduser() if args.out \
+        else (cfg.root / ".umcares" / "brief.md")
+
+    text = ingest_mod.fetch_csv(csv_source)
+    parsed = ingest_mod.parse_responses(text)
+    if not parsed["responses"]:
+        log.err("CSV has no response rows — is this a Google Forms export?")
+        return 1
+
+    brief = ingest_mod.write(parsed, out, csv_source=csv_source,
+                             notebook=notebook, max_rows=args.max_rows)
+    log.ok(f"{len(parsed['responses'])} responses, {len(parsed['columns'])} "
+           f"columns -> {brief}")
+    log.info(f"also wrote {brief.with_name(brief.stem + '.json')}")
+    log.out({"brief": str(brief), "json": str(brief.with_name(brief.stem + '.json')),
+             "responses": len(parsed["responses"]),
+             "columns": parsed["columns"], "notebook": notebook})
+    return 0
+
+
 def cmd_post(args, cfg):
     t = _transport(args, cfg)
 
@@ -851,7 +900,29 @@ def build_parser() -> argparse.ArgumentParser:
     po.add_argument("--timeout", type=int, default=3600)
     po.set_defaults(func=cmd_post)
 
+    ig = sub.add_parser(
+        "ingest",
+        help="fetch responses/notes into a brief for the recipe author")
+    ig.add_argument("--csv", help="local CSV file or https export URL")
+    ig.add_argument("--form", help="Google Form URL (needs UMC_INGEST_CSV_URL)")
+    ig.add_argument("--notebook", help="NotebookLM URL to reference in the brief")
+    ig.add_argument("--out", help="brief path (default: .umcares/brief.md)")
+    ig.add_argument("--max-rows", type=int, default=200,
+                    help="responses to render in the markdown table")
+    ig.set_defaults(func=cmd_ingest)
+
+    co = sub.add_parser("complete",
+                        help="completion candidates (used by the shell)")
+    co.add_argument("tokens", nargs=argparse.REMAINDER)
+    co.set_defaults(func=cmd_complete)
+
     return p
+
+
+def cmd_complete(args, cfg):
+    from umcares import complete
+    complete.print_candidates(args.tokens)
+    return 0
 
 
 def main(argv=None) -> int:

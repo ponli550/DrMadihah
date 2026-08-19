@@ -1,0 +1,41 @@
+#compdef umcares
+# fzf-flavoured completion, exclusive to the `umcares` command.
+#
+#   umcares <TAB>            fzf picker over subcommands / flags / choices
+#   umcares render --file <TAB>
+#                            fzf picker over recipes/*.json
+#   umcares push <TAB>       local file browser
+#
+# Candidates come from `umcares complete` (the parser itself), so they never
+# drift from what the CLI accepts. Nothing here touches the global fzf or
+# completion configuration — this only ever fires for the umcares command.
+
+_umcares() {
+  local kind="" sel
+  local -a cands
+  cands=("${(@f)$(umcares complete -- "${words[@]:1}" 2>/dev/null)}")
+  if [[ -n ${cands[1]:-} && ${cands[1]} == __* ]]; then
+    kind=${cands[1]}
+    cands=("${(@)cands[2,-1]}")
+  fi
+  case $kind in
+    __RECIPES__)
+      cands=(recipes/*.json(N:t) recipes/*.yml(N:t) .umcares/*.json(N:t))
+      ;;
+    __FILES__)
+      _files -W "${PWD}"
+      return
+      ;;
+  esac
+  if (( ${#cands} == 0 )); then
+    _files -W "${PWD}"
+    return
+  fi
+  if (( ${#cands} > 1 )) && command -v fzf >/dev/null 2>&1; then
+    sel=$(printf '%s\n' "${cands[@]}" | fzf --reverse --height=40% \
+          --prompt="umcares> " --no-multi 2>/dev/null)
+    [[ -n $sel ]] && compadd -U -Q -- "$sel"
+    return
+  fi
+  compadd -Q -a cands
+}

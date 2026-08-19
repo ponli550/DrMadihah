@@ -119,6 +119,13 @@ SECTIONS: dict[str, tuple[str, list]] = {
         Field("UMC_SSH_PASSWORD", "SSH password", "secret",
               help="leave blank if key auth works — it should"),
     ]),
+    "ingest": ("Brief source for the recipe author", [
+        Field("UMC_INGEST_CSV_URL", "Responses CSV export URL",
+              help="Google Sheets 'anyone with link' -> export?format=csv"),
+        Field("UMC_INGEST_NOTEBOOK_URL", "NotebookLM notebook URL",
+              help="referenced in the brief; pull content via the notebooklm "
+                   "MCP when you want it in the recipe"),
+    ]),
 }
 
 

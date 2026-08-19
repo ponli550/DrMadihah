@@ -428,13 +428,17 @@ class Renderer:
             visuals.append({
                 "ref": v["ref"], "start": v["start"], "duration": v["duration"],
                 "src": self._path_for(v),
+                "scene": v.get("scene"), "kind": v.get("kind"),
+                "audio": v.get("audio", "mute"),
                 "captioned": any(a <= mid <= b for a, b, _ in cues),
             })
 
+        regions = ((self.rec.get("meta") or {}).get("verify") or {}).get(
+            "regions") or {}
         with spinner.spin(f"verifying {len(visuals)} visuals against their sources",
                           40 + 2 * len(visuals)):
             raw = verify_mod.collect(self.t, delivery, visuals,
-                                     self.resolved["scenes"])
+                                     self.resolved["scenes"], regions=regions)
         res = verify_mod.check(self.resolved, raw, visuals, burned,
                                target_lufs=float(outcfg.get("target_lufs", -16)),
                                recipe=self.rec)

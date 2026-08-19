@@ -44,6 +44,26 @@ def _local(cfg: Config) -> list:
         out.append(Check(f"env {key}", bool(v),
                          "set" if v else "missing",
                          "" if v else f"add {key} to .env (see .env.example)"))
+
+    ingest_csv = cfg.optional("UMC_INGEST_CSV_URL")
+    if ingest_csv:
+        from . import ingest as ingest_mod
+        try:
+            text = ingest_mod.fetch_csv(ingest_csv, timeout=10)
+            ok = bool(ingest_mod.parse_responses(text)["responses"])
+            out.append(Check(
+                "ingest CSV", ok,
+                "reachable" if ok else "reachable but no response rows",
+                "" if ok else "check the URL or re-share the sheet"))
+        except Exception as e:
+            out.append(Check(
+                "ingest CSV", False, str(e)[:120],
+                "fix the URL, or share the sheet with 'anyone with link'"))
+    else:
+        out.append(Check("ingest CSV", True, "not configured (optional)", ""))
+    nb = cfg.optional("UMC_INGEST_NOTEBOOK_URL")
+    out.append(Check("ingest notebook", True,
+                     nb if nb else "not configured (optional)", ""))
     return out
 
 
