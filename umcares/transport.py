@@ -21,6 +21,14 @@ The tmux path is the fiddly one, and these are the rules that make it work:
   * Nothing is ever typed into a pane that is running a foreground process,
     because the keystrokes land inside that process (they ended up inside
     ffmpeg's interactive prompt more than once).
+
+The ssh path multiplexes. Without it every command is a fresh TCP connect plus
+key exchange, and this pipeline does not issue a handful of commands — it probes
+each asset for existence, pushes each caption PNG, polls each render. Over a
+tailnet that handshake is 100-300ms, so a render spent a visible share of its
+wall clock shaking hands. One master connection is reused by every later
+command and by scp, which is also why `push_many` batching and this work
+together rather than overlapping.
 """
 from __future__ import annotations
 
@@ -37,6 +45,26 @@ from . import log
 from .config import Remote
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\a]*\a")
+
+# A unix socket path caps at 104 bytes on macOS (108 on Linux) and ssh fails
+# with "too long for Unix domain socket" rather than anything self-explanatory.
+# %C expands to a 40-character SHA1 hex of (user, host, port) — measured, not
+# assumed — so the directory holding it has to stay short.
+CONTROL_MAX = 100
+CONTROL_HASH = 40
+
+# stderr fragments that mean the master is unusable, as opposed to the command
+# itself having failed. A *stale* socket needs nothing from us: OpenSSH 10.2 was
+# observed to unlink it and open a fresh master, silently and successfully. This
+# is for the case it does not handle — a master that is alive but wedged, whose
+# own TCP connection died without it noticing — which was not reproduced here
+# and is guarded rather than tested.
+MUX_BROKEN = ("mux_client", "read from master failed")
+
+
+def control_dir() -> Path:
+    """Where master sockets live. Its own directory, 0700, never world-readable."""
+    return Path.home() / ".ssh" / "umcares-cm"
 
 
 @dataclass
@@ -168,10 +196,41 @@ class Transport:
 class SSHTransport(Transport):
     name = "ssh"
 
-    def __init__(self, target: str, password: str = "", key: str = ""):
+    def __init__(self, target: str, password: str = "", key: str = "",
+                 mux: bool = True, persist: str = "10m"):
         self.target = target
         self.password = password
         self.key = key
+        self.persist = persist
+        self._socket = self._control_path() if mux else ""
+
+    def _control_path(self) -> str:
+        """The master socket path, or "" when it would not fit / cannot be made.
+
+        Multiplexing is an optimisation, so every reason it cannot run is a
+        reason to carry on without it rather than to fail.
+        """
+        try:
+            d = control_dir()
+            d.mkdir(parents=True, exist_ok=True, mode=0o700)
+        except OSError as e:
+            log.debug(f"no control dir, multiplexing off: {e}")
+            return ""
+        path = str(d / "cm-%C")
+        # Budget for the expansion before ssh discovers the name is too long,
+        # because what it says then is about Unix domain sockets, not about ssh.
+        if len(path) - len("%C") + CONTROL_HASH > CONTROL_MAX:
+            log.debug(f"control path would exceed {CONTROL_MAX} bytes, "
+                      "multiplexing off")
+            return ""
+        return path
+
+    def _mux(self) -> list:
+        if not self._socket:
+            return []
+        return ["-o", "ControlMaster=auto",
+                "-o", f"ControlPath={self._socket}",
+                "-o", f"ControlPersist={self.persist}"]
 
     def _base(self, batch: bool = True) -> list:
         """ssh argv, optionally wrapped in sshpass for password auth."""
@@ -183,8 +242,40 @@ class SSHTransport(Transport):
             cmd = ["sshpass", "-p", self.password] + cmd
         elif batch:
             cmd += ["-o", "BatchMode=yes"]
-        cmd += ["-o", "StrictHostKeyChecking=accept-new"]
+        cmd += ["-o", "StrictHostKeyChecking=accept-new"] + self._mux()
         return cmd
+
+    def _scp(self) -> list:
+        """scp argv sharing the same master, so a transfer costs no handshake.
+
+        scp takes the same -o options as ssh; without them the file transfers
+        opened their own connections while ssh reused one, which is half the
+        commands in a render.
+        """
+        return ((["sshpass", "-p", self.password] if self.password else [])
+                + ["scp", "-q"]
+                + (["-i", self.key, "-o", "IdentitiesOnly=yes"] if self.key else [])
+                + ["-o", "StrictHostKeyChecking=accept-new"] + self._mux())
+
+    def _drop_master(self) -> bool:
+        """Tear down a wedged master so the next command opens a fresh one.
+
+        Asks ssh to exit it first, which also reaps the background process, then
+        unlinks the socket as a backstop in case the master was too wedged to
+        answer that.
+        """
+        if not self._socket:
+            return False
+        subprocess.run(["ssh", "-o", f"ControlPath={self._socket}",
+                        "-O", "exit", self.target],
+                       capture_output=True, timeout=15)
+        for f in control_dir().glob("cm-*"):
+            try:
+                f.unlink()
+            except OSError:
+                pass
+        log.debug("dropped the ssh master socket")
+        return True
 
     @staticmethod
     def probe(remote: Remote, timeout: int = 8) -> "SSHTransport | None":
@@ -217,7 +308,9 @@ class SSHTransport(Transport):
         targets = [c for c in (remote.ssh_alias, f"{remote.user}@{remote.host}") if c]
         for use_pw in ([False, True] if pw else [False]):
             for target in targets:
-                cand = SSHTransport(target, pw if use_pw else "", key)
+                cand = SSHTransport(target, pw if use_pw else "", key,
+                                    mux=getattr(remote, "ssh_mux", True),
+                                    persist=getattr(remote, "ssh_persist", "10m"))
                 try:
                     argv = cand._base(batch=not use_pw) + [
                         "-o", f"ConnectTimeout={timeout}", target, "echo __UMC_OK__"]
@@ -268,15 +361,22 @@ class SSHTransport(Transport):
         wrapped = f'export PATH={shlex.quote(self._login_path())}; {cmd}'
         p = subprocess.run(self._base() + [self.target, wrapped],
                            capture_output=True, text=True, timeout=timeout)
+        if p.returncode != 0 and self._mux_wedged(p.stderr):
+            # The command never reached the remote, so re-running it is safe
+            # here in a way that a general retry would not be.
+            self._drop_master()
+            p = subprocess.run(self._base() + [self.target, wrapped],
+                               capture_output=True, text=True, timeout=timeout)
         return Result(p.returncode, p.stdout, p.stderr)
+
+    def _mux_wedged(self, stderr: str) -> bool:
+        return bool(self._socket) and any(m in (stderr or "") for m in MUX_BROKEN)
 
     def push(self, local: Path, remote: str) -> None:
         parent = remote.rsplit("/", 1)[0]
         if parent and parent != remote:
             self.ensure_dir(parent)
-        argv = (["sshpass", "-p", self.password] if self.password else []) + \
-               ["scp", "-q"] + (["-i", self.key] if self.key else []) + \
-               [str(local), f"{self.target}:{remote}"]
+        argv = self._scp() + [str(local), f"{self.target}:{remote}"]
         p = subprocess.run(argv, capture_output=True, text=True, timeout=900)
         if p.returncode != 0:
             raise RuntimeError(f"scp push failed: {p.stderr.strip()[:300]}")
@@ -286,9 +386,8 @@ class SSHTransport(Transport):
         if not locals_:
             return 0
         self.ensure_dir(remote_dir)
-        argv = (["sshpass", "-p", self.password] if self.password else []) + \
-               ["scp", "-q"] + (["-i", self.key] if self.key else []) + \
-               [str(f) for f in locals_] + [f"{self.target}:{remote_dir.rstrip('/')}/"]
+        argv = self._scp() + [str(f) for f in locals_] + \
+               [f"{self.target}:{remote_dir.rstrip('/')}/"]
         p = subprocess.run(argv, capture_output=True, text=True, timeout=1800)
         if p.returncode != 0:
             raise RuntimeError(f"scp batch push failed: {p.stderr.strip()[:300]}")
@@ -296,9 +395,7 @@ class SSHTransport(Transport):
 
     def pull(self, remote: str, local: Path) -> None:
         local.parent.mkdir(parents=True, exist_ok=True)
-        argv = (["sshpass", "-p", self.password] if self.password else []) + \
-               ["scp", "-q"] + (["-i", self.key] if self.key else []) + \
-               [f"{self.target}:{remote}", str(local)]
+        argv = self._scp() + [f"{self.target}:{remote}", str(local)]
         p = subprocess.run(argv, capture_output=True, text=True, timeout=900)
         if p.returncode != 0:
             raise RuntimeError(f"scp pull failed: {p.stderr.strip()[:300]}")

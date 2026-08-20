@@ -129,7 +129,9 @@ def _transport(cfg: Config) -> tuple:
 
     checks.insert(0, Check(
         "transport", bool(t),
-        (f"ssh ({t.target})" if getattr(t, "target", None)
+        (f"ssh ({t.target}"
+         + (", multiplexed" if getattr(t, "_socket", "") else "") + ")"
+         if getattr(t, "target", None)
          else f"tmux pane {t.pane}" if t else "none available"),
         "" if t else ("run `umcares session`, log in on the remote pane, "
                       "or add an ssh key")))

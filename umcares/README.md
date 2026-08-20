@@ -126,6 +126,38 @@ The tmux path is hostile territory, and the CLI defends against all of it:
 
 ---
 
+### One connection, not hundreds
+
+Every command used to be a fresh TCP connect plus key exchange. That is fine
+when a human types one; this pipeline probes each asset for existence, pushes
+each caption PNG, and polls each render, so the handshakes added up:
+
+```
+12 commands, one connection each   3.75s     (~310ms per command)
+12 commands, one shared master     1.07s     (~89ms)
+6 scp pushes, own connections      2.92s
+6 scp pushes, shared master        1.07s
+```
+
+`SSHTransport` declares `ControlMaster=auto` with a socket under
+`~/.ssh/umcares-cm/`, and `scp` is given the same options — a transfer that
+opens its own connection is half the handshakes in a render. `umcares doctor`
+prints `ssh (personal, multiplexed)` so the master is visible when it is
+working, since that is exactly when nothing else would mention it.
+
+It degrades rather than fails. Multiplexing is an optimisation, so every reason
+it cannot run is a reason to carry on without it: no writable `~/.ssh`, or a
+socket path that would breach the 104-byte Unix-socket limit (`%C` expands to
+40 hex characters, which is budgeted for up front — ssh's own complaint at that
+point is about domain sockets, not about ssh). `UMC_SSH_MUX=0` turns it off,
+`UMC_SSH_PERSIST` changes how long the master lingers.
+
+A *stale* socket needs nothing: OpenSSH 10.2 unlinks it and opens a fresh
+master on its own. A master that is alive but wedged it does not recover from,
+so a command failing with `mux_client…` / `read from master failed` drops the
+master and runs once more — safe here specifically because that error means the
+command never reached the remote.
+
 ## Premiere: why not the MCP server
 
 `AdobePremiereProMCP` advertises 72 tools. Effectively none of them work:

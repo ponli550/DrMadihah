@@ -54,6 +54,8 @@ class Remote:
     mcp_repo: str = "/Users/irpan/Projects/personal/VD/AdobePremiereProMCP"
     password: str = ""           # optional; key auth is strongly preferred
     key_path: str = "~/.ssh/id_ed25519_umcares"
+    ssh_mux: bool = True         # reuse one ssh connection for every command
+    ssh_persist: str = "10m"     # how long the master lingers after the last use
 
     # Adobe install + project. Derived from `user` unless overridden, so
     # pointing the CLI at a different machine or a scratch project is config,
@@ -174,6 +176,9 @@ class Config:
             mcp_repo=_get(env, "UMC_MCP_REPO", Remote.mcp_repo),
             password=_get(env, "UMC_SSH_PASSWORD", ""),
             key_path=_get(env, "UMC_SSH_KEY", Remote.key_path),
+            ssh_mux=_get(env, "UMC_SSH_MUX", "").strip().lower()
+                    not in ("0", "false", "no", "off"),
+            ssh_persist=_get(env, "UMC_SSH_PERSIST", Remote.ssh_persist),
             premiere_app=_get(env, "UMC_PREMIERE_APP", Remote.premiere_app),
             cep_ext_id=_get(env, "UMC_CEP_EXT_ID", Remote.cep_ext_id),
             project=_get(env, "UMC_PROJECT", ""),
@@ -296,6 +301,8 @@ class Config:
             "remote.user":     (r.user, src("UMC_REMOTE_USER")),
             "remote.ssh_alias": (r.ssh_alias, src("UMC_SSH_ALIAS")),
             "remote.key_path": (r.key_path, src("UMC_SSH_KEY")),
+            "remote.ssh_mux":  (str(r.ssh_mux), src("UMC_SSH_MUX")),
+            "remote.ssh_persist": (r.ssh_persist, src("UMC_SSH_PERSIST")),
             "remote.password": ("set" if r.password else "", src("UMC_SSH_PASSWORD")),
             "tmux.session":    (r.tmux_session, src("UMC_TMUX_SESSION")),
             "tmux.pane":       (r.tmux_pane or "auto-detect", src("UMC_TMUX_PANE")),
