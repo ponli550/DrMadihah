@@ -5,8 +5,11 @@ is a worse outcome than a 20-second check that says so up front.
 """
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
+import urllib.error
+import urllib.request
 
 from . import log, session
 from .config import Config
@@ -30,6 +33,38 @@ class Check:
         return {"check": self.name, "ok": self.ok, "detail": self.detail, "fix": self.fix}
 
 
+def json2video_auth(env: dict, timeout: int = 20) -> tuple:
+    """Does the key actually authenticate? Returns (ok, detail).
+
+    A key being *present* proves nothing — a rejected key looks exactly like a
+    set key until the first render, which is the point where it has already
+    cost a wait. So this posts a movie with no scenes: the API rejects the
+    payload either way, and only an auth failure says so in the message.
+
+    (The endpoint + header pair is spelled out here rather than reused from
+    voice.py/cards.py, which each carry their own copy. Three copies is one too
+    many; worth collapsing when something next touches all three.)
+    """
+    key = env.get("JSON2VIDEO_API_KEY")
+    if not key:
+        return False, "no key"
+    url = env.get("JSON2VIDEO_ENDPOINT") or "https://api.json2video.com/v2/movies"
+    req = urllib.request.Request(
+        url, data=json.dumps({"resolution": "full-hd", "scenes": []}).encode(),
+        method="POST",
+        headers={"x-api-key": key, "content-type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            body = (r.read() or b"{}").decode(errors="replace")
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")
+    except Exception as e:                       # DNS, TLS, timeout, offline
+        return False, f"unreachable: {str(e)[:80]}"
+    if "invalid api key" in body.lower():
+        return False, "key rejected"
+    return True, "key accepted"
+
+
 def _local(cfg: Config) -> list:
     out = []
     for tool, fix in (("tmux", "brew install tmux"),
@@ -44,6 +79,11 @@ def _local(cfg: Config) -> list:
         out.append(Check(f"env {key}", bool(v),
                          "set" if v else "missing",
                          "" if v else f"add {key} to .env (see .env.example)"))
+        if v:
+            ok, detail = json2video_auth(cfg.env)
+            out.append(Check("json2video auth", ok, detail, "" if ok else
+                             "check the key at json2video.com, or the endpoint "
+                             "in JSON2VIDEO_ENDPOINT"))
 
     ingest_csv = cfg.optional("UMC_INGEST_CSV_URL")
     if ingest_csv:
