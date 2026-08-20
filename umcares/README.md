@@ -523,6 +523,30 @@ no longer existed — recovering them meant extracting a text layer back out of 
 An empty or suspiciously small result is refused rather than committed, so a
 broken encode cannot replace a working master with a 4 KB stub.
 
+## What this replaced
+
+Before the CLI, the pipeline was a directory of scripts driven by hand. They are
+gone; this is where each one went, so a `git log` archaeologist does not have to
+guess:
+
+| was | is now | note |
+|---|---|---|
+| `scripts/j2v_voice.py` | `voice.py` + `voice.*` config | prosody moved from argv to config, so house style lives in one place |
+| `scripts/tts_generate.py` | — | Qwen route abandoned: no native Malay voice, and the deployment's `qwen-tts` model does not exist |
+| `scripts/j2v_cards.py` | `cards.py` (`stats_scene`, `render`) | |
+| `scripts/make_logo_strip.py` | `cards.py` (`content_box`, `build_strip`, `_fit_strip`) | the trim-then-contain fix survived verbatim |
+| `scripts/make_logo_cards.py` | `cards.py` (`logo_text_scene`, `split_and_composite`) | |
+| `scripts/make_srt.py` | `srt.py` (`speech_spans`, `allocate`, `build`) | same silence detection, but placement comes from the resolved timeline instead of a hardcoded `PLACEMENT` table |
+| `scripts/j2v_test.py --check` | `doctor.json2video_auth` | now runs on every `doctor`, instead of when someone remembers |
+| root `mcp_*.py`, `raw_ws_test.py`, `remote_cep_test.py`, `patch_panel.py` | — | probes for the MCP tool layer `premiere.py` bypasses on purpose |
+
+Two root scripts survive because nothing here replaces them: `check_narration.py`
+whispers the narration WAVs and diffs the transcript against the recipe, and
+`compare_subs.py` whispers the delivery and diffs it against the burned cues.
+Both are *audio* ground truth; `script check` only compares text to text. Folding
+them into `verify` is the obvious next step — there is no `whisper` reference
+anywhere in this package today.
+
 ## Tests
 
 ```bash

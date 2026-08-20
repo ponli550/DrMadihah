@@ -87,4 +87,6 @@ perlahan (−20.9 dB); ia disambung dengan crossfade kerana trek hanya 169.6s.
    `C0020` mesti mendahului segmen ICYM. Ini pernah tersilap dan kelihatan janggal.
 3. **Semak aras setiap bahagian, bukan LUFS keseluruhan.** Pada satu versi, LUFS
    keseluruhan nampak betul sedangkan kad pembukaan berada pada −39 dB.
-4. Sari kata dijana semula dengan `scripts/make_srt.py` setiap kali masa berubah.
+4. Sari kata dijana semula dengan `umcares render --only subs` setiap kali masa
+   berubah, dan `umcares script check` mengesan sari kata yang telah disunting
+   tangan sebelum render seterusnya menimpanya.

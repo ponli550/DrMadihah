@@ -31,27 +31,32 @@ The repo holds **source and scripts only**. All media — footage, photos, the
 Premiere project, masters — lives on the remote Mac and is gitignored.
 
 ```
-DrMadihah/                          THIS REPO (source + scripts)
+DrMadihah/                          THIS REPO (source only)
 ├── .env                            API keys            [gitignored]
 ├── .env.example                    template            [tracked]
 ├── assets/logos/*.png              brand marks         [tracked]
-├── scripts/                        the pipeline        [tracked]
-│   ├── j2v_voice.py                narration  (Azure ms-MY-OsmanNeural SSML)
-│   ├── j2v_cards.py                stat + logo-card text (json2video)
-│   ├── j2v_test.py                 API smoke test (--check / --render)
-│   ├── make_logo_strip.py          logo lockup strips, local composite (ffmpeg)
-│   ├── make_logo_cards.py          composite strip into card frame
-│   ├── make_srt.py                 subtitles from real audio timings
-│   └── tts_generate.py             Qwen TTS (fallback, superseded by Azure)
+├── umcares/                        the pipeline, as a CLI        [tracked]
+│   ├── voice.py                    narration (Azure ms-MY SSML via json2video)
+│   ├── cards.py                    stat + logo cards (json2video text + ffmpeg strip)
+│   ├── srt.py                      captions from measured audio
+│   ├── recipe.py                   intent -> exact timeline
+│   ├── render.py                   the stage runner
+│   ├── script.py                   narration round-trip + SRT drift check
+│   └── …                           see umcares/README.md
+├── recipes/*.json                  what to render — the source of truth [tracked]
+├── tests/                          213 tests, no network         [tracked]
+├── bin/umcares                     entry point (symlink onto PATH)
+├── completions/_umcares            zsh completion (fzf-backed)
 ├── video/
-│   ├── video_script.md             narration source of truth
+│   ├── video_script.md             narration, pre-CLI draft (recipes win)
 │   ├── video_edit_plan.md          the delivered cut, clip by clip
-│   ├── video_subtitles.srt         final SRT (user-edited)      [tracked]
+│   ├── video_subtitles.srt         hand-edited SRT (see `umcares script check`)
 │   ├── video_music_brief.md        music spec with real cue sheet
 │   ├── cards/                      strips + rendered cards       [gitignored]
 │   └── voiceover/                  narration + auditions         [gitignored]
-├── mcp_client.py, mcp_ping.py, ... remote MCP/CDP probe scripts [tracked]
-└── AdobePremiereProMCP/            upstream MCP server           [gitignored]
+├── check_narration.py              whisper the VO, diff vs the recipe [tracked]
+├── compare_subs.py                 whisper the delivery, diff vs cues [tracked]
+└── AdobePremiereProMCP/            upstream MCP server, unused   [gitignored]
 
 REMOTE  dsaopjfs-MacBook-Air:/Users/irpan/Projects/DrMadihah/
 ├── assets/
@@ -77,8 +82,8 @@ exist. `.env` must use `JW2V`-style keys for json2video and the Qwen key as
 ```mermaid
 flowchart TB
     subgraph LOCAL["Local machine (this repo)"]
-        SCRIPT["video_script.md<br/>narration text"]
-        PY["scripts/*.py"]
+        SCRIPT["recipes/*.json<br/>narration + intent"]
+        PY["umcares CLI"]
         LOGOS["assets/logos/*.png"]
         STRIP["logo strips (ffmpeg composite)"]
     end
@@ -124,9 +129,13 @@ the loud-music complaint on v7.
 
 ## 3. Driving the remote
 
-There is **no SSH key** and **no scp**, but both machines share a Tailscale
-tailnet (remote `dsaopjfs-macbook-air` / `100.111.203.62`). Premiere runs on
-the other Mac and is driven through two channels:
+Both machines share a Tailscale tailnet (remote `dsaopjfs-macbook-air` /
+`100.111.203.62`). Premiere runs on the other Mac. The CLI reaches it over
+**ssh** by default (`umcares auth --setup-key` installs the key;
+`umcares doctor` proves the route), and falls back to driving a **tmux pane**
+when there is no key — which is how this project ran before the key existed,
+and why the pane rules below still matter. Either way the timeline itself is
+edited through CDP:
 
 ```
   this machine                          dsaopjfs-MacBook-Air
@@ -144,17 +153,21 @@ the other Mac and is driven through two channels:
                                          custom helpers ──► timeline
 ```
 
-- **tmux pane `%3`** — a live SSH session. Read output via `pipe-pane` to a
-  local file, *never* `capture-pane`; an SSH window resize drops the pane to a
-  narrow width and capture wraps/corrupts long output.
+- **ssh** — the default route (`--transport ssh`). Commands run directly and
+  `umcares push` / `pull` move files with size verification.
+- **tmux pane `%3`** — the fallback route (`--transport tmux`), a live SSH
+  session in a pane. Read output via `pipe-pane` to a local file, *never*
+  `capture-pane`; an SSH window resize drops the pane to a narrow width and
+  capture wraps/corrupts long output.
 - **CDP on port 9241** — Chrome DevTools attached to the Premiere CEP panel.
   This is what actually edits the timeline, using **custom path-based
   helpers** (see gotchas — the MCP server's place/edit tools cannot work).
   Requires `.debug` in the extension directory (see gotchas).
-- **Files** — anything under ~20 KB travels as base64 over the pane in
-  2000-char chunks with `wc -c` verification per chunk and truncate+retry on
-  mismatch (naive chunking silently drops input). Large media never crosses
-  this channel; the remote pulls it from the json2video CDN instead.
+- **Files, on the tmux route** — anything under ~20 KB travels as base64 over
+  the pane in 2000-char chunks with `wc -c` verification per chunk and
+  truncate+retry on mismatch (naive chunking silently drops input). Large media
+  never crosses this channel; the remote pulls it from the json2video CDN
+  instead.
 
 ```mermaid
 sequenceDiagram
@@ -179,93 +192,124 @@ sequenceDiagram
 
 ## 4. Usage
 
+Everything below is one CLI: `umcares`. The recipe (`recipes/*.json`) says what
+the video is; the CLI measures, renders and assembles it. `umcares/README.md`
+is the reference — this section is the route through it.
+
 ### Setup
 
 ```bash
 cp .env.example .env          # then fill in the keys
+umcares doctor                # 20 checks: tools, key auth, ssh, Premiere, preset
 ```
 
-Keys required: `JSON2VIDEO_API_KEY` (renders + Azure voices). `QWEN_API_KEY`
-is the Qwen fallback TTS. `JSON2VIDEO_ENDPOINT` defaults to
-`https://api.json2video.com/v2/movies`.
+`JSON2VIDEO_API_KEY` is required (it pays for renders *and* reaches the Azure
+voices). `JSON2VIDEO_ENDPOINT` defaults to `https://api.json2video.com/v2/movies`.
+`doctor` posts a scene-less movie to confirm the key actually authenticates —
+a *present* key and a *rejected* key look identical until the first render.
+
+### The whole cut
 
 ```bash
-python3 scripts/j2v_test.py --check     # confirms auth; renders nothing
+umcares recipe validate --file recipes/v10.json
+umcares render          --file recipes/v10.json           # every stage
+umcares render          --file recipes/v10.json --only voice cards
+umcares render          --file recipes/v10.json --from build --dry-run
 ```
+
+Stages, in order: `voice cards motion resolve import build subs export deliver
+verify`. Each is resumable and skips work whose output already exists, so a
+failure at `export` does not re-spend render credits on `voice`.
 
 ### Narration
 
-Text lives in the `SCENES` list inside `scripts/j2v_voice.py`.
+Text lives in the recipe's `scenes[].narration` — **that** is the source of
+truth. `video/video_script.md` is the pre-CLI draft, kept for reference.
 
 ```bash
-# inspect the generated SSML without spending render credits
-python3 scripts/j2v_voice.py --scenes --show-ssml
-
-# render every scene (delivered settings: pitch 0%, rate 0%, flow A, no fillers)
-python3 scripts/j2v_voice.py --scenes --no-fillers --pitch "0%" --rate "0%"
-
-# render one scene only
-python3 scripts/j2v_voice.py --scenes --one s4b_icym --no-fillers
-
-# poll a render
-python3 scripts/j2v_voice.py --status <project_id>
+umcares render  --file recipes/v10.json --only voice
+umcares preview --voice "Amanah di Dunia Digital"    # one phrase to WAV, no credits
+umcares config get voice.pitch                       # prosody lives in config
 ```
 
 Voice is `ms-MY-OsmanNeural` at **natural pitch** (0%) — the +16% "young"
-variants were abandoned. The SSML layer: `UM`, `PPR`, `ICYM` spelled out via
-`<say-as interpret-as="characters">`; `scam siber` → `<lang
-xml:lang="en-US">scam cyber</lang>` (English *spelling*, or the English voice
-mangles it); non-final periods rewritten to commas so Azure uses continuation
-contours instead of a falling terminal; per-scene `<emphasis>` only on the
-closing phrase of scenes 2/4/7/8.
+variants were abandoned. Pitch, rate and fillers are config
+(`UMC_VOICE_PITCH`, `UMC_VOICE_RATE`, `UMC_VOICE_FILLERS`), not per-run flags,
+so house style stays in one place. The recipe's `voice` block carries only the
+vocabulary: `acronyms`, `english_terms`, `phoneme_terms`.
+
+The SSML layer: `UM`, `PPR`, `ICYM` spelled out via `<say-as
+interpret-as="characters">`; `scam siber` → `<lang xml:lang="en-US">scam
+cyber</lang>` (English *spelling*, or the English voice mangles it); non-final
+periods rewritten to commas so Azure uses continuation contours instead of a
+falling terminal; per-scene `<emphasis>` only on the closing phrase of scenes
+2/4/7/8. All scenes render as one movie and split on the silence between them —
+one API call, unambiguous gaps.
 
 ### Cards
 
 ```bash
-python3 scripts/j2v_cards.py --dry              # preview JSON, no spend
-python3 scripts/j2v_cards.py --render           # both stat cards
-python3 scripts/j2v_cards.py --render --only s5
-python3 scripts/j2v_cards.py --render --only logos
+umcares render --file recipes/v10.json --only cards
 ```
 
-Logo cards are two-stage: json2video renders title text on a navy background
+Stat cards are stat tiles, not charts: for a handful of headline numbers the
+number IS the chart. Values stay in primary ink and gold is reserved for the
+eyebrow, so colour never carries data.
+
+Logo cards are two-stage because neither renderer can do the whole job:
+json2video lays out text but cannot read local images; ffmpeg composites the
+logos but has no `drawtext` on either machine. So json2video renders the title
 **with no logo band reserved in the text layout** (the band composites at
-y≈862, below the text — a band at y=300 covers the title), then ffmpeg
-composites the strip built locally:
+y≈862, below the text — a band at y=300 covers the title), then ffmpeg overlays
+a strip built locally.
 
-```bash
-python3 scripts/make_logo_strip.py    # builds strip_open.jpg / strip_close.jpg
-python3 scripts/make_logo_cards.py    # composite strip into card frame
-```
+The strips carry white-band lockups. Yayasan Taqwa is 334×87 and overflows a
+height-matched slot, and MOHE (474×474) / UM (500×300) are small marks in a lot
+of empty canvas — so `cards.py` auto-trims surrounding whitespace, then
+*contains* each mark inside its slot by width AND height rather than matching
+heights. AYG is black artwork on transparency and disappears on navy: keep it
+in the white band.
 
-The strips themselves contain white-band lockups (UM/MOHE/AYG flat and
-trimmed; Yayasan Taqwa is 334×87 and overflows a height-matched slot — trim
-whitespace then *contain* width+height, don't match heights). AYG is black
-artwork on transparency and disappears on navy — keep it in the white band.
+json2video's coordinate model, which costs credits to rediscover: `x` is
+absolute from the left but text is centred inside `width`; `y` is an offset
+from the VERTICAL CENTRE, so on-screen centre is `540 + y`. Anything past
+y=540 silently falls off a 1080 canvas.
 
 ### Subtitles
 
 ```bash
-python3 scripts/make_srt.py
+umcares render --file recipes/v10.json --only subs     # from measured audio
+umcares script check --file recipes/v10.json           # SRT vs recipe, per scene
 ```
 
-Reads the real narration WAVs, finds sentence boundaries by silence detection,
-and writes cues at the timeline offsets in `PLACEMENT`. **Re-run whenever any
-scene moves** — the pre-existing SRT was timed to an abandoned 3:45 storyboard
-and drifted badly. The final SRT carries your hand edits ("scam cyber" →
-"penipuan cyber", 172 cues).
+Cues come from silence detection inside each scene's real WAV, placed at the
+resolved timeline offsets — not from character counts, and not from a
+hardcoded placement table. **Re-run whenever any scene moves**: the
+pre-existing SRT was timed to an abandoned 3:45 storyboard and drifted badly.
 
-Those hand edits are exactly what the next render overwrites, so the CLI now
-compares the two sides instead of trusting them to agree:
+`video/video_subtitles.srt` carries hand edits ("scam cyber" → "penipuan
+cyber", 172 cues), and those edits are exactly what the next render overwrites.
+`script check` compares the two sides per scene and reports `ok` / `edited`
+(punctuation only) / `drift` (reworded) / `shifted` (right words, wrong window
+— a stale SRT) / `missing`. To keep an edit, put it in the recipe:
 
 ```bash
-umcares script check --file recipes/v10.json --srt video/video_subtitles.srt
+umcares script export --file recipes/v10.json    # -> ./script.md
+$EDITOR script.md
+umcares script import --file recipes/v10.json --dry-run
+umcares render        --file recipes/v10.json --from voice
 ```
 
-Per scene it reports `ok` / `edited` (punctuation only) / `drift` (reworded) /
-`shifted` (right words, wrong window — a stale SRT) / `missing`. To keep an
-edit, put it in the recipe: `umcares script export`, edit `script.md`, then
-`umcares script import`. See `umcares/README.md` → *The script*.
+Where the caption is *meant* to differ from the spoken word — the voice says
+`seratus` because Azure reads `100` as "satu kosong kosong" — declare the pair
+in `subtitles.aliases` and it stops counting as drift.
+
+### Delivery
+
+```bash
+umcares post mix --master exports/master_v10.mxf --music … --srt … --out …
+umcares verify --file recipes/v10.json          # loudness, gaps, logos, A/V sync
+```
 
 ---
 
