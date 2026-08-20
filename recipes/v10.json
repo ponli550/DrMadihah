@@ -323,6 +323,10 @@
     "language": "msa",
     "mode": "burn",
     "font_size": 46,
+    "aliases": [
+      ["seratus", "100"]
+    ],
+    "_aliases_note": "Spoken form vs displayed form, for `umcares script check`. The voice must say `seratus` because Azure reads `100` as \"satu kosong kosong\"; a caption shows the digit. Declaring the pair stops that substitution being reported as drift, and only that substitution - `150` against `seratus` is still drift.",
     "_note": "Burned in: neither ffmpeg here has libass, so captions are rendered as PNG bands and overlaid in the same pass as the music mix - one encode, no extra generation. A soft track cannot be guaranteed to display in an assessor player."
   },
   "output": {
