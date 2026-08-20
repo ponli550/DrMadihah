@@ -186,8 +186,13 @@ class Transport:
 
     def size(self, remote_path: str) -> int:
         r = self.run(f"wc -c < {shlex.quote(remote_path)} 2>/dev/null || echo -1", timeout=30)
+        return self._trailing_int(r.stdout)
+
+    @staticmethod
+    def _trailing_int(out: str) -> int:
+        """The last whitespace-separated integer in some output, or -1."""
         try:
-            return int(r.stdout.strip().split()[-1])
+            return int((out or "").strip().split()[-1])
         except (ValueError, IndexError):
             return -1
 
@@ -406,7 +411,6 @@ class TmuxTransport(Transport):
     name = "tmux"
 
     CHUNK = 2000          # base64 chars per send-keys; larger stalls the PTY
-    SETTLE = 0.35         # pause after each chunk
 
     def __init__(self, pane: str):
         self.pane = pane
@@ -504,6 +508,12 @@ class TmuxTransport(Transport):
 
         Output travels back base64-encoded between markers so that pane
         wrapping and ANSI escapes cannot corrupt it.
+
+        One sharp edge, inherited from where this runs: the command is executed
+        by the pane's own interactive shell, inside `{ ...; }` rather than a
+        subshell. So a command containing a bare `exit` exits *that* shell —
+        which is the ssh session — and this call then waits out its timeout
+        with the connection already gone. Wrap it yourself: `( exit 3 )`.
         """
         tag = "UMC" + uuid.uuid4().hex[:10].upper()
         tmp = f"/tmp/.umc_{tag}"
@@ -546,9 +556,8 @@ class TmuxTransport(Transport):
 
         m = re.search(r"RC=(-?\d+)", head)
         rc = int(m.group(1)) if m else 126
-        b64_out = re.sub(r"[^A-Za-z0-9+/=]", "", head[m.end():] if m else head)
-        b64_err = re.sub(r"[^A-Za-z0-9+/=]", "", errpart)
-        return Result(rc, _b64_text(b64_out), _b64_text(b64_err))
+        return Result(rc, _b64_text(_payload(head[m.end():] if m else head)),
+                      _b64_text(_payload(errpart)))
 
     # -- file transfer ------------------------------------------------------
     def push(self, local: Path, remote: str) -> None:
@@ -563,9 +572,18 @@ class TmuxTransport(Transport):
             part = data[offset:offset + self.CHUNK]
             want = offset + len(part)
             for attempt in range(3):
-                self._send(f"printf '%s' '{part}' >> {stage}")
-                time.sleep(self.SETTLE)
-                got = self.size(stage)
+                # The append and its own length check travel as ONE command,
+                # through the marker protocol. The previous shape — type the
+                # chunk, sleep a fixed 0.35s, then type a separate `wc -c` —
+                # lost that second command whenever the shell was still
+                # consuming the first: measured across 40, 80 and 200 column
+                # panes, 0.35s lost it every time and 1.5s never did. Guessing
+                # a longer pause would cost that on every chunk of every file;
+                # asking once and waiting for the answer costs nothing and
+                # cannot race, because run() polls until its end marker lands.
+                r = self.run(f"printf '%s' '{part}' >> {stage}; wc -c < {stage}",
+                             timeout=90)
+                got = self._trailing_int(r.stdout) if r.ok else -1
                 if got == want:
                     break
                 # send-keys silently drops input when the shell is busy;
@@ -597,6 +615,26 @@ class TmuxTransport(Transport):
         if local.stat().st_size != n:
             raise RuntimeError(
                 f"pull verify failed: remote {n} != local {local.stat().st_size}")
+
+
+PURE_B64 = re.compile(r"[A-Za-z0-9+/=]+")
+
+
+def _payload(region: str) -> str:
+    """The base64 lines in a marker region, with pane furniture left out.
+
+    Stripping every non-alphabet character from the whole region and gluing the
+    rest together looks equivalent and is not: `/`, letters and digits are all
+    base64, so a prompt like `irpan@mac ~/DrMadihah %` contributes
+    `irpanmacDrMadihah` to the payload and corrupts it silently.
+
+    A line either is the payload or it is not. The command echoes its base64 on
+    a line of its own, so keeping only whole lines that are nothing but base64
+    excludes furniture while still tolerating a payload split across several
+    lines (which `capture-pane -J` should already have joined).
+    """
+    return "".join(l.strip() for l in region.splitlines()
+                   if l.strip() and PURE_B64.fullmatch(l.strip()))
 
 
 def _b64_text(blob: str) -> str:

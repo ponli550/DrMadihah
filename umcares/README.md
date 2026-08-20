@@ -555,6 +555,57 @@ no longer existed — recovering them meant extracting a text layer back out of 
 An empty or suspiciously small result is refused rather than committed, so a
 broken encode cannot replace a working master with a 4 KB stub.
 
+## The tmux path, and what testing it found
+
+`capture-pane -J` and the base64 marker protocol are now tested two ways. The
+pane is faked at the `tmux` argv boundary — `send-keys` really runs the line
+through bash and the result is appended to a buffer `capture-pane` returns — so
+`run`, `_capture`, `_parse`, `size`, `push` and `pull` are all real code paths.
+Then `tests/test_tmux_live.py` runs the same operations against an actual tmux
+session, 40 columns wide so every payload wraps ~200 times:
+
+```bash
+python3 -m unittest discover -s tests -t .        # fake pane, ~6s
+UMC_TMUX_LIVE=1 python3 -m unittest tests.test_tmux_live -v
+```
+
+Both were needed. Three things came out of it:
+
+**A prompt could be spliced into the payload.** `_parse` used to strip every
+non-base64 character from the marker region and glue the rest together. But `/`,
+letters and digits are all base64, so `irpan@mac ~/DrMadihah %` contributed
+`irpanmacDrMadihah` to the output — silently, with nothing to check it against.
+Payload extraction now keeps whole lines that are *nothing but* base64, which
+excludes furniture and still tolerates a payload split across lines.
+
+**The chunk length check was racing the shell.** `push` typed a 2000-character
+chunk, slept a fixed 0.35s, then typed a separate `wc -c`. That second command
+was lost whenever the shell was still consuming the first — measured at 40, 80
+and 200 columns, 0.35s lost it *every time* and 1.5s never did, and a lost check
+meant `size()` waiting out its full 30s timeout before the chunk was resent. So
+the append and its length check now travel as one command through the marker
+protocol: no fixed pause to tune, and no window to lose the check in. Only a
+live pane could show this — the fake executes each line synchronously, so it
+never raced.
+
+**A fresh pane has to be woken before it is used.** `tmux new-session` returns
+before the shell has finished starting, and a long command typed into a
+not-yet-ready zsh is mangled: no markers are printed, the call waits out its
+timeout, and the pane is left mid-command so everything after it times out too.
+On a 120-column pane, a 2000-character command as the first thing a fresh pane
+saw returned 0 bytes after 25s; the same command after one short answered
+command took 0.9s. Production is safe by accident of design — `probe()` runs
+`echo __UMC_OK__; hostname` and requires an answer before handing the transport
+over, which doubles as the wake-up — but anything constructing
+`TmuxTransport(pane)` directly skips that, which is how the live test file first
+produced eight cascading timeouts and one real bug.
+
+**A bare `exit` takes the ssh session with it.** The command runs inside
+`{ ...; }` in the pane's own interactive shell, so `t.run("exit 3")` exits that
+shell — which is the session — and the call then waits out its timeout with the
+connection already gone. `run_script` documented this; `run` now does too.
+Write `( exit 3 )`.
+
 ## What this replaced
 
 Before the CLI, the pipeline was a directory of scripts driven by hand. They are
@@ -582,7 +633,7 @@ anywhere in this package today.
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests -t .     # 204 tests, no network, ~50ms
+python3 -m unittest discover -s tests -t .     # 280 tests, no network, ~6s
 ```
 
 Every test is a regression test for a bug that actually shipped: the resolver
