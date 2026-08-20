@@ -12,8 +12,8 @@ import sys
 from pathlib import Path
 
 from . import (auth, doctor, inspect as inspect_mod, log, media, post, recipe as
-               recipe_mod, render as render_mod, scaffold, secrets, session,
-               spinner, stack)
+               recipe_mod, render as render_mod, safe, scaffold,
+               script as script_mod, secrets, session, spinner, stack)
 from .example import EXAMPLE_RECIPE
 from . import __version__
 from .config import Config
@@ -385,6 +385,19 @@ def cmd_recipe(args, cfg):
                      f"— they must be rendered first")
         (work / "resolved.json").write_text(
             json.dumps(resolved, indent=2, ensure_ascii=False), encoding="utf-8")
+        md = script_mod.timeline_markdown(resolved)
+        if args.markdown:
+            # The flow is what gets reviewed after a resolve, and JSON is not
+            # what a human reads it in. Same numbers, one table.
+            out = Path(args.out).expanduser() if args.out else None
+            if out:
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_text(md, encoding="utf-8")
+                log.ok(f"wrote {out}")
+                log.out(str(out))
+            else:
+                log.out(md)
+            return 0
         log.out(resolved)
         return 0
 
@@ -658,6 +671,139 @@ def cmd_media(args, cfg):
     return 2
 
 
+def cmd_script(args, cfg):
+    """Round-trip narration through markdown, and diff it against an SRT.
+
+    The recurring bug this closes: `subtitles.srt` gets hand-edited for
+    readability, the recipe keeps the old wording, and the next render quietly
+    reverts the fix. `check` makes that visible; `import` makes it permanent.
+    """
+    from .burn import parse_srt
+
+    work = _workdir(cfg)
+    if not args.file:
+        log.err("--file <recipe> is required")
+        return 2
+    rpath = Path(args.file).expanduser()
+    # Deliberately *not* apply_defaults(): `import` writes this dict back, and
+    # merging config in first would bake house style into the recipe file, which
+    # then stops tracking config. Nothing here reads a defaulted block anyway.
+    rec = recipe_mod.load(rpath)
+    md_path = Path(args.md).expanduser() if args.md else (cfg.root / "script.md")
+
+    if args.action == "export":
+        resolved = None
+        rp = work / "resolved.json"
+        if rp.exists():
+            resolved = json.loads(rp.read_text(encoding="utf-8"))
+        else:
+            log.warn("no resolved.json yet — timings omitted "
+                     "(run `umcares recipe resolve --file <recipe>`)")
+        text = script_mod.export_markdown(rec, recipe_path=str(rpath),
+                                          resolved=resolved)
+        md_path.parent.mkdir(parents=True, exist_ok=True)
+        md_path.write_text(text, encoding="utf-8")
+        log.ok(f"wrote {md_path} ({len(rec.get('scenes') or [])} scenes)")
+        log.info(f"edit it, then: umcares script import --md {md_path} "
+                 f"--file {rpath}")
+        log.out(str(md_path))
+        return 0
+
+    if args.action == "import":
+        if not md_path.is_file():
+            log.err(f"no such file: {md_path} — run `umcares script export` first")
+            return 2
+        parsed = script_mod.parse_markdown(md_path.read_text(encoding="utf-8"))
+        if not parsed:
+            log.err(f"{md_path} has no scene markers "
+                    "(<!-- umcares:scene id=… -->) — is it a script export?")
+            return 2
+        updated, changes, unknown = script_mod.apply_markdown(rec, parsed)
+        for sid in unknown:
+            log.warn(f"{sid}: in the markdown but not in the recipe — ignored")
+        if not changes:
+            log.ok("no changes — recipe already matches the script")
+            log.out({"changed": [], "unknown": unknown})
+            return 0
+        for c in changes:
+            log.info(f"{c['scene']} {c['field']}")
+            if c["field"] == "narration":
+                d = c["diff"]
+                log.step(f"-{' '.join(d['removed']) or '—'}"
+                         f"  +{' '.join(d['added']) or '—'}")
+            elif len(c["before"]) != len(c["after"]):
+                log.step(f"{len(c['before'])} -> {len(c['after'])} caption(s)")
+            else:
+                # Same count means a timing or wording tweak, and "6 -> 6
+                # caption(s)" says nothing about which one moved.
+                for i, (b, a) in enumerate(zip(c["before"], c["after"]), 1):
+                    if b == a:
+                        continue
+                    if b["text"] != a["text"]:
+                        log.step(f"[{i}] {b['text']} -> {a['text']}")
+                    else:
+                        log.step(f"[{i}] at {b['at']}+{b['duration']} -> "
+                                 f"{a['at']}+{a['duration']}")
+        if args.dry_run:
+            log.warn("dry run — nothing written")
+            log.out({"changed": changes, "unknown": unknown, "written": None})
+            return 0
+        dest = Path(args.out).expanduser() if args.out else rpath
+        if dest == rpath:
+            safe.backup_local(dest)
+        written = recipe_mod.save(updated, dest)
+        log.ok(f"{len(changes)} change(s) -> {written}")
+        log.info("re-render narration and subtitles: "
+                 f"umcares render --file {written} --from voice")
+        log.out({"changed": changes, "unknown": unknown,
+                 "written": str(written)})
+        return 0
+
+    if args.action == "check":
+        rp = work / "resolved.json"
+        if not rp.exists():
+            log.err("no resolved.json — run "
+                    f"`umcares recipe resolve --file {rpath}` first")
+            return 2
+        resolved = json.loads(rp.read_text(encoding="utf-8"))
+        if rp.stat().st_mtime < rpath.stat().st_mtime:
+            # Windows come from resolved.json. If the recipe has been edited
+            # since, they describe a cut that no longer exists, and every scene
+            # after the first change reads as drift for the wrong reason.
+            log.warn(f"{rpath.name} is newer than resolved.json — re-run "
+                     f"`umcares recipe resolve --file {rpath}` first")
+        srt_path = Path(args.srt).expanduser() if args.srt \
+            else (work / "subtitles.srt")
+        if not srt_path.is_file():
+            log.err(f"no such SRT: {srt_path} (pass --srt <file>)")
+            return 2
+        cues = parse_srt(srt_path)
+        res = script_mod.check(rec, resolved, cues)
+        res["srt"] = str(srt_path)
+        for line in script_mod.report(res):
+            print(line, file=sys.stderr)
+        c = res["counts"]
+        msg = (f"{c['ok']} ok, {c['edited']} edited, {c['shifted']} shifted, "
+               f"{c['drift']} drift, {c['missing']} missing, "
+               f"{len(res['orphans'])} orphan cue(s)")
+        if res["ok"]:
+            log.ok(msg)
+        else:
+            log.err(msg)
+            if c["shifted"]:
+                log.info("shifted = the words are intact but in the wrong "
+                         "window: this SRT is from another cut, rebuild it "
+                         f"with `umcares render --file {rpath} --only subs`")
+            if c["drift"]:
+                log.info("drift = the wording differs. Adopt the SRT's: "
+                         "`umcares script export` -> paste -> `script import`")
+        log.out(res)
+        return 0 if res["ok"] else 1
+
+    log.err(f"unknown action {args.action}")
+    return 2
+
+
 def cmd_ingest(args, cfg):
     """Fetch pre-production material into a brief for the recipe author."""
     from . import ingest as ingest_mod
@@ -782,7 +928,23 @@ def build_parser() -> argparse.ArgumentParser:
     rc.add_argument("action", choices=["example", "validate", "resolve"])
     rc.add_argument("--file")
     rc.add_argument("--out")
+    rc.add_argument("--markdown", action="store_true",
+                    help="resolve: print the timeline as a table, not JSON")
     rc.set_defaults(func=cmd_recipe)
+
+    sc = sub.add_parser("script",
+                        help="narration round-trip: markdown out, edits back, "
+                             "drift vs the SRT")
+    sc.add_argument("action", choices=["export", "import", "check"])
+    sc.add_argument("--file", help="recipe .json or .yml")
+    sc.add_argument("--md", help="script markdown (default: ./script.md)")
+    sc.add_argument("--srt", help="check: SRT to diff "
+                                  "(default: .umcares/subtitles.srt)")
+    sc.add_argument("--out", help="import: write the recipe here instead of "
+                                  "in place")
+    sc.add_argument("--dry-run", action="store_true",
+                    help="import: show the changes, write nothing")
+    sc.set_defaults(func=cmd_script)
 
     i = sub.add_parser("init", help="create the project folder tree")
     i.add_argument("--local-only", action="store_true")

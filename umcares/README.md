@@ -71,7 +71,8 @@ The right pane must hold a live ssh session — it is the fallback transport.
 | Command | Purpose |
 |---|---|
 | `inspect [--dir] [--cols N]` | probe media + contact sheets, so an AI can SEE it |
-| `recipe example\|validate\|resolve` | author, check and resolve a recipe |
+| `recipe example\|validate\|resolve [--markdown]` | author, check and resolve a recipe (`--markdown`: the timeline as a table) |
+| `script export\|import\|check` | narration round-trip through markdown, and drift vs the SRT |
 | `render --file R [--from S] [--to S] [--only S…]` | render the recipe into a video |
 | `session [--force] [--status] [--reconnect]` | build/inspect the layout, re-open ssh |
 | `init [--plan] [--local-only] [--remote-only]` | create the project folder tree |
@@ -342,6 +343,72 @@ card, a kenburns with fewer than two photos, non-increasing ducking boundaries
 — or **a clip Premiere would import as audio-only**, which is the failure that
 looks like success.
 
+## The script (`umcares script`)
+
+Two things kept going wrong between the recipe and the delivery. `subtitles.srt`
+got hand-edited for readability, the recipe kept the old wording, and the next
+render put the old wording back — silently, because nothing compared them. And
+reviewing the flow meant reading JSON: scene order, wording and captions live in
+a file that is otherwise all timings and asset keys.
+
+```bash
+umcares recipe resolve --file recipes/v10.json      # windows come from here
+umcares script check  --file recipes/v10.json       # SRT vs recipe, per scene
+umcares script export --file recipes/v10.json       # -> ./script.md
+$EDITOR script.md                                   # rewrite narration
+umcares script import --file recipes/v10.json --dry-run
+umcares render --file recipes/v10.json --from voice # re-say it, re-cue it
+```
+
+`check` classifies rather than just passing or failing, because the differences
+call for opposite fixes:
+
+| | meaning | what to do |
+|---|---|---|
+| `ok` | the SRT is what the recipe says | nothing |
+| `edited` | same words, different punctuation or case | adopt it, or ignore it |
+| `shifted` | the words exist in the file, in the wrong window | the SRT is from another cut — rebuild it |
+| `drift` | the wording differs | decide which side is right, then `script import` |
+| `missing` | narration with no cue over its scene window | captions were never built |
+| orphan cue | a cue inside no scene's window | it belongs to a cut that no longer exists |
+
+`shifted` exists because the alternative is nine scenes reported as reworded
+when the only problem is a stale file, which sends someone rewriting narration
+that was already correct.
+
+Two false-positive classes are handled rather than tolerated, because a check
+that cries wolf gets muted:
+
+**A cue belongs to one scene.** Counting it in every window it touches made a
+caption that overhangs a cut appear as a whole extra sentence in the earlier
+scene — reported as drift, when the cue is simply 0.3s on the wrong side. The
+biggest overlap decides which scene owns it.
+
+**Narration is TTS input; a caption is display text.** They are *meant* to
+differ where a number is involved: the voice says `seratus` because `100` reads
+as "satu kosong kosong", and the caption shows `100` because that is what a
+number looks like. Declare those pairs and they stop counting as drift:
+
+```jsonc
+"subtitles": { "aliases": [["seratus", "100"], ["empat perpuluhan tujuh", "4.7"]] }
+```
+
+An alias folds one form onto the other on both sides before comparing, so it
+suppresses exactly that substitution and nothing else — `Seramai 100 pelajar`
+against `Seramai seratus peserta` is still drift on `peserta` → `pelajar`.
+
+`import` writes back **only** narration and captions — never durations or
+visual order. Those are measured from the media (see *Measure, never assume*),
+and a markdown table is not a safe place to type numbers the resolver computes.
+The visuals table in `script.md` is printed for context and ignored on the way
+back. The recipe is backed up to `<recipe>.prev` before it is overwritten.
+
+Scenes are anchored by an HTML comment (`<!-- umcares:scene id=… -->`) rather
+than by their heading, so reflowing a paragraph or retitling a heading changes
+nothing; an untouched export re-imports as zero changes. A scene the markdown
+does not mention keeps whatever the recipe says, so pasting back one section is
+safe.
+
 ## Seeing the media (`umcares inspect`)
 
 Writes into `.umcares/`:
@@ -459,7 +526,7 @@ broken encode cannot replace a working master with a 4 KB stub.
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests -t .     # 123 tests, no network, ~6ms
+python3 -m unittest discover -s tests -t .     # 204 tests, no network, ~50ms
 ```
 
 Every test is a regression test for a bug that actually shipped: the resolver

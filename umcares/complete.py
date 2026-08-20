@@ -20,6 +20,7 @@ _GLOBAL_OPTIONS = ["-h", "--help", "-v", "--transport", "--version"]
 _RECIPE_VALUE = {
     ("render", "file"),
     ("verify", "file"),
+    ("script", "file"),
     ("preview", "voice"),
 }
 
@@ -27,6 +28,9 @@ _FILE_VALUE = {
     ("ingest", "csv"),
     ("ingest", "out"),
     ("recipe", "out"),
+    ("script", "md"),
+    ("script", "srt"),
+    ("script", "out"),
     ("push", "local"),
     ("premiere", "out"),
     ("premiere", "preset"),

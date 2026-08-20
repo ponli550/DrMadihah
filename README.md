@@ -255,6 +255,18 @@ scene moves** — the pre-existing SRT was timed to an abandoned 3:45 storyboard
 and drifted badly. The final SRT carries your hand edits ("scam cyber" →
 "penipuan cyber", 172 cues).
 
+Those hand edits are exactly what the next render overwrites, so the CLI now
+compares the two sides instead of trusting them to agree:
+
+```bash
+umcares script check --file recipes/v10.json --srt video/video_subtitles.srt
+```
+
+Per scene it reports `ok` / `edited` (punctuation only) / `drift` (reworded) /
+`shifted` (right words, wrong window — a stale SRT) / `missing`. To keep an
+edit, put it in the recipe: `umcares script export`, edit `script.md`, then
+`umcares script import`. See `umcares/README.md` → *The script*.
+
 ---
 
 ## 5. Gotchas
