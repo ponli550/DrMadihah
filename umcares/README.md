@@ -600,6 +600,26 @@ over, which doubles as the wake-up — but anything constructing
 `TmuxTransport(pane)` directly skips that, which is how the live test file first
 produced eight cascading timeouts and one real bug.
 
+**Polling backs off instead of sleeping a flat 0.4s.** A `capture-pane` costs
+~8ms — the subprocess, not the parsing; it measures the same on an empty pane
+and after 12KB of output — and a trivial command becomes visible in ~20-25ms.
+Waiting a flat 0.4s therefore threw away most of every short command, and this
+transport issues one per asset probed. Polling now starts at 10ms and doubles to
+the old 0.4s ceiling, so a short command is caught on the second look while a
+long export still polls at the rate it always did: **465ms → 218ms per command**
+on an idle pane.
+
+**Chunked push is slow for a reason that is not fixable from this side.** After
+a 2000-character line the pane's shell cannot accept input for something over
+0.5s: with a fresh pane per data point, sending 10 chunks back to back with a
+0.0s, 0.25s or 0.5s pause each landed exactly **one** of them. A probe issued
+straight after a chunk is swallowed 4 times out of 4. So the per-chunk verify is
+not overhead to be optimised away — it is what makes the transfer work at all,
+and ~2.5s per 2000 base64 characters (~600 B/s) is the floor for this mechanism.
+A 15KB file is 10 chunks and 25s. That is what the tmux path costs; scp over the
+ssh transport moves 6 files in 1.07s, which is why ssh is the default and this
+is the fallback.
+
 **A bare `exit` takes the ssh session with it.** The command runs inside
 `{ ...; }` in the pane's own interactive shell, so `t.run("exit 3")` exits that
 shell — which is the session — and the call then waits out its timeout with the

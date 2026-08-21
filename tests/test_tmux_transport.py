@@ -31,7 +31,7 @@ def done(stdout: str = "") -> subprocess.CompletedProcess:
 class FakePane(TmuxTransport):
     """A pane whose keystrokes are executed by bash and echoed into a buffer."""
 
-    CHUNK_SEND = "printf '%s' '"
+    PUSH_WAIT = 0.4                   # production waits 20s for a real shell
 
     def run(self, cmd: str, timeout: int = 5) -> Result:
         """Same protocol, shorter patience: lost input should fail the test in
@@ -60,7 +60,7 @@ class FakePane(TmuxTransport):
 
     def _keys(self, text: str):
         self.sent.append(text)
-        if self.CHUNK_SEND in text:
+        if text.startswith("printf"):        # a bare chunk line, not a run()
             self.chunk_n += 1
             if self.chunk_n in self.drop_chunks:
                 self.drop_chunks.discard(self.chunk_n)
@@ -239,7 +239,7 @@ class ChunkedPush(Fixture):
         return p
 
     def chunks_sent(self) -> int:
-        return len([s for s in self.t.sent if self.t.CHUNK_SEND in s])
+        return len([s for s in self.t.sent if s.startswith("printf")])
 
     def test_a_small_file_is_one_chunk_and_lands_intact(self):
         src = self.write("small.txt", b"hello remote")
@@ -300,8 +300,8 @@ class ChunkedPush(Fixture):
         dest = self.path("v_out.bin")
         real_size = self.t.size
 
-        def lying_size(path):
-            return 1 if path == dest else real_size(path)
+        def lying_size(path, timeout=30):
+            return 1 if path == dest else real_size(path, timeout)
 
         self.t.size = lying_size
         with self.assertRaises(RuntimeError) as e:

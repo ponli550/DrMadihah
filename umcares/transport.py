@@ -184,8 +184,9 @@ class Transport:
         r = self.run(f"test -e {shlex.quote(remote_path)} && echo Y || echo N", timeout=30)
         return r.stdout.strip().endswith("Y")
 
-    def size(self, remote_path: str) -> int:
-        r = self.run(f"wc -c < {shlex.quote(remote_path)} 2>/dev/null || echo -1", timeout=30)
+    def size(self, remote_path: str, timeout: int = 30) -> int:
+        r = self.run(f"wc -c < {shlex.quote(remote_path)} 2>/dev/null || echo -1",
+                     timeout=timeout)
         return self._trailing_int(r.stdout)
 
     @staticmethod
@@ -412,6 +413,22 @@ class TmuxTransport(Transport):
 
     CHUNK = 2000          # base64 chars per send-keys; larger stalls the PTY
 
+    # How often to look for the end marker. A `capture-pane` costs ~11ms (the
+    # subprocess, not the parsing — it measures the same on an empty pane and
+    # after 12KB of output), and a trivial command becomes visible in ~20-25ms.
+    # A flat 0.4s therefore spent ~370ms waiting on every short command, of
+    # which this transport issues one per asset probed and two per chunk pushed.
+    # Start just under the cost of looking, double up to the old interval: a
+    # short command is caught on the second look, and a long export still polls
+    # at the same rate it always did.
+    POLL_MIN = 0.01
+    POLL_MAX = 0.4
+
+    # How long to wait for a staged chunk to reach its expected length before
+    # calling it lost. Generous: a resend costs a round trip, a false negative
+    # costs the whole transfer.
+    PUSH_WAIT = 20.0
+
     def __init__(self, pane: str):
         self.pane = pane
 
@@ -534,12 +551,16 @@ class TmuxTransport(Transport):
         self._send(wrapped)
 
         end = time.time() + timeout
-        while time.time() < end:
+        wait = self.POLL_MIN
+        while True:
             buf = self._capture()
             if f"{tag}_E" in buf:
                 return self._parse(buf, tag)
-            time.sleep(0.4)
-        return Result(124, "", f"timeout after {timeout}s")
+            left = end - time.time()
+            if left <= 0:
+                return Result(124, "", f"timeout after {timeout}s")
+            time.sleep(min(wait, left))     # never sleep past the deadline
+            wait = min(wait * 2, self.POLL_MAX)
 
     def _parse(self, buf: str, tag: str) -> Result:
         # capture-pane also contains the ECHOED command, which embeds the
@@ -572,23 +593,21 @@ class TmuxTransport(Transport):
             part = data[offset:offset + self.CHUNK]
             want = offset + len(part)
             for attempt in range(3):
-                # The append and its own length check travel as ONE command,
-                # through the marker protocol. The previous shape — type the
-                # chunk, sleep a fixed 0.35s, then type a separate `wc -c` —
-                # lost that second command whenever the shell was still
-                # consuming the first: measured across 40, 80 and 200 column
-                # panes, 0.35s lost it every time and 1.5s never did. Guessing
-                # a longer pause would cost that on every chunk of every file;
-                # asking once and waiting for the answer costs nothing and
-                # cannot race, because run() polls until its end marker lands.
-                r = self.run(f"printf '%s' '{part}' >> {stage}; wc -c < {stage}",
-                             timeout=90)
-                got = self._trailing_int(r.stdout) if r.ok else -1
-                if got == want:
+                # The chunk goes out as a bare line, deliberately. Wrapping it
+                # in the marker protocol to have the shell report its own
+                # length was tidier and wrong: it added ~250 characters to the
+                # typed line, and past some length send-keys delivers a
+                # TRUNCATED line, which leaves zsh on a `quote>` continuation
+                # prompt with every later command feeding the pending string.
+                # CHUNK is sized against that limit; the wrapper broke it.
+                self._send(f"printf '%s' '{part}' >> {stage}")
+                if self._wait_for_size(stage, want):
                     break
-                # send-keys silently drops input when the shell is busy;
-                # rewind to the known-good prefix and resend this chunk
-                log.debug(f"chunk resend at {offset} (got {got}, want {want})")
+                # send-keys also silently drops input when the shell is busy.
+                # Either way: clear whatever is half-typed, rewind to the
+                # known-good prefix, and resend this chunk.
+                log.debug(f"chunk resend at {offset} (want {want})")
+                self._interrupt()
                 self.run(f"truncate -s {offset} {stage}", timeout=30)
             else:
                 raise RuntimeError(f"push stalled at byte {offset} of {total}")
@@ -602,6 +621,42 @@ class TmuxTransport(Transport):
         if remote_n != local_n:
             raise RuntimeError(f"push verify failed: local {local_n} != remote {remote_n}")
         log.debug(f"pushed {local.name} in {sent} chunks, {local_n} bytes verified")
+
+    def _wait_for_size(self, path: str, want: int,
+                       deadline: float | None = None) -> bool:
+        """Poll until the staged file reaches `want` bytes.
+
+        This replaces a fixed 0.35s pause followed by one shot at `wc -c`. The
+        pause was a guess, and a wrong one: measured at 40, 80 and 200 columns,
+        0.35s was not enough for the shell to finish consuming a 2000-character
+        line, so the check itself got swallowed and cost a full timeout before
+        the chunk was resent. Polling asks as often as it is worth asking and
+        stops as soon as the answer arrives.
+
+        Each probe gets a short timeout on purpose: a swallowed probe should
+        cost a second and be retried, not sit out the default 30.
+        """
+        end = time.time() + (self.PUSH_WAIT if deadline is None else deadline)
+        wait = self.POLL_MIN
+        while True:
+            if self.size(path, timeout=2) == want:
+                return True
+            left = end - time.time()
+            if left <= 0:
+                return False
+            time.sleep(min(wait, left))
+            wait = min(wait * 2, self.POLL_MAX)
+
+    def _interrupt(self) -> None:
+        """Abandon a half-typed line so it cannot wedge everything after it.
+
+        A truncated send-keys leaves the shell waiting for a closing quote, and
+        from then on every command is swallowed into that pending string — seen
+        as a 10-chunk push failing at chunk 4 and never recovering, 365s of
+        retries against a shell that was never going to answer.
+        """
+        self._tmux("send-keys", "-t", self.pane, "C-c")
+        time.sleep(0.15)
 
     def pull(self, remote: str, local: Path) -> None:
         n = self.size(remote)
