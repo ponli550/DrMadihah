@@ -8,6 +8,7 @@ reason it cannot run is a reason to carry on without it.
 
 No network: what is under test is how the command is *assembled*.
 """
+import subprocess
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -135,13 +136,63 @@ class WedgedMaster(unittest.TestCase):
         self.assertFalse(SSHTransport("host", mux=False)
                          ._mux_wedged("mux_client: broken"))
 
+    def _ssh_g(self, sock):
+        return mock.Mock(returncode=0, stdout=f"host x\ncontrolpath {sock}\n",
+                         stderr="")
+
     def test_dropping_the_master_removes_the_socket(self):
         sock = self.dir / "cm-abc"
         sock.write_text("")
-        with mock.patch("subprocess.run") as run:
+        calls = []
+
+        def fake(argv, **kw):
+            calls.append(argv)
+            return self._ssh_g(sock)
+
+        with mock.patch("subprocess.run", side_effect=fake):
             self.assertTrue(self.t._drop_master())
         self.assertFalse(sock.exists())
-        self.assertIn("-O", run.call_args[0][0])
+        self.assertTrue(any("-O" in c for c in calls))
+
+    def test_dropping_the_master_leaves_other_sockets_alone(self):
+        """The directory is shared across hosts and concurrent runs."""
+        mine, theirs = self.dir / "cm-mine", self.dir / "cm-theirs"
+        mine.write_text("")
+        theirs.write_text("")
+        with mock.patch("subprocess.run", return_value=self._ssh_g(mine)):
+            self.t._drop_master()
+        self.assertFalse(mine.exists())
+        self.assertTrue(theirs.exists())
+
+    def test_an_unknown_socket_is_never_guessed_at(self):
+        theirs = self.dir / "cm-theirs"
+        theirs.write_text("")
+        with mock.patch("subprocess.run",
+                        return_value=mock.Mock(returncode=1, stdout="", stderr="")):
+            self.t._drop_master()
+        self.assertTrue(theirs.exists())
+
+    def test_a_timeout_is_a_result_not_an_exception(self):
+        self.t._cached_path = "/usr/bin:/bin"
+        with mock.patch("subprocess.run", side_effect=subprocess.TimeoutExpired("ssh", 5)):
+            res = self.t.run("sleep 99", timeout=5)
+        self.assertEqual(res.rc, 124)
+        self.assertFalse(res.ok)
+
+    def test_password_goes_in_the_environment_not_argv(self):
+        t = SSHTransport("host", password="hunter2")
+        t._cached_path = "/usr/bin:/bin"
+        seen = {}
+
+        def fake(argv, **kw):
+            seen["argv"], seen["env"] = argv, kw.get("env")
+            return mock.Mock(returncode=0, stdout="", stderr="")
+
+        with mock.patch("subprocess.run", side_effect=fake):
+            t.run("true")
+        self.assertNotIn("hunter2", " ".join(seen["argv"]))
+        self.assertEqual(seen["env"]["SSHPASS"], "hunter2")
+        self.assertIn("-e", seen["argv"])
 
     def test_a_wedged_command_is_retried_once_on_a_fresh_connection(self):
         calls = []
@@ -158,7 +209,7 @@ class WedgedMaster(unittest.TestCase):
             res = self.t.run("true")
         self.assertEqual(res.rc, 0)
         self.assertEqual(res.stdout, "ok")
-        self.assertEqual(len(calls), 3)          # fail, `ssh -O exit`, retry
+        self.assertEqual(len(calls), 4)    # fail, `ssh -G`, `ssh -O exit`, retry
 
     def test_a_real_failure_is_not_retried(self):
         calls = []

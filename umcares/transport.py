@@ -245,7 +245,9 @@ class SSHTransport(Transport):
             cmd += ["-i", self.key, "-o", "IdentitiesOnly=yes"]
         if self.password:
             # sshpass keeps it non-interactive; a key is still the better answer
-            cmd = ["sshpass", "-p", self.password] + cmd
+            # -e reads SSHPASS from the environment (see _env). `-p <password>`
+            # puts the password in argv, which `ps` shows to every local user.
+            cmd = ["sshpass", "-e"] + cmd
         elif batch:
             cmd += ["-o", "BatchMode=yes"]
         cmd += ["-o", "StrictHostKeyChecking=accept-new"] + self._mux()
@@ -258,10 +260,39 @@ class SSHTransport(Transport):
         opened their own connections while ssh reused one, which is half the
         commands in a render.
         """
-        return ((["sshpass", "-p", self.password] if self.password else [])
+        return ((["sshpass", "-e"] if self.password else [])
                 + ["scp", "-q"]
                 + (["-i", self.key, "-o", "IdentitiesOnly=yes"] if self.key else [])
                 + ["-o", "StrictHostKeyChecking=accept-new"] + self._mux())
+
+    def _env(self) -> "dict | None":
+        """The environment for a child ssh/scp: ours, plus the password if any."""
+        if not self.password:
+            return None
+        import os
+        return {**os.environ, "SSHPASS": self.password}
+
+    def _exec(self, argv: list, timeout: int) -> subprocess.CompletedProcess:
+        return subprocess.run(argv, capture_output=True, text=True,
+                              timeout=timeout, env=self._env())
+
+    def _own_socket(self) -> "Path | None":
+        """The file this connection's master listens on, or None if unknown.
+
+        ControlPath holds a `%C` token that only ssh can expand, and it expands
+        to a hash of the resolved host, so the literal template cannot be used
+        to find the file. Ask ssh instead of guessing.
+        """
+        try:
+            p = subprocess.run(["ssh", "-G", "-o", f"ControlPath={self._socket}",
+                                self.target],
+                               capture_output=True, text=True, timeout=15)
+        except (subprocess.TimeoutExpired, OSError):
+            return None
+        for line in (p.stdout if isinstance(p.stdout, str) else "").splitlines():
+            if line.lower().startswith("controlpath "):
+                return Path(line.split(None, 1)[1].strip())
+        return None
 
     def _drop_master(self) -> bool:
         """Tear down a wedged master so the next command opens a fresh one.
@@ -269,15 +300,20 @@ class SSHTransport(Transport):
         Asks ssh to exit it first, which also reaps the background process, then
         unlinks the socket as a backstop in case the master was too wedged to
         answer that.
+
+        Only THIS connection's socket is touched. The directory is shared by
+        every host and every concurrent run, and sweeping it would cut a live
+        master out from under whoever else is using one.
         """
         if not self._socket:
             return False
+        sock = self._own_socket()
         subprocess.run(["ssh", "-o", f"ControlPath={self._socket}",
                         "-O", "exit", self.target],
                        capture_output=True, timeout=15)
-        for f in control_dir().glob("cm-*"):
+        if sock is not None:
             try:
-                f.unlink()
+                sock.unlink()
             except OSError:
                 pass
         log.debug("dropped the ssh master socket")
@@ -320,8 +356,7 @@ class SSHTransport(Transport):
                 try:
                     argv = cand._base(batch=not use_pw) + [
                         "-o", f"ConnectTimeout={timeout}", target, "echo __UMC_OK__"]
-                    p = subprocess.run(argv, capture_output=True, text=True,
-                                       timeout=timeout + 8)
+                    p = cand._exec(argv, timeout + 8)
                     if p.returncode == 0 and "__UMC_OK__" in p.stdout:
                         how = "password" if use_pw else ("key" if key else "agent")
                         log.debug(f"ssh works via '{target}' ({how})")
@@ -350,9 +385,9 @@ class SSHTransport(Transport):
         if getattr(self, "_cached_path", None):
             return self._cached_path
         for shell in ("zsh", "bash"):
-            p = subprocess.run(
+            p = self._exec(
                 self._base() + [self.target, f"{shell} -lc 'printf %s \"$PATH\"'"],
-                capture_output=True, text=True, timeout=45)
+                45)
             path = p.stdout.strip()
             if p.returncode == 0 and ":" in path and "/bin" in path:
                 self._cached_path = path
@@ -365,25 +400,35 @@ class SSHTransport(Transport):
 
     def run(self, cmd: str, timeout: int = 120) -> Result:
         wrapped = f'export PATH={shlex.quote(self._login_path())}; {cmd}'
-        p = subprocess.run(self._base() + [self.target, wrapped],
-                           capture_output=True, text=True, timeout=timeout)
-        if p.returncode != 0 and self._mux_wedged(p.stderr):
-            # The command never reached the remote, so re-running it is safe
-            # here in a way that a general retry would not be.
-            self._drop_master()
-            p = subprocess.run(self._base() + [self.target, wrapped],
-                               capture_output=True, text=True, timeout=timeout)
+        argv = self._base() + [self.target, wrapped]
+        try:
+            p = self._exec(argv, timeout)
+            if p.returncode != 0 and self._mux_wedged(p.stderr):
+                # The command never reached the remote, so re-running it is safe
+                # here in a way that a general retry would not be.
+                self._drop_master()
+                p = self._exec(argv, timeout)
+        except subprocess.TimeoutExpired:
+            # Same contract as the tmux transport: a timeout is a Result the
+            # caller can branch on, not an exception only one transport raises.
+            return Result(124, "", f"timeout after {timeout}s")
         return Result(p.returncode, p.stdout, p.stderr)
 
     def _mux_wedged(self, stderr: str) -> bool:
         return bool(self._socket) and any(m in (stderr or "") for m in MUX_BROKEN)
+
+    def _scp_run(self, argv: list, timeout: int, what: str):
+        try:
+            return self._exec(argv, timeout)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"{what} timed out after {timeout}s") from None
 
     def push(self, local: Path, remote: str) -> None:
         parent = remote.rsplit("/", 1)[0]
         if parent and parent != remote:
             self.ensure_dir(parent)
         argv = self._scp() + [str(local), f"{self.target}:{remote}"]
-        p = subprocess.run(argv, capture_output=True, text=True, timeout=900)
+        p = self._scp_run(argv, 900, "scp push")
         if p.returncode != 0:
             raise RuntimeError(f"scp push failed: {p.stderr.strip()[:300]}")
 
@@ -394,7 +439,7 @@ class SSHTransport(Transport):
         self.ensure_dir(remote_dir)
         argv = self._scp() + [str(f) for f in locals_] + \
                [f"{self.target}:{remote_dir.rstrip('/')}/"]
-        p = subprocess.run(argv, capture_output=True, text=True, timeout=1800)
+        p = self._scp_run(argv, 1800, "scp batch push")
         if p.returncode != 0:
             raise RuntimeError(f"scp batch push failed: {p.stderr.strip()[:300]}")
         return len(locals_)
@@ -402,7 +447,7 @@ class SSHTransport(Transport):
     def pull(self, remote: str, local: Path) -> None:
         local.parent.mkdir(parents=True, exist_ok=True)
         argv = self._scp() + [f"{self.target}:{remote}", str(local)]
-        p = subprocess.run(argv, capture_output=True, text=True, timeout=900)
+        p = self._scp_run(argv, 900, "scp pull")
         if p.returncode != 0:
             raise RuntimeError(f"scp pull failed: {p.stderr.strip()[:300]}")
 
