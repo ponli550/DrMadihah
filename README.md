@@ -44,7 +44,7 @@ DrMadihah/                          THIS REPO (source only)
 │   ├── script.py                   narration round-trip + SRT drift check
 │   └── …                           see umcares/README.md
 ├── recipes/*.json                  what to render — the source of truth [tracked]
-├── tests/                          213 tests, no network         [tracked]
+├── tests/                          281 tests, no network         [tracked]
 ├── bin/umcares                     entry point (symlink onto PATH)
 ├── completions/_umcares            zsh completion (fzf-backed)
 ├── video/
