@@ -222,5 +222,59 @@ class ApplyDefaults(unittest.TestCase):
         self.assertEqual(r, {"subtitles": {"language": "eng"}})
 
 
+class ExplicitDurationCannotOutrunTheAsset(unittest.TestCase):
+    """A declared duration is a request. The asset's real length is the fact."""
+
+    def test_resolve_clamps_a_duration_longer_than_the_clip(self):
+        r = rec([{"id": "s1", "visuals": [{"clip": "a.mp4", "duration": 10}]}])
+        out = recipe.resolve(r, {"clip:a.mp4": 7.0})
+        self.assertEqual(out["video"][0]["duration"], 7.0)
+        self.assertEqual(out["total"], 7.0)
+        self.assertEqual(out["clamped"][0]["asked"], 10.0)
+
+    def test_resolve_leaves_a_shorter_duration_alone(self):
+        r = rec([{"id": "s1", "visuals": [{"clip": "a.mp4", "duration": 4}]}])
+        out = recipe.resolve(r, {"clip:a.mp4": 7.0})
+        self.assertEqual(out["video"][0]["duration"], 4.0)
+        self.assertEqual(out["clamped"], [])
+
+    def test_clamped_scene_is_reported_short_when_narration_needs_more(self):
+        r = rec([{"id": "s1", "narration": "x",
+                  "visuals": [{"clip": "a.mp4", "duration": 10}]}])
+        out = recipe.resolve(r, {"clip:a.mp4": 7.0, "vo:s1": 9.0})
+        self.assertEqual(out["short"][0]["scene"], "s1")
+
+    def test_validate_flags_a_duration_longer_than_the_clip(self):
+        r = rec([{"id": "s1", "visuals": [{"clip": "a.mp4", "duration": 10}]}])
+        problems = recipe.validate(r, durations={"clip:a.mp4": 7.0})
+        self.assertTrue(any("would be black" in p for p in problems))
+
+    def test_validate_accepts_a_duration_within_the_clip(self):
+        r = rec([{"id": "s1", "visuals": [{"clip": "a.mp4", "duration": 7}]}])
+        self.assertEqual(recipe.validate(r, durations={"clip:a.mp4": 7.0}), [])
+
+
+class KenBurnsIdsAgree(unittest.TestCase):
+    """validate, resolve and the motion stage must name an id-less kenburns alike."""
+
+    def test_fallback_id_is_scene_and_position(self):
+        self.assertEqual(recipe.kenburns_id({}, "s2", 1), "s2_kb1")
+        self.assertEqual(recipe.kenburns_id(None, "s2", 0), "s2_kb0")
+        self.assertEqual(recipe.kenburns_id({"id": "mine"}, "s2", 1), "mine")
+
+    def test_resolve_uses_the_same_key_validate_checks(self):
+        scenes = [
+            {"id": "s1", "visuals": [{"kenburns": {"id": "a", "photos": ["1", "2"]}}]},
+            {"id": "s2", "visuals": [{"clip": "c.mp4"},
+                                     {"kenburns": {"photos": ["1", "2"]}}]},
+        ]
+        durations = {"kenburns:a": 5.0, "clip:c.mp4": 3.0, "kenburns:s2_kb1": 4.0}
+        r = rec(scenes)
+        self.assertEqual(recipe.validate(r, durations=durations), [])
+        out = recipe.resolve(r, durations)
+        self.assertEqual(out["missing"], [])
+        self.assertEqual(out["total"], 12.0)
+
+
 if __name__ == "__main__":
     unittest.main()

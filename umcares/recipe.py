@@ -77,6 +77,17 @@ def apply_defaults(recipe: dict, defaults: dict) -> dict:
 VISUAL_KINDS = ("clip", "card", "kenburns", "still", "black")
 
 
+def kenburns_id(spec: dict | None, sid: str, index: int) -> str:
+    """The id a kenburns visual is built, measured and looked up under.
+
+    `index` is the visual's position inside its scene. validate, resolve and the
+    motion stage each used to derive this fallback on their own, and the motion
+    stage counted across the whole recipe, so an id-less kenburns after the
+    first scene was built under one name and looked up under another.
+    """
+    return (spec or {}).get("id") or f"{sid}_kb{index}"
+
+
 def validate(recipe: dict, manifest: dict | None = None,
              durations: dict | None = None) -> list:
     """Return a list of problems. Empty means the recipe is renderable.
@@ -146,8 +157,7 @@ def validate(recipe: dict, manifest: dict | None = None,
             elif kind == "card":
                 key = f"card:{v['card']}"
             elif kind == "kenburns":
-                ref = (v["kenburns"] or {}).get("id") or f"{sid}_kb{j}"
-                key = f"kenburns:{ref}"
+                key = f"kenburns:{kenburns_id(v['kenburns'], sid, j)}"
             else:
                 key = f"{kind}:{v.get(kind)}"
 
@@ -161,6 +171,12 @@ def validate(recipe: dict, manifest: dict | None = None,
                     problems.append(
                         f"{sid}.visuals[{j}]: duration for `{key}` is zero — "
                         f"re-render or check the source")
+                elif (v.get("duration") is not None
+                      and float(v["duration"]) > float(durations[key]) + 0.05):
+                    problems.append(
+                        f"{sid}.visuals[{j}]: duration {v['duration']}s is longer "
+                        f"than `{key}` really is ({float(durations[key]):.2f}s) — "
+                        f"the difference would be black")
 
             if kind == "kenburns":
                 photos = (v["kenburns"] or {}).get("photos") or []
@@ -221,7 +237,7 @@ def resolve(recipe: dict, durations: dict) -> dict:
     pad = float((recipe.get("meta") or {}).get("scene_pad") or 0.5)
     vo_lead = float((recipe.get("meta") or {}).get("narration_lead") or 0.5)
 
-    video, audio, missing, short = [], [], [], []
+    video, audio, missing, short, clamped = [], [], [], [], []
     t = 0.0
     timeline = []
 
@@ -236,19 +252,28 @@ def resolve(recipe: dict, durations: dict) -> dict:
 
         # place visuals back to back
         fixed, open_slots = [], []
-        for v in scene.get("visuals") or []:
+        for idx, v in enumerate(scene.get("visuals") or []):
             kind = next(k for k in VISUAL_KINDS if k in v)
             if kind == "clip":
                 key, ref = f"clip:{v['clip']}", v["clip"]
             elif kind == "card":
                 key, ref = f"card:{v['card']}", v["card"]
             elif kind == "kenburns":
-                ref = v["kenburns"].get("id") or f"{sid}_kb{len(fixed)}"
+                ref = kenburns_id(v["kenburns"], sid, idx)
                 key = f"kenburns:{ref}"
             else:
                 key, ref = f"{kind}:{v.get(kind)}", v.get(kind)
 
             dur = v.get("duration")
+            real = durations.get(key)
+            if dur is not None and real and float(dur) > float(real) + 1e-6:
+                # An explicit duration is a request, not a fact. A clip asked to
+                # run past its end does not stretch, it stops, and the rest of
+                # the slot is black -- the same failure the stretch cap below
+                # prevents, arriving by a different door.
+                clamped.append({"scene": sid, "key": key,
+                                "asked": float(dur), "real": float(real)})
+                dur = real
             if dur is None:
                 dur = durations.get(key)
             if dur is None:
@@ -333,6 +358,7 @@ def resolve(recipe: dict, durations: dict) -> dict:
         "scenes": timeline,
         "missing": sorted(set(missing)),
         "short": short,
+        "clamped": clamped,
     }
 
 
@@ -357,6 +383,9 @@ def summary(resolved: dict) -> str:
                      f"({s['duration']:.1f}s, narration {s['narration']:.1f}s)")
     if resolved["missing"]:
         lines.append(f"  MISSING durations: {', '.join(resolved['missing'])}")
+    for c in resolved.get("clamped") or []:
+        lines.append(f"  CLAMPED {c['scene']}: {c['key']} asked {c['asked']}s, "
+                     f"is only {c['real']:.2f}s")
     for sh in resolved.get("short") or []:
         lines.append(f"  SHORT {sh['scene']}: {sh['visuals']}s of visuals for "
                      f"{sh['narration']}s of narration — {sh['shortfall']}s would be BLACK")
