@@ -182,11 +182,11 @@ class Renderer:
         """Ken Burns sequences, built on the remote where the photos live."""
         jobs = []
         for scene in self.rec.get("scenes") or []:
-            for v in scene.get("visuals") or []:
+            for idx, v in enumerate(scene.get("visuals") or []):
                 if "kenburns" not in v:
                     continue
                 spec = v["kenburns"] or {}
-                kid = spec.get("id") or f"{scene['id']}_kb{len(jobs)}"
+                kid = recipe_mod.kenburns_id(spec, scene["id"], idx)
                 jobs.append((kid, spec.get("photos") or [],
                              float(v.get("duration") or spec.get("duration") or 8.0)))
         if not jobs:
@@ -198,8 +198,16 @@ class Renderer:
         for kid, photos, dur in jobs:
             dest = self._remote("assets", "edit_ready", f"{kid}.mp4")
             if self._have_remote(dest):
-                self.durations[f"kenburns:{kid}"] = dur
-                continue
+                # Measure the file that is there. Taking `dur` from the recipe
+                # would call a stale clip as long as the recipe now says, and
+                # the gap between the two would be black.
+                have = media.duration(self.t, dest)
+                if have is not None and abs(have - dur) <= 0.5:
+                    self.durations[f"kenburns:{kid}"] = have
+                    continue
+                log.step(f"ken burns {kid}: remote is "
+                         f"{'unreadable' if have is None else f'{have:.1f}s'}, "
+                         f"recipe wants {dur:.1f}s — rebuilding")
             paths = [f"{photo_dir}/{p}" for p in photos]
             with spinner.spin(f"ken burns {kid} ({len(photos)} stills)",
                               20 + 25 * len(photos)):

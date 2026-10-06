@@ -95,6 +95,16 @@ echo "{{\\"copied\\":$n_copy,\\"transcoded\\":$n_trans,\\"detail\\":\\"$report\\
     return json.loads(line[-1]) if line else {"raw": r.stdout[-400:]}
 
 
+def duration(t: Transport, path: str) -> float | None:
+    """Seconds of a remote media file, or None if it cannot be read."""
+    r = t.run(f"ffprobe -v error -show_entries format=duration "
+              f"-of default=nk=1:nw=1 {_q(path)}", timeout=60)
+    try:
+        return float(r.stdout.strip().splitlines()[-1]) if r.ok else None
+    except (ValueError, IndexError):
+        return None
+
+
 def kenburns(t: Transport, out: str, photos: list, seconds: float,
              xfade: float = 0.6, crf: int = 17, fps: int = 50) -> dict:
     """Build a slow zoom/pan sequence from stills, crossfaded together.
