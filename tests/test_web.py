@@ -332,7 +332,7 @@ class UploadRoutes(Server):
         self.assertEqual(self.req("GET", "/p/demo/api/upload/not-an-id")[0], 404)
 
     def test_unsupported_types_and_bad_sizes_are_a_400_with_a_message(self):
-        for name, size in (("notes.txt", 5), ("a.jpg", 0), ("a.jpg", "big"), ("a.jpg", -3)):
+        for name, size in (("notes.txt", 5), ("a.jpg", 0), ("a.jpg", "big"), ("a.jpg", -3), ("run.sh", 5)):
             status, _, body = self.start(name, size)
             self.assertEqual(status, 400, (name, size))
             self.assertIn("error", json.loads(body))

@@ -19,8 +19,12 @@ class Names(unittest.TestCase):
         self.assertEqual(uploads.destination("IMG_1.HEIC"), "photos")
         self.assertEqual(uploads.destination("clip.MOV"), "inbox")
 
+    def test_music_goes_to_the_music_folder(self):
+        self.assertEqual(uploads.destination("Song.MP3"), "music")
+        self.assertEqual(uploads.destination("beat.m4a"), "music")
+
     def test_anything_else_is_refused(self):
-        for n in ("notes.txt", "run.sh", "archive.zip", "noext", "song.mp3"):
+        for n in ("notes.txt", "run.sh", "archive.zip", "noext", "clip.avi"):
             with self.assertRaises(uploads.UploadError) as cm:
                 uploads.destination(n)
             self.assertEqual(cm.exception.status, 400, n)
@@ -52,6 +56,45 @@ class Names(unittest.TestCase):
 
     def test_unicode_names_survive(self):
         self.assertEqual(uploads.safe_name("Majlis Hari Raya – 项目.jpg"), "Majlis Hari Raya – 项目.jpg")
+
+
+class CaptureTime(unittest.TestCase):
+    """The phone sends when the photo was taken; the file keeps that time so everything lists in the order it happened."""
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def up(self, name, data, mtime):
+        s = uploads.start(self.root, name, len(data), mtime)
+        uploads.append(self.root, s["id"], 0, io.BytesIO(data), len(data))
+        return uploads.finish(self.root, s["id"])["file"]
+
+    def test_the_file_gets_the_time_it_was_taken_not_the_time_it_was_uploaded(self):
+        self.up("a.jpg", b"aaaa", 1_700_000_000_000)                       # 14 Nov 2023, in ms
+        self.assertEqual(int((self.root / "assets" / "photos" / "a.jpg").stat().st_mtime), 1_700_000_000)
+
+    def test_uploaded_in_the_wrong_order_they_still_list_in_the_order_they_were_taken(self):
+        self.up("later.jpg", b"1111", 1_700_000_900_000)
+        self.up("earlier.jpg", b"2222", 1_700_000_100_000)
+        from umcares import captions
+        self.assertEqual([i["name"] for i in captions.items(self.root)], ["earlier.jpg", "later.jpg"])
+
+    def test_nonsense_times_are_ignored_and_never_break_the_upload(self):
+        now = time.time()
+        for i, bad in enumerate((0, 1, -5, "yesterday", None, True, 4_000_000_000_000, float("nan"), 10**30)):
+            f = self.up(f"x{i}.jpg", f"data{i}".encode(), bad)
+            m = (self.root / "assets" / "photos" / f["name"]).stat().st_mtime
+            self.assertGreater(m, now - 60, f"{bad!r} must leave the upload time alone")
+
+    def test_a_resumed_upload_keeps_its_original_capture_time(self):
+        s = uploads.start(self.root, "r.jpg", 8, 1_700_000_000_000)
+        uploads.append(self.root, s["id"], 0, io.BytesIO(b"1234"), 4)
+        again = uploads.start(self.root, "r.jpg", 8, 1_700_000_000_000)       # the page reloaded
+        uploads.append(self.root, again["id"], 4, io.BytesIO(b"5678"), 4)
+        uploads.finish(self.root, again["id"])
+        self.assertEqual(int((self.root / "assets" / "photos" / "r.jpg").stat().st_mtime), 1_700_000_000)
 
 
 class Flow(unittest.TestCase):

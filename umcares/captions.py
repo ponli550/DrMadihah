@@ -74,6 +74,8 @@ def items(root) -> list:
     notes = load(root)
     out = []
     for sha, rel in uploads.known_files(root).items():
+        if kind_of(rel) not in ("image", "video"):          # a song is not described in the caption pass
+            continue
         p = root / rel
         st = p.stat()
         n = notes.get(sha, {})
@@ -89,6 +91,8 @@ def by_path(root) -> dict:
     notes = load(root)
     out = {}
     for sha, rel in uploads.known_files(root).items():
+        if kind_of(rel) not in ("image", "video"):
+            continue
         n = notes.get(sha, {})
         out[rel] = {"sha": sha, "caption": n.get("caption", ""), "skipped": bool(n.get("skipped"))}
     for rel, sha in prepare.outputs(root).items():          # an edit-ready copy carries the caption of its source

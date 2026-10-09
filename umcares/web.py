@@ -37,7 +37,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from . import captions, prepare, projects, uploads, webpages
+from . import captions, montage, prepare, projects, textimg, uploads, webpages
 from .layout import kind_of
 
 DEFAULT_PORT = 8733      # 8732 is SekerinShotto's
@@ -124,6 +124,21 @@ PUBLIC_JOB = ("id", "sha", "name", "state", "percent", "error", "output", "actio
 def public_job(job: dict) -> dict:
     """A job as the page may see it: never the absolute path of the project on the machine."""
     return {k: job.get(k) for k in PUBLIC_JOB}
+
+
+def montage_state(root) -> dict:
+    """Everything the Make-a-video card needs in one answer. Nothing here is a path on the machine."""
+    return {
+        "catalog": [{k: i[k] for k in ("ref", "name", "kind", "folder", "prepared", "caption")}
+                    for i in montage.catalog(root)],
+        "templates": {k: {"label": t["label"], "blurb": t["blurb"]} for k, t in montage.TEMPLATES.items()},
+        "formats": {k: {"label": f["label"]} for k, f in montage.FORMATS.items()},
+        "jobs": montage.RENDERER.snapshot(root), "active": montage.RENDERER.active(root),
+        "exports": montage.exports(root),
+        "recipes": [{"name": r["name"], "valid": r["valid"], "problems": r["problems"][:5], "recipe": r.get("recipe")}
+                    for r in montage.list_recipes(root)],
+        "can_render": bool(prepare.find_tool("ffmpeg")) and textimg.available(),
+    }
 
 
 COMMIT_DELAY = 20.0                      # seconds of quiet after the last caption before git records it
@@ -430,11 +445,13 @@ __PWA__
 </section>
 <div id="details"></div>
 <div id="prepare"></div>
+<div id="montage"></div>
 <div id="lib"></div>
 </main>
 <script src="__ROOT__/uploader.js"></script>
 <script src="__ROOT__/details.js"></script>
 <script src="__ROOT__/prepare.js"></script>
+<script src="__ROOT__/montage.js"></script>
 <script>
 const HOME = __HOME__;
 const BASE = __BASE__;
@@ -505,11 +522,13 @@ const uploader = createUploader({
   base: BASE,
   queue: document.getElementById("queue"), summary: document.getElementById("summary"),
   speed: document.getElementById("speed"), retry: document.getElementById("retry"),
-  onSaved: () => { prep.refresh(); loadLibrary().then(fresh => { if (fresh.length) details.start({only: fresh}); }); },
+  onSaved: () => { prep.refresh(); mont.refresh(); loadLibrary().then(fresh => { if (fresh.length) details.start({only: fresh}); }); },
 });
-const details = createDetails({base: BASE, mount: document.getElementById("details"), banner: document.getElementById("detailsBtn"), onChange: loadLibrary});
+const details = createDetails({base: BASE, mount: document.getElementById("details"), banner: document.getElementById("detailsBtn"), onChange: () => { mont.refresh(); loadLibrary(); }});
 details.refresh();
-const prep = createPrepare({base: BASE, mount: document.getElementById("prepare"), onChange: loadLibrary});
+const mont = createMontage({base: BASE, mount: document.getElementById("montage"), name: PROJECT.name});
+mont.refresh();
+const prep = createPrepare({base: BASE, mount: document.getElementById("prepare"), onChange: () => { mont.refresh(); loadLibrary(); }});
 prep.refresh();
 loadLibrary().then(() => { if (new URLSearchParams(location.search).get("details")) details.start({}); });
 for (const k of ["pick", "shoot", "film"]) {
@@ -596,6 +615,16 @@ def make_handler(home, owner: str):
             base = f"{BASE}/p/{slug}"
             if rest.startswith("/api/upload/"):
                 return self._upload(slug, rest, "GET", query)
+            if rest == "/api/montage":
+                return self._json(200, montage_state(root))
+            if rest == "/api/montage/brief":
+                return self._send(200, montage.brief(root, (projects.find_project(home, slug) or {}).get("name", "")).encode(),
+                                  "text/markdown; charset=utf-8")
+            if rest.startswith("/exports/"):
+                name = rest[len("/exports/"):]
+                p = root / "exports" / name
+                ok = re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.(mp4|json)", name) and p.is_file() and ".part" not in name
+                return self._media(p) if ok else self._text(404, "not found")
             if rest == "/api/prepare":
                 return self._json(200, {"candidates": prepare.candidates(root),
                                         "jobs": [public_job(j) for j in prepare.PREPARER.snapshot(root)],
@@ -635,6 +664,8 @@ def make_handler(home, owner: str):
             path, query = unquote(parts.path), parse_qs(parts.query)
             if path == "/manifest.webmanifest":
                 return self._send(200, json.dumps(manifest()).encode(), "application/manifest+json")
+            if path == "/montage.js":
+                return self._send(200, webpages.MONTAGE_JS.encode(), "text/javascript; charset=utf-8", {"Cache-Control": "no-cache"})
             if path == "/prepare.js":
                 return self._send(200, webpages.PREPARE_JS.encode(), "text/javascript; charset=utf-8", {"Cache-Control": "no-cache"})
             if path == "/details.js":
@@ -787,6 +818,36 @@ def make_handler(home, owner: str):
                 return self._json(500, {"error": "the machine could not start the job"})
             return self._json(200, {"queued": [public_job(j) for j in made]})
 
+        def _montage_write(self, slug: str, action: str):
+            root = project_root(home, slug)
+            if root is None:
+                return self._text(404, "not found")
+            if not self._csrf_ok(json_body=True):
+                return self._json(403, {"error": "forbidden"})
+            body = self._json_body()
+            if body is None:
+                return
+            try:
+                if action == "cancel":
+                    return self._json(200, {"cancelled": montage.RENDERER.cancel(root)})
+                if action == "recipes":
+                    name = montage.save_recipe(root, body.get("name"), body.get("recipe"))
+                    projects.commit_files(root, [f"recipes/{name}"], f"recipes: save {name}")
+                    return self._json(200, {"saved": name})
+                recipe = body.get("recipe")
+                if body.get("dry_run") is True:
+                    plan = montage.plan_for(recipe, root)
+                    return self._json(200, {"plan": {k: plan[k] for k in ("title", "format", "template", "total", "fade", "warnings")}
+                                                    | {"segments": [{k: s.get(k) for k in ("kind", "name", "text", "duration", "start")} for s in plan["segments"]],
+                                                       "music": plan["music"] and plan["music"]["name"]}})
+                return self._json(200, {"job": montage.RENDERER.submit(root, recipe)})
+            except montage.RecipeError as e:
+                return self._json(400, {"error": str(e), "problems": e.problems})
+            except montage.MontageError as e:
+                return self._json(400, {"error": str(e)})
+            except OSError:
+                return self._json(500, {"error": "the machine could not start the job"})
+
         def _write(self, method: str):
             if not authorized(self.headers, owner):
                 return self._text(403, "forbidden")
@@ -799,6 +860,9 @@ def make_handler(home, owner: str):
             m = re.fullmatch(r"/p/([a-z0-9-]+)(/api/upload/.*)", path)
             if m:
                 return self._upload(m.group(1), m.group(2), method, query)
+            m = re.fullmatch(r"/p/([a-z0-9-]+)/api/montage(?:/(cancel|recipes))?", path)
+            if m and method == "POST":
+                return self._montage_write(m.group(1), m.group(2) or "make")
             m = re.fullmatch(r"/p/([a-z0-9-]+)/api/prepare(/cancel)?", path)
             if m and method == "POST":
                 return self._prepare_write(m.group(1), bool(m.group(2)))

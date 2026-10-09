@@ -21,7 +21,7 @@ const walk = (n, f) => { if (!n || typeof n !== "object") return; f(n); (n.child
 const all = (n, pred) => { const out = []; walk(n, x => { if (pred(x)) out.push(x); }); return out; };
 const deepText = n => { let t = ""; walk(n, x => { t += x.textContent + " "; }); return t.trim().replace(/\s+/g, " "); };
 const ids = {};
-for (const id of ["back", "title", "status", "add", "speed", "summary", "queue", "retry", "lib", "pick", "shoot", "film", "f_pick", "f_shoot", "f_film", "details", "detailsBtn", "prepare"]) ids[id] = mk("x");
+for (const id of ["back", "title", "status", "add", "speed", "summary", "queue", "retry", "lib", "pick", "shoot", "film", "f_pick", "f_shoot", "f_film", "details", "detailsBtn", "prepare", "montage"]) ids[id] = mk("x");
 ids.retry.hidden = true; ids.detailsBtn.hidden = true;
 const document = { title: "", getElementById: id => ids[id], createElement: mk };
 

@@ -469,3 +469,192 @@ function createPrepare(opts) {
   return {refresh};
 }
 """
+
+
+# The Make-a-video card. It builds a montage recipe from what the person picks and sends it to the server, which
+# validates it and works out every timing. Nothing here computes a duration.
+MONTAGE_JS = r"""
+function createMontage(opts) {
+  const BASE = opts.base, mount = opts.mount;
+  const HEADERS = {"Content-Type": "application/json", "X-Requested-With": "umcares"};
+  let st = null, order = [], picked = new Set(), rows = [], ctl = null, timer = null;
+  let form = {format: "reels", template: "slowmo", title: "", captions: true, music: "", max: "30"};
+  let jobsBox = null, planBox = null, noticeBox = null, listBox = null;
+
+  const mb = n => n < 1048576 ? Math.max(1, Math.round(n / 1024)) + " KB" : (n / 1048576).toFixed(1) + " MB";
+  const secs = n => (Math.round(n * 10) / 10) + " s";
+  function el(tag, props, ...kids) {
+    const e = document.createElement(tag); Object.assign(e, props || {}); kids.forEach(k => e.append(k)); return e;
+  }
+  async function call(method, path, body) {
+    const r = await fetch(BASE + path, {method, headers: method === "GET" ? undefined : HEADERS, body});
+    let d = {}; try { d = await r.json(); } catch (e) {}
+    if (!r.ok) { const err = new Error(d.error || ("HTTP " + r.status)); err.problems = d.problems || []; throw err; }
+    return d;
+  }
+  async function load() {
+    st = await call("GET", "/api/montage");
+    const refs = st.catalog.filter(i => i.kind !== "audio").map(i => i.ref);
+    const known = new Set(order);
+    order = order.filter(r => refs.includes(r)).concat(refs.filter(r => !known.has(r)));
+    refs.forEach(r => { if (!known.has(r)) picked.add(r); });
+    Array.from(picked).forEach(r => { if (!refs.includes(r)) picked.delete(r); });
+  }
+  function syncForm() {
+    if (!ctl) return;
+    form = {format: ctl.format.value, template: ctl.template.value, title: ctl.title.value, captions: !!ctl.captions.checked, music: ctl.music.value, max: ctl.max.value};
+    rows.forEach(r => { if (r.check.checked) picked.add(r.ref); else picked.delete(r.ref); });
+  }
+  function buildRecipe() {
+    syncForm();
+    const rec = {kind: "montage", title: form.title.trim() || opts.name || "Montage", format: form.format, template: form.template,
+                 captions: form.captions, max_seconds: Number(form.max), clips: order.filter(r => picked.has(r)).map(r => ({media: r}))};
+    if (form.title.trim()) rec.title_card = {text: form.title.trim()};
+    if (form.music) rec.music = {file: form.music};
+    return rec;
+  }
+  function useRecipe(rec) {
+    const byRef = m => st.catalog.find(i => i.ref === m || i.name === m || (m.length >= 8 && i.ref.startsWith(m.slice(0, 12))));
+    const used = (rec.clips || []).map(c => byRef(c.media)).filter(Boolean).map(i => i.ref);
+    order = used.concat(order.filter(r => !used.includes(r)));
+    picked = new Set(used);
+    form = {format: rec.format || "reels", template: rec.template || "slowmo", title: rec.title_card ? rec.title_card.text : "",
+            captions: rec.captions !== false, music: rec.music ? rec.music.file : "", max: String(rec.max_seconds || 30)};
+    render();
+    say("Recipe loaded. Change anything, then Preview or Make video.");
+  }
+  function say(text, problems) {
+    if (!noticeBox) return;
+    noticeBox.replaceChildren(text);
+    (problems || []).forEach(p => noticeBox.append(el("div", {className: "dim"}, "• " + p)));
+  }
+  function move(ref, by) {
+    syncForm();
+    const i = order.indexOf(ref), j = i + by;
+    if (i < 0 || j < 0 || j >= order.length) return;
+    [order[i], order[j]] = [order[j], order[i]];
+    renderList();
+  }
+  function renderList() {
+    rows = [];
+    const byRef = {}; st.catalog.forEach(i => { byRef[i.ref] = i; });
+    listBox.replaceChildren(...order.map((ref, idx) => {
+      const i = byRef[ref];
+      const check = el("input", {type: "checkbox", checked: picked.has(ref)});
+      rows.push({ref, check});
+      const up = el("button", {type: "button", className: "edit", title: "Move earlier"}, "↑");
+      const down = el("button", {type: "button", className: "edit", title: "Move later"}, "↓");
+      up.addEventListener("click", () => move(ref, -1));
+      down.addEventListener("click", () => move(ref, 1));
+      return el("div", {className: "urow"}, el("div", {className: "row"},
+        el("span", {}, check, " " + (i.kind === "video" ? "🎞 " : "🖼 ") + (i.caption || i.name)),
+        el("span", {}, up, down)),
+        i.caption ? el("div", {className: "dim"}, i.name) : "");
+    }));
+  }
+  async function preview() {
+    try {
+      const d = await call("POST", "/api/montage", JSON.stringify({recipe: buildRecipe(), dry_run: true}));
+      const p = d.plan;
+      planBox.replaceChildren(el("div", {}, p.segments.length + " pieces · " + secs(p.total) + " · " + (p.fade ? "crossfades" : "hard cuts")),
+        ...p.warnings.map(w => el("div", {className: "dim"}, "⚠ " + w)),
+        ...p.segments.map(s => el("div", {className: "dim"}, secs(s.start) + "  " + (s.kind === "title" || s.kind === "end" ? s.kind + " card: " + s.text : s.name + (s.text ? " — " + s.text : "")) + "  (" + secs(s.duration) + ")")));
+      say("");
+    } catch (e) { planBox.replaceChildren(); say("Cannot make this yet: " + e.message, e.problems); }
+  }
+  async function make(rec) {
+    try {
+      await call("POST", "/api/montage", JSON.stringify({recipe: rec || buildRecipe()}));
+      say("Rendering. This runs on the Premiere machine at low priority, one video at a time.");
+      planBox.replaceChildren();
+      poll();
+    } catch (e) { say("Cannot make this yet: " + e.message, e.problems); }
+  }
+  async function save() {
+    const name = prompt("Name this recipe (letters, digits, spaces, - and _)");
+    if (!name) return;
+    try {
+      const d = await call("POST", "/api/montage/recipes", JSON.stringify({name, recipe: buildRecipe()}));
+      await load(); render();                                       // render() builds a fresh notice area, so say() comes after it
+      say("Saved " + d.saved + " in recipes/.");
+    }
+    catch (e) { say("Not saved: " + e.message, e.problems); }
+  }
+  async function brief() {
+    try {
+      const r = await fetch(BASE + "/api/montage/brief"); const text = await r.text();
+      try { await navigator.clipboard.writeText(text); say("Brief copied. Paste it to Claude: it lists your files, their captions and the recipe format. Save what it writes as a recipe, or paste it into recipes/ on the machine."); }
+      catch (e) { say("Select and copy this brief:"); noticeBox.append(el("textarea", {rows: 8, value: text, readOnly: true})); }
+    } catch (e) { say("Could not load the brief (" + e.message + ")"); }
+  }
+  async function cancel() { try { await call("POST", "/api/montage/cancel", "{}"); } catch (e) {} poll(); }
+  function renderJobs() {
+    if (!jobsBox || !st) return;
+    const kids = [];
+    st.jobs.slice(-4).reverse().forEach(j => {
+      const line = el("div", {className: "row"}, el("span", {className: "name"}, j.title + " · " + j.template + " · " + j.format),
+        el("span", {className: "dim"}, j.state === "running" ? "rendering " + j.percent + "%" : j.state === "queued" ? "waiting" : j.state === "done" ? "✓ done" : j.state === "failed" ? "✗ " + j.error : "cancelled"));
+      kids.push(el("div", {className: "urow"}, line, (j.state === "running" || j.state === "queued") ? el("progress", {max: 100, value: j.percent}) : ""));
+      (j.warnings || []).forEach(w => kids.push(el("div", {className: "dim"}, "⚠ " + w)));
+    });
+    const latest = st.jobs.filter(j => j.state === "done").slice(-1)[0];
+    if (latest) kids.push(el("video", {className: "thumb", controls: true, playsInline: true, src: BASE + "/exports/" + encodeURIComponent(latest.output)}));
+    if (st.active) { const stop = el("button", {type: "button", className: "alt"}, "Cancel"); stop.addEventListener("click", cancel); kids.push(stop); }
+    if (st.exports.length) {
+      kids.push(el("div", {className: "dim"}, "Finished videos"));
+      st.exports.slice(0, 6).forEach(x => kids.push(el("div", {className: "row"},
+        el("a", {href: BASE + "/exports/" + encodeURIComponent(x.name), target: "_blank"}, x.name),
+        el("span", {className: "dim"}, (x.duration ? secs(x.duration) + " · " : "") + mb(x.size)))));
+    }
+    jobsBox.replaceChildren(...kids);
+  }
+  function schedule(ms) { if (!timer) timer = setTimeout(() => { timer = null; poll(); }, ms); }
+  async function poll() {
+    try { await load(); renderJobs(); if (st.active) schedule(1500); } catch (e) { schedule(5000); }
+  }
+  function render() {
+    if (!st) return;
+    const media = st.catalog.filter(i => i.kind !== "audio");
+    if (!media.length) { mount.replaceChildren(); return; }
+    const select = (options, value) => { const s = el("select", {}); options.forEach(([v, label]) => s.append(el("option", {value: v}, label))); s.value = value; return s; };
+    ctl = {
+      format: select(Object.entries(st.formats).map(([k, f]) => [k, f.label]), form.format),
+      template: select(Object.entries(st.templates).map(([k, t]) => [k, t.label + " — " + t.blurb]), form.template),
+      title: el("input", {type: "text", maxLength: 100, placeholder: "Title card text (optional)", value: form.title}),
+      captions: el("input", {type: "checkbox", checked: form.captions}),
+      music: select([["", "No music (add a track in the app when you post)"]].concat(st.catalog.filter(i => i.kind === "audio").map(i => [i.name, i.name])), form.music),
+      max: select([["15", "up to 15 s"], ["30", "up to 30 s"], ["45", "up to 45 s"], ["60", "up to 60 s"], ["90", "up to 90 s"]], form.max),
+    };
+    listBox = el("div", {}); planBox = el("div", {}); noticeBox = el("div", {className: "err"}); jobsBox = el("div", {});
+    const go = el("button", {type: "button"}, "Make video");
+    const look = el("button", {type: "button", className: "alt"}, "Preview plan");
+    const keep = el("button", {type: "button", className: "alt"}, "Save recipe…");
+    const ask = el("button", {type: "button", className: "alt"}, "Copy brief for Claude");
+    go.addEventListener("click", () => make()); look.addEventListener("click", preview);
+    keep.addEventListener("click", save); ask.addEventListener("click", brief);
+    if (!st.can_render) { go.disabled = true; look.disabled = true; }
+    const saved = st.recipes.map(r => {
+      const use = el("button", {type: "button", className: "edit"}, "Use"), run = el("button", {type: "button", className: "edit"}, "Make");
+      if (r.valid) { use.addEventListener("click", () => useRecipe(r.recipe)); run.addEventListener("click", () => make(r.recipe)); }
+      return el("div", {className: "urow"}, el("div", {className: "row"}, el("span", {className: "name"}, r.name),
+        r.valid ? el("span", {}, use, run) : el("span", {className: "dim"}, "needs fixing")),
+        ...(r.valid ? [] : r.problems.map(p => el("div", {className: "dim"}, "• " + p))));
+    });
+    mount.replaceChildren(el("section", {className: "card"},
+      el("h2", {}, el("span", {}, "Make a video"), el("span", {className: "dim"}, "for Instagram, Reels, TikTok")),
+      el("div", {className: "dim"}, "Pick the look and the pictures; every timing is worked out for you."),
+      el("div", {className: "dim"}, "Format"), ctl.format, el("div", {className: "dim"}, "Look"), ctl.template,
+      ctl.title, el("label", {className: "row"}, el("span", {}, ctl.captions, " Show captions on screen")),
+      el("div", {className: "dim"}, "Music"), ctl.music, el("div", {className: "dim"}, "Length"), ctl.max,
+      el("div", {className: "dim"}, "Pictures and clips, in order (tick to include)"), listBox,
+      noticeBox, planBox, go, look, keep, ask,
+      ...(saved.length ? [el("div", {className: "dim"}, "Saved recipes")].concat(saved) : []),
+      jobsBox));
+    renderList(); renderJobs();
+  }
+  async function refresh() {
+    try { syncForm(); await load(); render(); if (st.active) schedule(1500); } catch (e) { /* the card just stays as it was */ }
+  }
+  return {refresh};
+}
+"""

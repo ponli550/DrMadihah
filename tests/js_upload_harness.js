@@ -30,7 +30,7 @@ function find(node, cls) {
   return null;
 }
 const ids = {};
-for (const id of ["back", "title", "status", "add", "speed", "summary", "queue", "retry", "lib", "pick", "shoot", "film", "f_pick", "f_shoot", "f_film", "details", "detailsBtn", "prepare"]) ids[id] = mk("x");
+for (const id of ["back", "title", "status", "add", "speed", "summary", "queue", "retry", "lib", "pick", "shoot", "film", "f_pick", "f_shoot", "f_film", "details", "detailsBtn", "prepare", "montage"]) ids[id] = mk("x");
 ids.retry.hidden = true; ids.detailsBtn.hidden = true;
 const document = {
   title: "", getElementById: id => ids[id],

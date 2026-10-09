@@ -41,6 +41,13 @@ class Captions(unittest.TestCase):
                          {"a.jpg": ("photos", "image"), "b.mp4": ("inbox", "video"), "c.jpg": ("photos", "image")})
         self.assertEqual(captions.pending_count(self.root), 3)
 
+    def test_an_uploaded_song_is_not_asked_about_in_the_caption_pass(self):
+        upload(self.root, "song.mp3", b"ID3 fake song bytes", 9)
+        self.assertEqual([i["name"] for i in captions.items(self.root)], ["a.jpg", "b.mp4", "c.jpg"])
+        self.assertNotIn("assets/music/song.mp3", captions.by_path(self.root))
+        self.assertEqual(captions.pending_count(self.root), 3)
+        self.assertTrue((self.root / "assets" / "music" / "song.mp3").is_file(), "it is still stored, in the music folder")
+
     def test_a_caption_is_saved_and_no_longer_pending(self):
         sha = sha_of(self.root, "a.jpg")
         r = captions.set_detail(self.root, sha, "Dr Madihah opening the session")

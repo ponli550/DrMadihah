@@ -643,6 +643,60 @@ button reopens the pass for everything still pending, and every tile has a penci
 - Tested: the real page scripts drive the real server under node (`tests/test_details_js.py`): the full pass,
   an empty caption, a failing save, Back, Stop, editing one file, the auto-open after an upload.
 
+#### Making a video (montage)
+
+The **Make a video** card turns a project's photos and clips into a short video for Instagram, Reels or
+TikTok, rendered by ffmpeg on the Premiere machine. It is a separate recipe kind from the narrated
+UM Cares recipe (`"kind": "montage"`): music- and look-driven, no voiceover, no Premiere. It keeps the same
+rule: **the person, template or model writing the recipe declares intent and never computes a timing.**
+The renderer measures the real clips and works out every duration, overlap and offset, so a recipe always
+renders the same video.
+
+```json
+{"kind": "montage", "title": "CyberDSA", "format": "reels", "template": "slowmo",
+ "clips": [{"media": "a1b2c3d4e5f6", "caption": "Opening speech"}, {"media": "IMG_204.jpg", "hold": 3}],
+ "captions": true, "title_card": {"text": "CyberDSA 2026"}, "music": null, "max_seconds": 30}
+```
+
+- **Formats:** `reels` 1080x1920 (9:16), `square` 1080x1080, `wide` 1920x1080, all 30 fps.
+- **Looks (templates):** `slowmo`, `punchy`, `clean`, `melancholy`: pacing, slow motion, crossfade length, colour
+  grade, vignette and grain, recreated from how they read on screen (CapCut templates cannot be imported).
+  Add a look by adding a row to `TEMPLATES` in `montage.py`.
+- **Pictures and clips** are referred to by `ref` (the first 12 characters of the file's hash, which survives
+  renames), by filename, or by `folder/name`. A video that has been prepared for editing is used from `edit_ready/`.
+  They are ordered by the time the photo was taken: the phone's capture time is stored on the file at upload.
+- **Everything is composed over a blurred copy of itself**, so a portrait photo in a 9:16 frame is never cropped
+  and a landscape one never loses its sides. (ffprobe does not report an EXIF-rotated photo's true shape, so
+  composing the same way every time is also simpler than detecting it.) Photos get a slow zoom; clips can be slowed.
+- **On-screen text** is drawn by macOS (AppKit, via `osascript -l JavaScript`) into a transparent PNG and laid
+  over with ffmpeg, because **this ffmpeg has no `drawtext` and no libass**. It supports Malay, Indonesian and
+  emoji, fits the text to its box, and puts captions on a soft plate so they read over any picture. Captions sit
+  clear of the bottom of a 9:16 frame, where the platform's own buttons are.
+- **Music:** upload an `.mp3`, `.m4a`, `.wav` or `.aac` (it goes to `assets/music/`, not through the share sheet).
+  It is faded and loudness-normalised to -16 LUFS. **Use royalty-free music**: a commercial song in a posted
+  video gets muted or blocked. With "No music" the video is silent, so you can add a licensed track inside the
+  platform's own app when you post.
+- **Output** lands in `exports/` (not in git) with a `.json` sidecar holding the recipe and the resolved plan.
+  It is written hidden and moved into place only after its size and length are checked. Rendering is low priority,
+  cancellable, and **never runs at the same time as a prepare job** (they share one lock, because the machine is
+  running Premiere). Output is limited-range `yuv420p`, tagged bt709.
+
+**The three ways to author a recipe**, all producing the same file:
+
+| Mode | How |
+|---|---|
+| B: templates | pick a look, tick and reorder the pictures, press Make video (or Preview plan first) |
+| A: Claude by hand | **Copy brief for Claude** puts your files, their captions and the recipe format on the clipboard; paste it to Claude, then save what it writes as a recipe (Save recipe, or drop a `*.montage.json` into `recipes/`) and press Make |
+| C: `claude -p` on the machine | not built yet |
+
+A recipe is validated against the project and **every problem is returned at once, each with its path**
+(`clips[2].media: no image/video file matches 'IMG_9'`), so a model can fix them all in one go. Saved recipes
+live in `recipes/*.montage.json`, are committed to git, and turn "needs fixing" in the card if their media is later
+deleted. A video limited by `max_seconds` drops clips from the end and says so; if the cards plus one clip are
+already too long it says that too, instead of silently exceeding the limit.
+
+Not built yet: beat-synced cuts, narration, mode C, and deleting an export from the page.
+
 #### Preparing videos for editing
 
 A phone clip is rarely edit-ready even when it is H.264. Variable frame rate drifts audio against

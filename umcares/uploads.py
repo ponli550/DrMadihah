@@ -30,7 +30,7 @@ import time
 from pathlib import Path
 
 from . import projects
-from .layout import IMAGE_EXTS, VIDEO_EXTS
+from .layout import AUDIO_EXTS, IMAGE_EXTS, VIDEO_EXTS
 
 CHUNK_MAX = 8 << 20          # one request never carries more than this, so a handler never buffers more
 MAX_FILE = 4 << 30
@@ -55,7 +55,9 @@ def destination(name: str) -> str:
         return "photos"
     if ext in VIDEO_EXTS:
         return "inbox"
-    raise UploadError(400, "only photos and videos can be uploaded here")
+    if ext in AUDIO_EXTS:
+        return "music"
+    raise UploadError(400, "only photos, videos and music files can be uploaded here")
 
 
 def safe_name(name) -> str:
@@ -181,7 +183,8 @@ def start(root, name, size, mtime) -> dict:
         _dir(root).mkdir(parents=True, exist_ok=True)
         _part(root, uid).touch()
         _meta_path(root, uid).write_text(json.dumps(
-            {"id": uid, "name": fname, "dest": dest, "size": size, "fp": fp, "created": int(time.time())}), encoding="utf-8")
+            {"id": uid, "name": fname, "dest": dest, "size": size, "fp": fp, "created": int(time.time()),
+             "captured": mtime if isinstance(mtime, (int, float)) and not isinstance(mtime, bool) else None}), encoding="utf-8")
         return {"status": "new", "id": uid, "size": size, "offset": 0}
 
 
@@ -249,6 +252,17 @@ def _claim(dirpath: Path, fname: str) -> Path:
             p = dirpath / f"{stem}-{n}{ext}"
 
 
+def _stamp_capture_time(path: Path, captured_ms) -> None:
+    """Give the file the time the photo or clip was taken (the phone sends it as lastModified, in milliseconds), so
+    listings and montages are in the order things happened, not the order they were uploaded. Nonsense is ignored."""
+    try:
+        t = float(captured_ms) / 1000.0
+        if 946684800 <= t <= time.time() + 86400:          # between 2000 and tomorrow
+            os.utime(path, (t, t))
+    except (TypeError, ValueError, OSError):
+        pass
+
+
 claim_name = _claim                     # the same atomic "reserve a free name" for other modules that put files in a library
 
 
@@ -278,6 +292,7 @@ def finish(root, uid: str) -> dict:
             except OSError:
                 final.unlink(missing_ok=True)
                 raise
+            _stamp_capture_time(final, meta.get("captured"))
             rel = str(final.relative_to(root))
             idx["by_sha"][sha] = rel
             idx["by_fp"][meta["fp"]] = sha

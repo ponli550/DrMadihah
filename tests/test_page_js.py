@@ -76,7 +76,7 @@ class PageUpload(unittest.TestCase):
     def test_5_an_unsupported_file_fails_with_the_servers_reason_and_does_not_block_the_rest(self):
         out = self.run_page("refused")
         m = self.msgs(out)
-        self.assertIn("only photos and videos", m["notes.txt"])
+        self.assertIn("only photos, videos and music", m["notes.txt"])
         self.assertTrue(m["notes.txt"].startswith("✗"))
         self.assertTrue(m["ok.jpg"].startswith("✓"), m)
         self.assertFalse(out["retryHidden"])

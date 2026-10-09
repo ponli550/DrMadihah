@@ -225,6 +225,9 @@ def build_command(ffmpeg: str, src: Path, dst: Path, info: dict, plan: dict) -> 
 
 
 # ---------------------------------------------------------------- state on disk
+# Only one heavy ffmpeg job (a prepare or a montage render) runs at a time on the machine, whichever module started it:
+# it is shared with Premiere.
+HEAVY = threading.Lock()
 _lock = threading.RLock()
 _probes: dict = {}                       # sha -> probe, so listing the candidates does not re-probe every time
 _unreadable: dict = {}                   # sha -> why; content never changes under a hash, so a bad file stays bad
@@ -401,15 +404,16 @@ class Preparer:
 
     def _work(self):
         while True:
-            job = self._next()
-            if job is None:
-                return
-            try:
-                self._run(job)
-            except PrepareError as e:
-                self._finish(job, "failed", str(e))
-            except Exception as e:                       # a bug must not kill the worker and strand the queue
-                self._finish(job, "failed", f"unexpected error: {e}")
+            with HEAVY:                                  # wait for any other heavy job, e.g. a montage render
+                job = self._next()
+                if job is None:
+                    return
+                try:
+                    self._run(job)
+                except PrepareError as e:
+                    self._finish(job, "failed", str(e))
+                except Exception as e:                   # a bug must not kill the worker and strand the queue
+                    self._finish(job, "failed", f"unexpected error: {e}")
 
     def _finish(self, job, state, error=None, output=None):
         with self.cv:
