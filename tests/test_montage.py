@@ -350,6 +350,40 @@ class Rendering(Fixtures):
         top = slice(0, 216 * 3 * 100)                                    # the top of the frame carries no caption
         self.assertEqual(sum(1 for i in range(0, len(a[top]), 3) if abs(a[i] - b[i]) > 40), 0)
 
+    def bands(self, path, at, w=216, h=384):
+        """Runs of rows that contain bright (text) pixels, top to bottom, as (first_row, last_row)."""
+        raw = subprocess.run([FF, "-v", "error", "-ss", str(at), "-i", str(path), "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+                             capture_output=True, check=True).stdout
+        rows = [y for y in range(h) if any(raw[y * w + x] > 180 for x in range(w))]
+        runs = []
+        for y in rows:
+            if runs and y - runs[-1][1] <= 3:
+                runs[-1][1] = y
+            else:
+                runs.append([y, y])
+        return runs, raw
+
+    def test_a_title_card_puts_the_title_above_the_subtitle_with_a_gap_and_both_inside_the_frame(self):
+        self.add("land.jpg")
+        _, out = self.render(recipe([{"media": "land.jpg"}], title_card={"text": "CyberDSA 2026", "subtitle": "Hari terbuka"},
+                                    template="punchy"))
+        runs, _ = self.bands(out, 1.2)
+        self.assertEqual(len(runs), 2, f"a title band and a subtitle band, not one overlapping blob: {runs}")
+        (t0, t1), (s0, s1) = runs
+        self.assertGreater(s0 - t1, 6, "a gap between them")
+        self.assertGreater(t1 - t0, s1 - s0, "the title is bigger than the subtitle")
+        self.assertTrue(t0 > 20 and s1 < 364, "inside the frame")
+
+    def test_a_title_card_without_a_subtitle_is_centred(self):
+        self.add("land.jpg")
+        _, out = self.render(recipe([{"media": "land.jpg"}], title_card={"text": "CyberDSA 2026"}, template="punchy"))
+        runs, raw = self.bands(out, 1.2)
+        self.assertEqual(len(runs), 1, runs)
+        self.assertAlmostEqual((runs[0][0] + runs[0][1]) / 2, 192, delta=25)
+        cols = [x for x in range(216) if any(raw[y * 216 + x] > 180 for y in range(runs[0][0], runs[0][1] + 1))]
+        self.assertGreater(cols[0], 8, "not touching the left edge")
+        self.assertLess(cols[-1], 207, "not touching the right edge")
+
     def test_a_photo_with_an_exif_orientation_flag_renders(self):
         src = (self.fx / "land.jpg").read_bytes()
         tiff = b"MM\x00\x2a\x00\x00\x00\x08" + struct.pack(">H", 1) + struct.pack(">HHI", 0x0112, 3, 1) + struct.pack(">HH", 6, 0) + b"\x00\x00\x00\x00"

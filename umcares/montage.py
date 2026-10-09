@@ -437,13 +437,20 @@ def _piece_command(ffmpeg, plan, seg, i, workdir: Path, out: Path):
     look = _look(tpl)
     steps = []
     if seg["kind"] in ("title", "end"):
-        big = _text_png(workdir, seg["text"], f"seg{i}-t", W, int(H * 0.30), size=int(H * 0.07), valign="bottom")
+        # Title above, subtitle below, as two boxes that cannot overlap: the title text is bottom-aligned in a box that ends
+        # at 52% of the height, the subtitle top-aligned in a box that starts at 55%. With no subtitle the title is centred.
+        # The margin scales with the frame (a fixed margin would leave no room for text in a small frame).
+        margin = max(4, int(W * 0.05))
+        has_sub = bool(seg["subtitle"])
+        title_h = int(H * 0.22)
+        title_y = int(H * 0.30) if has_sub else (H - title_h) // 2
+        big = _text_png(workdir, seg["text"], f"seg{i}-t", W, title_h, size=int(H * 0.055), valign="bottom" if has_sub else "middle", pad=margin)
         inputs = ["-f", "lavfi", "-i", f"color=c={tpl['bg']}:s={W}x{H}:r={fps}:d={d}", "-loop", "1", "-framerate", str(fps), "-t", str(d), "-i", str(big)]
-        graph = f"[1:v]format=rgba,fade=t=in:st=0.2:d=0.5:alpha=1,fade=t=out:st={max(0.3, d - 0.6):g}:d=0.4:alpha=1[t1];[0:v][t1]overlay=0:{int(H * 0.36)}:format=auto"
-        if seg["subtitle"]:
-            sub = _text_png(workdir, seg["subtitle"], f"seg{i}-s", W, int(H * 0.15), size=int(H * 0.035), valign="top", color="#d0d4da")
+        graph = f"[1:v]format=rgba,fade=t=in:st=0.2:d=0.5:alpha=1,fade=t=out:st={max(0.3, d - 0.6):g}:d=0.4:alpha=1[t1];[0:v][t1]overlay=0:{title_y}:format=auto"
+        if has_sub:
+            sub = _text_png(workdir, seg["subtitle"], f"seg{i}-s", W, int(H * 0.15), size=int(H * 0.032), valign="top", color="#d0d4da", pad=margin)
             inputs += ["-loop", "1", "-framerate", str(fps), "-t", str(d), "-i", str(sub)]
-            graph += f"[a];[2:v]format=rgba,fade=t=in:st=0.5:d=0.5:alpha=1,fade=t=out:st={max(0.3, d - 0.6):g}:d=0.4:alpha=1[t2];[a][t2]overlay=0:{int(H * 0.52)}:format=auto"
+            graph += f"[a];[2:v]format=rgba,fade=t=in:st=0.5:d=0.5:alpha=1,fade=t=out:st={max(0.3, d - 0.6):g}:d=0.4:alpha=1[t2];[a][t2]overlay=0:{int(H * 0.55)}:format=auto"
         graph += ",format=yuv420p[out]"
         return [(_base(ffmpeg) + inputs + ["-filter_complex", graph, "-map", "[out]", "-t", str(d), "-r", str(fps)] + ENCODE_PIECE + [str(out)], d)]
     overlay_in, overlay_graph = [], ""
