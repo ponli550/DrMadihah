@@ -594,3 +594,27 @@ launchctl kickstart -k gui/$(id -u)/com.umcares.web              # restart after
 - `tailscale serve` mounts by path prefix; do not add a second mount whose name
   starts with `/umcares`.
 - The first request after publishing can fail while the HTTPS certificate is issued.
+
+#### Measured link speed (9 Oct 2026) — read before building uploads
+
+Before phase 2, the path between the dev Mac and the Premiere Mac was measured
+with the web app live. The server is not the limit:
+
+| Path | 1 MB |
+|---|---|
+| server to itself on the Premiere Mac (loopback) | 4 ms |
+| `tailscale serve` proxy, from the dev Mac | ~90 s for 622 KB (about 7 KB/s) |
+| plain ssh over the tailnet, no proxy | 194 s (about 5 KB/s) |
+
+Small packets are fine (ping 35-74 ms, no loss, large packets pass, so not MTU),
+but bulk transfer crawls, and a plain LAN ping jitters between 5 and 112 ms.
+At that rate a 90 MB clip takes hours, so video upload is not viable until this
+is explained. Prime suspect, not proven: the Premiere Mac was CPU-saturated
+(Premiere 66-76%, `PerfPowerServices` 99%, load average 3-4) and tailscaled
+shares that CPU. Its Wi-Fi is 2.4 GHz channel 13, signal -56 dBm, which is
+healthy on paper but a crowded band. To decide: repeat the 1 MB ssh timing
+with Premiere closed, then on 5 GHz or Ethernet. A phone on cellular is a
+different and probably worse path again; measure it too.
+
+The page copes by making few requests (one per folder, thumbnails inline), but
+it cannot make a slow link fast.
