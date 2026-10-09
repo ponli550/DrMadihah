@@ -71,8 +71,10 @@ const ctx = vm.createContext({
 
 (async () => {
   const page = await (await realFetch(`/umcares/p/${slug}/`)).text();
-  const script = [...page.matchAll(/<script>([\s\S]*?)<\/script>/g)].pop()[1];
-  vm.runInContext(script, ctx);
+  for (const m of page.matchAll(/<script(?:\s+src="([^"]+)")?>([\s\S]*?)<\/script>/g)) {   // external scripts first, in page order
+    const code = m[1] ? await (await realFetch(m[1])).text() : m[2];
+    vm.runInContext(code, ctx);
+  }
   await new Promise(r => setTimeout(r, 300));                    // let the initial library load settle
 
   const mkFile = (name, bytes, mtime) => new File([Buffer.from(bytes)], name, { lastModified: mtime });
@@ -87,10 +89,10 @@ const ctx = vm.createContext({
   }[scenario === "flaky" ? "flaky" : scenario]();
 
   ctx.__files = files;
-  vm.runInContext("enqueue(__files)", ctx);
+  vm.runInContext("uploader.enqueue(__files)", ctx);
   const t0 = Date.now();
   while (Date.now() - t0 < 60000) {
-    const busy = vm.runInContext("running || waiting.length", ctx);
+    const busy = vm.runInContext("uploader.busy()", ctx);
     if (!busy) break;
     await new Promise(r => setTimeout(r, 25));
   }

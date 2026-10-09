@@ -413,15 +413,56 @@ class Installable(Server):
         self.assertEqual(self.req("GET", "/icon-999.png")[0], 404)
         self.assertEqual(self.req("GET", "/icon-192.png.bak")[0], 404)
 
-    def test_the_service_worker_is_javascript_that_never_touches_a_request(self):
+    def test_the_service_worker_only_ever_intercepts_the_share_post(self):
         status, h, body = self.req("GET", "/sw.js")
         self.assertEqual(status, 200)
         self.assertTrue(h["Content-Type"].startswith("text/javascript"))
         self.assertEqual(h["Cache-Control"], "no-cache")       # a new worker must be noticed
         text = body.decode()
         self.assertIn("addEventListener('fetch'", text)
-        self.assertNotIn("respondWith", text)                  # nothing is cached or rewritten
-        self.assertNotIn("caches", text)
+        self.assertEqual(text.count("respondWith"), 1)         # one interception, and it is guarded:
+        guard = text[:text.index("respondWith")].rsplit("\n", 1)[-1]
+        self.assertIn("r.method === 'POST'", guard)
+        self.assertIn("share-target", guard)
+        self.assertNotIn("caches", text)                       # nothing is cached
+        self.assertNotIn("cache.put", text)
+
+    def test_the_manifest_registers_a_share_target_for_photos_and_videos(self):
+        m = json.loads(self.req("GET", "/manifest.webmanifest")[2])
+        st = m["share_target"]
+        self.assertEqual((st["action"], st["method"], st["enctype"]), ("/umcares/share-target", "POST", "multipart/form-data"))
+        files = st["params"]["files"]
+        self.assertEqual(files[0]["name"], "media")
+        self.assertEqual(sorted(files[0]["accept"]), ["image/*", "video/*"])
+        self.assertTrue(st["action"].startswith(m["scope"]))   # the worker only sees requests inside its scope
+
+    def test_the_shared_uploader_and_the_share_page_are_served(self):
+        status, h, body = self.req("GET", "/uploader.js")
+        self.assertEqual((status, h["Content-Type"].split(";")[0]), (200, "text/javascript"))
+        self.assertIn("function createUploader", body.decode())
+        status, _, body = self.req("GET", "/share")
+        self.assertEqual(status, 200)
+        page = body.decode()
+        self.assertIn('src="/umcares/uploader.js"', page)
+        self.assertNotIn("__ROOT__", page)
+        self.assertNotIn("__PWA__", page)
+        self.assertIn('rel="manifest"', page)
+        self.assertIn('src="/umcares/uploader.js"', self.req("GET", "/p/demo/")[2].decode())   # the project page shares it
+
+    def test_a_share_that_reaches_the_server_is_told_to_open_the_app_first_and_is_not_read(self):
+        status, _, body = self.req("POST", "/share-target", {"Content-Type": "multipart/form-data; boundary=x"}, b"--x--")
+        self.assertEqual(status, 409)
+        self.assertIn(b"Open umcares once", body)
+
+    def test_opening_the_share_target_by_hand_goes_to_the_share_page(self):
+        status, h, _ = self.req("GET", "/share-target")
+        self.assertEqual((status, h["Location"]), (303, "/umcares/share"))
+
+    def test_the_new_pages_and_scripts_are_not_public(self):
+        other = {"Tailscale-User-Login": "x@y.com"}
+        for path in ("/share", "/uploader.js", "/share-target"):
+            self.assertEqual(self.req("GET", path, other)[0], 403, path)
+        self.assertEqual(self.req("POST", "/share-target", {**other, "Content-Type": "multipart/form-data; boundary=x"}, b"--x--")[0], 403)
 
     def test_both_pages_link_the_manifest_and_register_the_worker(self):
         for path in ("/", "/p/demo/"):

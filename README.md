@@ -619,6 +619,32 @@ Files go up in resumable chunks, two at a time, with live MB/s on the bar.
 - Not built yet: converting VP9 or other unsupported video to H.264 (so an iPhone `.mov` or a
   Google Photos VP9 clip is stored as sent), and the one-by-one caption pass after a bulk upload.
 
+#### Installing it and sharing into it
+
+Open the page in Chrome on the phone, menu, **Install app**. It opens standalone as "umcares".
+Once installed, **umcares appears in the share sheet** for photos and videos (Android Chrome only:
+iOS Safari does not support sharing into a web app). Share from the gallery or camera, pick a
+project, and the files upload with the same resumable uploader as the project page.
+
+How a share travels, and why it is built this way: the phone POSTs the shared files to
+`/umcares/share-target`, which the **service worker catches on the phone itself**. It parks the files
+in IndexedDB and redirects to `/umcares/share?id=...`. They never cross the network in one request,
+which a link that can stall for a minute would break (SekerinShotto's own README notes that failure
+for a plain share). The share page shows the files, asks which project (the last one used is
+preselected), and uploads. The parked files are deleted only after every one is stored; a failed file
+leaves the share in place, so reopening the page or "Try the failed ones again" resumes. Shares
+nobody finished within a week are forgotten.
+
+- The worker intercepts exactly one request (`POST .../share-target`). It caches nothing and rewrites
+  nothing, so pages, thumbnails and upload chunks are never stale.
+- A share that reaches the server instead (the worker was not in control yet) gets a 409 asking to open
+  the app once and share again; the server does not read the body.
+- After a deploy that changes the manifest, uninstall and reinstall the app so Android re-registers the
+  share target; it can otherwise take up to a day to refresh.
+- Tested: the real worker and the real share page run under node against a fake IndexedDB and a live
+  server (`tests/test_share_js.py`). Android's own share sheet and install prompt cannot be tested
+  headlessly; those were checked by hand on a phone.
+
 #### Measured link speed (9 Oct 2026)
 
 Between the dev Mac and the Premiere Mac, with the web app live. The server is not the limit

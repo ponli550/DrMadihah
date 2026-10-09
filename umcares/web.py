@@ -37,7 +37,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from . import projects, uploads
+from . import projects, uploads, webpages
 from .layout import AUDIO_EXTS, IMAGE_EXTS, VIDEO_EXTS
 
 DEFAULT_PORT = 8733      # 8732 is SekerinShotto's
@@ -235,14 +235,6 @@ APP_NAME = "umcares"
 APP_BG = "#111318"
 ICON_SIZES = {"icon-192.png": (192, False), "icon-512.png": (512, False), "icon-maskable-512.png": (512, True)}
 
-# A service worker is what makes the page installable. It must not cache or rewrite anything: every request
-# goes straight to the network, so a page, a thumbnail or an upload chunk is never stale or half-stored.
-SW = """\
-self.addEventListener('install', () => self.skipWaiting());
-self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
-self.addEventListener('fetch', () => {});
-"""
-
 PWA_HEAD = (
     '<meta name="theme-color" content="#f6f6f4" media="(prefers-color-scheme: light)">'
     '<meta name="theme-color" content="#111318" media="(prefers-color-scheme: dark)">'
@@ -255,6 +247,8 @@ PWA_HEAD = (
 def manifest() -> dict:
     return {"name": APP_NAME, "short_name": APP_NAME, "id": f"{BASE}/", "start_url": f"{BASE}/", "scope": f"{BASE}/",
             "display": "standalone", "background_color": APP_BG, "theme_color": APP_BG,
+            "share_target": {"action": f"{BASE}/share-target", "method": "POST", "enctype": "multipart/form-data",
+                             "params": {"files": [{"name": "media", "accept": ["image/*", "video/*"]}]}},
             "icons": [{"src": f"{BASE}/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
                       {"src": f"{BASE}/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
                       {"src": f"{BASE}/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}]}
@@ -404,6 +398,7 @@ __PWA__
 </section>
 <div id="lib"></div>
 </main>
+<script src="__ROOT__/uploader.js"></script>
 <script>
 const HOME = __HOME__;
 const BASE = __BASE__;
@@ -457,135 +452,18 @@ function loadLibrary(){
 }
 loadLibrary();
 
-// ---- upload: resumable chunks, two files at a time, adaptive chunk size ----
-const CSRF = {"X-Requested-With": "umcares"};
-const JSON_HEADERS = Object.assign({"Content-Type": "application/json"}, CSRF);
-const BIN_HEADERS = Object.assign({"Content-Type": "application/octet-stream"}, CSRF);
-const MIN_CHUNK = 256 * 1024, MAX_CHUNK = 4 * 1024 * 1024, PARALLEL = 2;
-const BACKOFF = [1000, 3000, 8000, 15000, 30000];
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-class Fatal extends Error {}
-let waiting = [], running = 0, sentTotal = 0, planTotal = 0, samples = [], failed = [], timer = null, wake = null;
-
-async function call(method, path, body, headers){
-  const r = await fetch(BASE + path, {method, headers, body});
-  let d = {}; try { d = await r.json(); } catch (e) {}
-  return {ok: r.ok, status: r.status, d};
-}
-function speedText(){
-  const now = Date.now();
-  samples = samples.filter(s => now - s[0] < 15000);
-  if (!samples.length) return "";
-  const bytes = samples.reduce((a, s) => a + s[1], 0);
-  const bps = bytes / Math.max(1, Math.min(15, (now - samples[0][0]) / 1000));
-  return bps >= 1048576 ? (bps / 1048576).toFixed(1) + " MB/s" : Math.round(bps / 1024) + " KB/s";
-}
-function updateOverall(){
-  const sp = document.getElementById("speed");
-  if (!running && !waiting.length) { sp.textContent = ""; return; }
-  const pct = planTotal ? Math.floor(100 * sentTotal / planTotal) : 0;
-  sp.textContent = pct + "% · " + mb(sentTotal) + " of " + mb(planTotal) + " · " + (speedText() || "starting");
-}
-function setMsg(item, text){ item.msg.textContent = text; }
-function advance(item, n){ item.sent += n; sentTotal += n; item.bar.value = item.sent; samples.push([Date.now(), n]); updateOverall(); }
-function resync(item, from, to){ const d = to - from; item.sent += d; sentTotal += d; item.bar.value = item.sent; }
-
-async function uploadOne(item){
-  const f = item.file;
-  setMsg(item, "checking…");
-  const s = await call("POST", "/api/upload/start", JSON.stringify({name: f.name, size: f.size, mtime: f.lastModified}), JSON_HEADERS);
-  if (!s.ok) throw new Fatal((s.d && s.d.error) || ("HTTP " + s.status));
-  if (s.d.status === "have") { item.sent = f.size; item.bar.value = f.size; sentTotal += f.size; return {state: "skipped", text: "already uploaded"}; }
-  const id = s.d.id;
-  let offset = s.d.offset, chunk = MIN_CHUNK, fails = 0;
-  if (offset) { item.sent = offset; sentTotal += offset; item.bar.value = offset; }
-  setMsg(item, offset ? "resuming…" : "uploading…");
-  while (offset < f.size) {
-    const end = Math.min(f.size, offset + chunk), t0 = performance.now();
-    try {
-      const r = await call("PUT", "/api/upload/" + id + "?offset=" + offset, f.slice(offset, end), BIN_HEADERS);
-      if (r.ok) {
-        advance(item, r.d.offset - offset); offset = r.d.offset; fails = 0; setMsg(item, "uploading…");
-        const dt = (performance.now() - t0) / 1000;
-        chunk = dt < 4 ? Math.min(MAX_CHUNK, chunk * 2) : dt > 15 ? Math.max(MIN_CHUNK, chunk >> 1) : chunk;
-      } else if (r.status === 409 && typeof r.d.offset === "number") {
-        resync(item, offset, r.d.offset); offset = r.d.offset;          // the server is ahead or behind: trust it
-      } else if (r.status >= 400 && r.status < 500 && r.status !== 400 && r.status !== 408 && r.status !== 429) {
-        throw new Fatal(r.d.error || ("HTTP " + r.status));
-      } else {
-        throw new Error(r.d.error || ("HTTP " + r.status));            // 400 here is a chunk cut short: resend it
-      }
-    } catch (e) {
-      if (e instanceof Fatal) throw e;
-      if (++fails > BACKOFF.length) throw new Error("the connection keeps failing");
-      setMsg(item, "retrying…");
-      await sleep(BACKOFF[fails - 1]);
-      const st = await call("GET", "/api/upload/" + id).catch(() => null);
-      if (st && st.ok && typeof st.d.offset === "number") { resync(item, offset, st.d.offset); offset = st.d.offset; }
-    }
-  }
-  const fin = await call("POST", "/api/upload/" + id + "/finish", "{}", JSON_HEADERS);
-  if (!fin.ok) throw new Fatal((fin.d && fin.d.error) || ("HTTP " + fin.status));
-  return fin.d.status === "duplicate"
-    ? {state: "skipped", text: "same content as " + fin.d.file.name}
-    : {state: "done", text: "saved in " + fin.d.file.folder};
-}
-function addRow(item){
-  item.bar = el("progress", {max: item.file.size || 1, value: 0});
-  item.msg = el("span", {className: "dim"}, "waiting");
-  item.row = el("div", {className: "urow"}, el("div", {className: "row"}, el("span", {className: "name"}, item.file.name), item.msg), item.bar);
-  document.getElementById("queue").append(item.row);
-}
-async function runItem(item){
-  try {
-    const r = await uploadOne(item);
-    item.state = r.state; setMsg(item, (r.state === "done" ? "✓ " : "↷ ") + r.text);
-  } catch (e) {
-    item.state = "failed"; setMsg(item, "✗ " + (e.message || e)); failed.push(item);
-  }
-  running--;
-  pump();
-}
-function pump(){
-  while (running < PARALLEL && waiting.length) { running++; runItem(waiting.shift()); }
-  updateOverall();
-  if (!running && !waiting.length) allDone();
-}
-async function lockScreen(){
-  try { if (navigator.wakeLock && !wake) { wake = await navigator.wakeLock.request("screen"); wake.addEventListener("release", () => { wake = null; }); } } catch (e) {}
-}
-function allDone(){
-  if (timer) { clearInterval(timer); timer = null; }
-  try { if (wake) wake.release(); } catch (e) {} wake = null;
-  const rows = Array.from(document.querySelectorAll("#queue .urow"));
-  const text = rows.map(r => r.querySelector(".dim").textContent);
-  const saved = text.filter(t => t.startsWith("✓")).length, skipped = text.filter(t => t.startsWith("↷")).length;
-  document.getElementById("summary").textContent = saved + " saved" + (skipped ? ", " + skipped + " already there" : "") + (failed.length ? ", " + failed.length + " failed" : "");
-  document.getElementById("retry").hidden = !failed.length;
-  document.getElementById("speed").textContent = "";
-  if (saved) loadLibrary();
-}
-function enqueue(files){
-  if (!files.length) return;
-  document.getElementById("summary").textContent = "";
-  document.getElementById("retry").hidden = true;
-  if (!running && !waiting.length) { sentTotal = 0; planTotal = 0; samples = []; failed = []; document.getElementById("queue").replaceChildren(); }
-  for (const f of files) { const item = {file: f, sent: 0, state: "waiting"}; addRow(item); waiting.push(item); planTotal += f.size; }
-  lockScreen();
-  if (!timer) timer = setInterval(updateOverall, 1000);
-  pump();
-}
+// ---- upload: the shared uploader (also used by the share page) ----
+const uploader = createUploader({
+  base: BASE,
+  queue: document.getElementById("queue"), summary: document.getElementById("summary"),
+  speed: document.getElementById("speed"), retry: document.getElementById("retry"),
+  onSaved: loadLibrary,
+});
 for (const k of ["pick", "shoot", "film"]) {
   const input = document.getElementById("f_" + k);
   document.getElementById(k).addEventListener("click", () => input.click());
-  input.addEventListener("change", () => { enqueue(Array.from(input.files)); input.value = ""; });
+  input.addEventListener("change", () => { uploader.enqueue(Array.from(input.files)); input.value = ""; });
 }
-document.getElementById("retry").addEventListener("click", () => {
-  const again = failed.map(i => i.file); failed = [];
-  document.querySelectorAll("#queue .urow").forEach(r => { if (r.querySelector(".dim").textContent.startsWith("✗")) r.remove(); });
-  planTotal = sentTotal; enqueue(again);
-});
-window.addEventListener("beforeunload", e => { if (running || waiting.length) { e.preventDefault(); e.returnValue = ""; } });
 </script></body></html>
 """
 
@@ -697,11 +575,17 @@ def make_handler(home, owner: str):
             path, query = unquote(parts.path), parse_qs(parts.query)
             if path == "/manifest.webmanifest":
                 return self._send(200, json.dumps(manifest()).encode(), "application/manifest+json")
+            if path == "/uploader.js":
+                return self._send(200, webpages.UPLOADER_JS.encode(), "text/javascript; charset=utf-8", {"Cache-Control": "no-cache"})
             if path == "/sw.js":
-                return self._send(200, SW.encode(), "text/javascript; charset=utf-8", {"Cache-Control": "no-cache"})
+                return self._send(200, webpages.SW.encode(), "text/javascript; charset=utf-8", {"Cache-Control": "no-cache"})
             m = re.fullmatch(r"/(icon-(?:192|512|maskable-512)\.png)", path)
             if m:
                 return self._send(200, icon_png(m.group(1)), "image/png", {"Cache-Control": "private, max-age=86400"})
+            if path == "/share":
+                return self._page(webpages.SHARE_PAGE, base=BASE)
+            if path == "/share-target":                      # a GET here means someone opened the address by hand
+                return self._send(303, b"", "text/plain", {"Location": f"{BASE}/share"})
             if path in ("/", "/index.html"):
                 return self._page(HOME_PAGE, base=BASE)
             if path == "/api/projects":
@@ -803,6 +687,11 @@ def make_handler(home, owner: str):
             m = re.fullmatch(r"/p/([a-z0-9-]+)(/api/upload/.*)", path)
             if m:
                 return self._upload(m.group(1), m.group(2), method, query)
+            if method == "POST" and path == "/share-target":
+                # the service worker normally takes this locally. Reaching us means it was not in control yet:
+                # say so instead of reading a whole video into a request that cannot be used.
+                return self._text(409, "The share did not go through the umcares app on this phone yet. "
+                                       "Open umcares once, then share again.")
             return self._text(405, "read-only")
 
         def do_POST(self):
@@ -819,8 +708,20 @@ def make_handler(home, owner: str):
     return H
 
 
+class QuietServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        """A phone closing a connection mid-response is routine: one line, not a traceback."""
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError, TimeoutError)):
+            sys.stderr.write(f"web: client went away ({type(exc).__name__})\n")
+        else:
+            super().handle_error(request, client_address)
+
+
 def make_server(home, owner: str = "", port: int = DEFAULT_PORT) -> ThreadingHTTPServer:
-    return ThreadingHTTPServer(("127.0.0.1", port), make_handler(home, owner))
+    return QuietServer(("127.0.0.1", port), make_handler(home, owner))
 
 
 def keep_awake():
