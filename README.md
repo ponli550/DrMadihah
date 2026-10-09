@@ -572,3 +572,25 @@ Social output: 9:16 (1080x1920), 30 fps, burned-in captions, 15-60 s. Reframing
 ffmpeg and librosa. A commercial song (e.g. a sad Indonesian track) in a posted
 video gets muted or blocked. Export with no music, or a quiet placeholder, and add the
 track in the platform's own app; otherwise use the royalty-free folder.
+
+#### Deploying the web app (phase 1, done by hand)
+
+On the Premiere machine, run it as a LaunchAgent so it survives logout, crashes
+and reboots. Do not start it from an ssh session: a leftover instance keeps the
+port, a restart then fails with "Address already in use" and the old server
+keeps answering, which looks like a flaky proxy.
+
+```bash
+umcares push umcares/web.py <remote-root>/web/web.py
+# ~/Library/LaunchAgents/com.umcares.web.plist runs:
+#   python3 -I <remote-root>/web/web.py --root <remote-root>
+# with env UMC_WEB_OWNER=<your tailscale login>, RunAtLoad + KeepAlive
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.umcares.web.plist
+tailscale serve --bg --set-path /umcares http://127.0.0.1:8733   # tailnet only
+launchctl kickstart -k gui/$(id -u)/com.umcares.web              # restart after a push
+```
+
+- The plist holds the owner login and absolute paths, so it is not committed.
+- `tailscale serve` mounts by path prefix; do not add a second mount whose name
+  starts with `/umcares`.
+- The first request after publishing can fail while the HTTPS certificate is issued.
