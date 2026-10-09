@@ -1,4 +1,6 @@
 import http.client
+import shutil
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -169,6 +171,64 @@ class Live(unittest.TestCase):
     def test_every_write_method_is_refused(self):
         for m in ("POST", "PUT", "DELETE", "PATCH"):
             self.assertEqual(self.req(m, "/api/library")[0], 405, m)
+
+
+@unittest.skipUnless(web.find_ffmpeg(), "needs ffmpeg")
+class Thumbnails(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.root = Path(tempfile.mkdtemp())
+        cls.v = cls.root / "assets" / "edit_ready"
+        cls.v.mkdir(parents=True)
+        subprocess.run([web.find_ffmpeg(), "-v", "error", "-f", "lavfi", "-i", "testsrc=size=640x360:rate=25:duration=2",
+                        "-pix_fmt", "yuv420p", str(cls.v / "c.mp4")], check=True)
+        (cls.v / "bad.mp4").write_bytes(b"not a video")
+        cls.srv = web.make_server(cls.root, "", 0)
+        cls.port = cls.srv.server_address[1]
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+        cls.srv.server_close()
+        shutil.rmtree(cls.root, ignore_errors=True)
+
+    def get(self, path):
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
+        c.request("GET", path)
+        r = c.getresponse()
+        body = r.read()
+        c.close()
+        return r.status, r.headers, body
+
+    def test_a_video_gets_a_small_jpeg(self):
+        status, h, body = self.get("/thumb/edit_ready/c.mp4")
+        self.assertEqual(status, 200)
+        self.assertEqual(h["Content-Type"], "image/jpeg")
+        self.assertTrue(body.startswith(b"\xff\xd8"))
+        self.assertLess(len(body), 100_000)
+        self.assertEqual(h.get_all("Cache-Control"), ["private, max-age=86400"])
+
+    def test_the_second_request_reuses_the_cached_file(self):
+        self.get("/thumb/edit_ready/c.mp4")
+        cached = list((self.root / "web" / "thumbs").glob("*.jpg"))
+        self.assertEqual(len(cached), 1)
+        before = cached[0].stat().st_mtime_ns
+        self.get("/thumb/edit_ready/c.mp4")
+        self.assertEqual(cached[0].stat().st_mtime_ns, before)
+
+    def test_a_file_ffmpeg_cannot_read_is_a_404_and_leaves_no_part_file(self):
+        self.assertEqual(self.get("/thumb/edit_ready/bad.mp4")[0], 404)
+        self.assertEqual(list((self.root / "web" / "thumbs").glob("*.part*")), [])
+
+    def test_thumbnails_are_confined_like_media(self):
+        self.assertEqual(self.get("/thumb/edit_ready/..%2F..%2Fweb%2Fweb.py")[0], 404)
+        self.assertEqual(self.get("/thumb/nope/c.mp4")[0], 404)
+
+    def test_the_cache_folder_is_not_in_the_library(self):
+        self.get("/thumb/edit_ready/c.mp4")
+        names = [f["name"] for g in web.list_library(self.root)["folders"] for f in g["files"]]
+        self.assertEqual(sorted(names), ["bad.mp4", "c.mp4"])
 
 
 if __name__ == "__main__":

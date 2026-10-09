@@ -18,12 +18,15 @@ Stdlib only: this has to start on a machine that has Python and nothing else.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import mimetypes
 import os
 import re
+import shutil
 import subprocess
 import sys
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
@@ -48,6 +51,11 @@ VIDEO = {".mp4", ".mov", ".m4v", ".mkv", ".webm"}
 IMAGE = {".jpg", ".jpeg", ".png", ".heic", ".webp", ".gif"}
 AUDIO = {".mp3", ".wav", ".m4a", ".aac"}
 CHUNK = 1 << 20
+
+THUMB_W = 360                                    # px; a tile is ~20 KB instead of a video's first megabytes
+THUMB_DIR = ("web", "thumbs")                    # under <root>, outside assets/ so it is never listed
+FFMPEG_AT = ("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg")   # launchd's PATH does not include brew
+_thumb_slots = threading.BoundedSemaphore(2)     # a few ffmpeg at once, not 28 when a page opens
 
 
 def kind_of(name: str) -> str:
@@ -123,6 +131,43 @@ def parse_range(header, size: int):
     return start, end
 
 
+def find_ffmpeg():
+    return shutil.which("ffmpeg") or next((p for p in FFMPEG_AT if os.access(p, os.X_OK)), None)
+
+
+def thumb_for(root, src: Path):
+    """A cached JPEG for a video or image, or None if it cannot be made (no ffmpeg, unreadable, HEIC).
+
+    The cache key includes size and mtime, so replacing a file replaces its thumbnail. The JPEG is
+    written to a sibling .part and moved into place, so a request never sees half a file.
+    """
+    if kind_of(src.name) not in ("video", "image"):
+        return None
+    st = src.stat()
+    key = hashlib.sha1(f"{src}|{st.st_size}|{int(st.st_mtime)}".encode()).hexdigest()[:20]
+    out = Path(root).joinpath(*THUMB_DIR, key + ".jpg")
+    if out.is_file():
+        return out
+    ff = find_ffmpeg()
+    if not ff:
+        return None
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_name(out.stem + ".part.jpg")
+    seek = ["-ss", "0.5"] if kind_of(src.name) == "video" else []
+    cmd = [ff, "-v", "error", "-y", *seek, "-i", str(src), "-frames:v", "1",
+           "-vf", f"scale={THUMB_W}:-2", "-q:v", "5", str(tmp)]
+    with _thumb_slots:
+        if out.is_file():                        # another request made it while we waited
+            return out
+        try:
+            subprocess.run(cmd, capture_output=True, timeout=30, check=True)
+            os.replace(tmp, out)
+        except (subprocess.SubprocessError, OSError):
+            tmp.unlink(missing_ok=True)
+            return None
+    return out
+
+
 PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -140,6 +185,8 @@ h2{font-size:15px;margin:0 0 8px;display:flex;justify-content:space-between;gap:
 .item{min-width:0}.thumb{width:100%;aspect-ratio:16/10;object-fit:cover;border-radius:6px;background:var(--line);display:block}
 .name{font-size:13px;word-break:break-all;margin-top:4px}
 a{color:var(--acc)}
+.play{position:relative;cursor:pointer}
+.badge{position:absolute;inset:0;display:grid;place-items:center;font-size:28px;color:#fff;text-shadow:0 1px 6px #000}
 </style></head><body><main>
 <h1>umcares</h1><div class="dim" id="status">Loading…</div>
 <div id="lib"></div>
@@ -156,10 +203,15 @@ function el(tag, props, ...kids){
 }
 function thumb(f, folder){
   const src = url(folder, f.name);
-  if (f.kind === "image") return el("img", {className:"thumb", src, loading:"lazy", alt:f.name});
-  if (f.kind === "video") return el("video", {className:"thumb", src, preload:"metadata", controls:true, muted:true, playsInline:true});
+  const poster = BASE + "/thumb/" + folder.split("/").concat([f.name]).map(encodeURIComponent).join("/");
   if (f.kind === "audio") return el("audio", {src, preload:"none", controls:true, style:"width:100%"});
-  return el("a", {href:src}, "open");
+  if (f.kind === "file") return el("a", {href:src}, "open");
+  const img = el("img", {className:"thumb", src:poster, loading:"lazy", alt:f.name});
+  img.onerror = () => { img.onerror = null; img.removeAttribute("src"); };   // no thumbnail: a grey tile, still tappable
+  if (f.kind === "image") return el("a", {href:src, target:"_blank"}, img);
+  const tile = el("div", {className:"play"}, img, el("span", {className:"badge"}, "▶"));
+  tile.onclick = () => tile.replaceWith(el("video", {className:"thumb", src, controls:true, autoplay:true, playsInline:true}));
+  return tile;
 }
 fetch(BASE + "/api/library").then(r => { if(!r.ok) throw new Error(r.status); return r.json(); }).then(d => {
   const lib = document.getElementById("lib");
@@ -190,7 +242,8 @@ def make_handler(root, owner: str):
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Cache-Control", "no-store")
+            if "Cache-Control" not in (extra or {}):
+                self.send_header("Cache-Control", "no-store")
             for k, v in (extra or {}).items():
                 self.send_header(k, v)
             self.end_headers()
@@ -239,6 +292,12 @@ def make_handler(root, owner: str):
                 return self._send(200, page.encode(), "text/html; charset=utf-8")
             if path == "/api/library":
                 return self._send(200, json.dumps(list_library(root)).encode(), "application/json")
+            if path.startswith("/thumb/"):
+                src = resolve_media(root, path[len("/thumb/"):])
+                t = thumb_for(root, src) if src else None
+                if not t:
+                    return self._text(404, "no thumbnail")
+                return self._send(200, t.read_bytes(), "image/jpeg", {"Cache-Control": "private, max-age=86400"})
             if path.startswith("/media/"):
                 p = resolve_media(root, path[len("/media/"):])
                 return self._media(p) if p else self._text(404, "not found")
