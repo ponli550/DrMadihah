@@ -13,7 +13,7 @@ from pathlib import Path
 
 from . import (auth, doctor, inspect as inspect_mod, log, media, post, recipe as
                recipe_mod, render as render_mod, safe, scaffold,
-               script as script_mod, secrets, session, spinner, stack)
+               script as script_mod, secrets, session, spinner, stack, web)
 from .example import EXAMPLE_RECIPE
 from . import __version__
 from .config import Config
@@ -177,6 +177,21 @@ def cmd_secrets(args, cfg):
         log.out(secrets.decrypt(env_path))
         return 0
     return 2
+
+
+def cmd_web(args, cfg):
+    """Serve the read-only library browser. Meant to run ON the Premiere machine."""
+    import os
+    import subprocess
+    owner = args.owner or os.environ.get("UMC_WEB_OWNER", "")
+    if args.serve:
+        cmd = web.serve_command(args.port)
+        if args.print_serve:
+            log.out({"command": " ".join(cmd)})
+            return 0
+        log.info("publishing to the tailnet: " + " ".join(cmd))
+        return subprocess.run(cmd).returncode
+    return web.run(args.root or cfg.root, owner, args.port, awake=not args.no_caffeinate)
 
 
 def cmd_init(args, cfg):
@@ -951,6 +966,18 @@ def build_parser() -> argparse.ArgumentParser:
     i.add_argument("--remote-only", action="store_true")
     i.add_argument("--plan", action="store_true", help="show what would be created")
     i.set_defaults(func=cmd_init)
+
+    w = sub.add_parser("web", help="read-only media library UI (run on the Premiere machine)")
+    w.add_argument("--root", help="project root holding assets/ (default: this checkout)")
+    w.add_argument("--owner", help="the one Tailscale login allowed in (or UMC_WEB_OWNER)")
+    w.add_argument("--port", type=int, default=web.DEFAULT_PORT)
+    w.add_argument("--no-caffeinate", action="store_true",
+                   help="do not hold the Mac awake while serving")
+    w.add_argument("--serve", action="store_true",
+                   help="publish the running server on the tailnet (tailscale serve, never Funnel)")
+    w.add_argument("--print-serve", action="store_true",
+                   help="with --serve: print the command instead of running it")
+    w.set_defaults(func=cmd_web)
 
     st = sub.add_parser("stack", help="MCP backend containers on the remote")
     st.add_argument("action",
