@@ -360,6 +360,98 @@ class UploadRoutes(Server):
         self.assertIn("inbox", folders)
 
 
+class Details(Server):
+    JSON = {"Content-Type": "application/json", "X-Requested-With": "umcares"}
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        from umcares import uploads
+        import io
+        cls.shas = {}
+        for name, data, mtime in (("d1.jpg", b"dddd1", 1), ("d2.mp4", b"dddd22", 2)):
+            st = uploads.start(cls.demo, name, len(data), mtime)
+            uploads.append(cls.demo, st["id"], 0, io.BytesIO(data), len(data))
+            uploads.finish(cls.demo, st["id"])
+        from umcares import captions
+        cls.shas = {i["name"]: i["sha"] for i in captions.items(cls.demo)}
+
+    def save(self, name, payload, headers=None, slug="demo"):
+        return self.req("POST", f"/p/{slug}/api/media/{self.shas[name]}", headers or self.JSON, json.dumps(payload).encode())
+
+    def test_the_media_list_has_every_upload_with_its_state(self):
+        import io
+        from umcares import uploads
+        st = uploads.start(self.demo, "fresh.jpg", 9, 77)                 # own file: other tests caption d1/d2
+        uploads.append(self.demo, st["id"], 0, io.BytesIO(b"fresh-one"), 9)
+        uploads.finish(self.demo, st["id"])
+        status, _, body = self.req("GET", "/p/demo/api/media")
+        d = json.loads(body)
+        self.assertEqual(status, 200)
+        names = {i["name"]: i for i in d["items"]}
+        self.assertTrue({"d1.jpg", "d2.mp4", "fresh.jpg"} <= set(names))
+        self.assertTrue(names["fresh.jpg"]["pending"])
+        self.assertEqual((names["fresh.jpg"]["folder"], names["fresh.jpg"]["kind"]), ("photos", "image"))
+        self.assertGreaterEqual(d["pending"], 1)
+
+    def test_a_caption_is_saved_listed_and_shown_in_the_library(self):
+        status, _, body = self.save("d1.jpg", {"caption": "Opening speech"})
+        self.assertEqual((status, json.loads(body)["caption"]), (200, "Opening speech"))
+        item = next(i for i in json.loads(self.req("GET", "/p/demo/api/media")[2])["items"] if i["name"] == "d1.jpg")
+        self.assertEqual((item["caption"], item["pending"]), ("Opening speech", False))
+        lib = json.loads(self.req("GET", "/p/demo/api/library")[2])
+        f = next(f for g in lib["folders"] for f in g["files"] if f["name"] == "d1.jpg")
+        self.assertEqual((f["caption"], f["sha"]), ("Opening speech", self.shas["d1.jpg"]))
+
+    def test_skip_is_saved_as_no_detail(self):
+        status, _, body = self.save("d2.mp4", {"skipped": True})
+        self.assertEqual((status, json.loads(body)["skipped"]), (200, True))
+        item = next(i for i in json.loads(self.req("GET", "/p/demo/api/media")[2])["items"] if i["name"] == "d2.mp4")
+        self.assertFalse(item["pending"])
+
+    def test_files_not_uploaded_through_the_web_carry_no_sha_in_the_library(self):
+        (self.demo / "assets" / "photos" / "hand-copied.jpg").write_bytes(b"x")
+        lib = json.loads(self.req("GET", "/p/demo/api/library")[2])
+        f = next(f for g in lib["folders"] for f in g["files"] if f["name"] == "hand-copied.jpg")
+        self.assertNotIn("sha", f)
+
+    def test_writes_need_the_custom_header_and_json(self):
+        self.assertEqual(self.save("d1.jpg", {"caption": "x"}, {"Content-Type": "application/json"})[0], 403)
+        self.assertEqual(self.save("d1.jpg", {"caption": "x"}, {"X-Requested-With": "umcares"})[0], 403)
+
+    def test_another_login_cannot_read_or_write_captions(self):
+        other = {"Tailscale-User-Login": "x@y.com"}
+        self.assertEqual(self.req("GET", "/p/demo/api/media", other)[0], 403)
+        self.assertEqual(self.save("d1.jpg", {"caption": "x"}, {**self.JSON, **other})[0], 403)
+
+    def test_bad_input_is_refused_with_a_message(self):
+        for payload in ({"caption": "x" * 501}, {"caption": 5}, {"skipped": "yes"}, {"caption": ["a"]}):
+            status, _, body = self.save("d1.jpg", payload)
+            self.assertEqual(status, 400, payload)
+            self.assertIn("error", json.loads(body))
+
+    def test_an_unknown_file_or_project_is_a_404(self):
+        for sha in ("0" * 64, "nothex"):
+            self.assertEqual(self.req("POST", f"/p/demo/api/media/{sha}", self.JSON, b'{"caption":"x"}')[0], 404, sha)
+        # a path that decodes to extra slashes matches no route at all
+        self.assertEqual(self.req("POST", "/p/demo/api/media/..%2F..%2Fx", self.JSON, b'{"caption":"x"}')[0], 405)
+        self.assertEqual(self.save("d1.jpg", {"caption": "x"}, slug="nope")[0], 404)
+        self.assertEqual(self.req("GET", "/p/nope/api/media")[0], 404)
+
+    def test_a_save_schedules_one_git_commit_for_the_whole_pass(self):
+        import time
+        from unittest import mock
+        from umcares import web as w
+        calls = []
+        with mock.patch.object(w, "COMMIT_DELAY", 0.3), mock.patch.object(w.projects, "commit_files", side_effect=lambda *a: calls.append(a) or True):
+            for i in range(3):
+                self.save("d1.jpg", {"caption": f"edit {i}"})
+            self.assertEqual(calls, [], "nothing is committed while saves keep arriving")
+            time.sleep(0.8)
+        self.assertEqual(len(calls), 1, "one commit for the whole burst")
+        self.assertEqual(calls[0][1], ["media.json"])
+
+
 class Installable(Server):
     """What Chrome checks before it offers 'Install app'."""
 

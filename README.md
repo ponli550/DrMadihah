@@ -619,6 +619,30 @@ Files go up in resumable chunks, two at a time, with live MB/s on the bar.
 - Not built yet: converting VP9 or other unsupported video to H.264 (so an iPhone `.mov` or a
   Google Photos VP9 clip is stored as sent), and the one-by-one caption pass after a bulk upload.
 
+#### Captions (the detail pass)
+
+Phone files arrive named like `17915543098925884857360743224657.jpg`, which tells neither you nor the AI
+that writes the recipe anything. A caption ("Dr Madihah opening the session") is what lets the recipe step
+tell the speaker from the crowd shot.
+
+After an upload saves files, the page steps through **only the files that upload added**, one at a time: a
+preview, a caption box, **Save & next**, **Skip (no detail)**, **Back** and **Stop for now**. Skip records
+"no detail" so the file is not asked about again; Stop leaves the rest pending. The **Add details (n)**
+button reopens the pass for everything still pending, and every tile has a pencil to change its caption
+(for a captioned file, Skip becomes **Remove caption**). The share page's link opens the pass directly
+(`?details=1`).
+
+- Stored in `<project>/media.json`, which **git tracks** (small, and the real history of the project, unlike
+  the media). Keyed by the file's sha256, so renaming a file or sorting it from the inbox into A-roll does not
+  lose its caption. Only files uploaded through the web have a hash; older files in a folder are not covered.
+- Three states per file: captioned, skipped, pending. A caption is one paragraph of at most 500 characters;
+  a longer one is refused with a message, never silently cut.
+- Saves are committed by the server after 20 s of quiet, so a whole pass is one commit
+  (`media: update captions`), not one per file. A folder that is not a git repo (the original DrMadihah folder)
+  still gets `media.json`, just no commit.
+- Tested: the real page scripts drive the real server under node (`tests/test_details_js.py`): the full pass,
+  an empty caption, a failing save, Back, Stop, editing one file, the auto-open after an upload.
+
 #### Installing it and sharing into it
 
 Open the page in Chrome on the phone, menu, **Install app**. It opens standalone as "umcares".

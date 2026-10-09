@@ -24,3 +24,14 @@ TREE = [
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".heic", ".webp", ".gif"}
 VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".mkv", ".webm"}
 AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".aac"}
+
+
+def kind_of(name: str) -> str:
+    ext = name[name.rfind("."):].lower() if "." in name else ""
+    if ext in VIDEO_EXTS:
+        return "video"
+    if ext in IMAGE_EXTS:
+        return "image"
+    if ext in AUDIO_EXTS:
+        return "audio"
+    return "file"

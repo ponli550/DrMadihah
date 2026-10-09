@@ -30,8 +30,8 @@ function find(node, cls) {
   return null;
 }
 const ids = {};
-for (const id of ["back", "title", "status", "add", "speed", "summary", "queue", "retry", "lib", "pick", "shoot", "film", "f_pick", "f_shoot", "f_film"]) ids[id] = mk("x");
-ids.retry.hidden = true;
+for (const id of ["back", "title", "status", "add", "speed", "summary", "queue", "retry", "lib", "pick", "shoot", "film", "f_pick", "f_shoot", "f_film", "details", "detailsBtn"]) ids[id] = mk("x");
+ids.retry.hidden = true; ids.detailsBtn.hidden = true;
 const document = {
   title: "", getElementById: id => ids[id],
   createElement: mk,
@@ -65,7 +65,7 @@ const ctx = vm.createContext({
   fetch: fakeFetch,
   setTimeout: (f, ms) => setTimeout(f, Math.min(ms, 20)),     // keep the retry backoff short in a test
   setInterval, clearInterval,
-  navigator: {}, window: { addEventListener() {} }, location: {},
+  navigator: {}, window: { addEventListener() {} }, location: { search: "" }, URLSearchParams,
   encodeURIComponent,
 });
 

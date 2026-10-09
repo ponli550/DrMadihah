@@ -294,11 +294,101 @@ const say = text => { $("status").textContent = text; };
         if (r.failed) { say(r.failed + " file(s) did not upload. They are kept: try again, or reopen this page later."); return; }
         await dropShare(id);                                         // only once every file is safely stored
         say("Done: " + name);
-        $("after").append(el("a", {href: ROOT + "/p/" + encodeURIComponent(slug) + "/"}, "Open " + name));
+        $("after").append(el("a", {href: ROOT + "/p/" + encodeURIComponent(slug) + "/?details=1"}, "Open " + name + " and add details"));
       },
     });
     up.enqueue(files);
   });
 })();
 </script></body></html>
+"""
+
+
+# The caption pass: one file at a time, with a preview, a caption box and four ways out. A file ends in one of
+# three states: captioned, skipped ("no detail", never asked again) or still pending.
+DETAILS_JS = r"""
+function createDetails(opts) {
+  const BASE = opts.base, mount = opts.mount, banner = opts.banner;
+  const HEADERS = {"Content-Type": "application/json", "X-Requested-With": "umcares"};
+  let list = [], idx = 0, saved = 0, skipped = 0, busy = false;
+
+  const mb = n => n < 1048576 ? Math.max(1, Math.round(n / 1024)) + " KB" : (n / 1048576).toFixed(1) + " MB";
+  function el(tag, props, ...kids) {
+    const e = document.createElement(tag); Object.assign(e, props || {}); kids.forEach(k => e.append(k)); return e;
+  }
+  const seg = (folder, name) => folder.split("/").concat([name]).map(encodeURIComponent).join("/");
+
+  async function fetchItems() {
+    const r = await fetch(BASE + "/api/media");
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return r.json();
+  }
+  async function refresh() {
+    try {
+      const d = await fetchItems();
+      banner.hidden = d.pending === 0;
+      banner.textContent = "Add details (" + d.pending + ")";
+    } catch (e) { /* the banner just stays as it was */ }
+  }
+  function message(title, text, buttons) {
+    mount.replaceChildren(el("section", {className: "card"}, el("h2", {}, el("span", {}, title)), el("div", {className: "dim"}, text), ...buttons));
+  }
+  function close() { mount.replaceChildren(); refresh(); if (opts.onChange) opts.onChange(); }
+  function finish() {
+    message("All done", saved + " captioned, " + skipped + " skipped.", [el("button", {type: "button", onclick: close}, "Close")]);
+    refresh(); if (opts.onChange) opts.onChange();
+  }
+  async function start(opt) {
+    opt = opt || {};
+    let d;
+    try { d = await fetchItems(); }
+    catch (e) { message("Add details", "Could not load the files (" + e.message + ").", [el("button", {type: "button", className: "alt", onclick: close}, "Close")]); return; }
+    list = d.items.filter(i => opt.only ? opt.only.includes(i.sha) : i.pending);
+    if (!list.length) { message("Add details", "Nothing is waiting for details.", [el("button", {type: "button", className: "alt", onclick: close}, "Close")]); return; }
+    idx = 0; saved = 0; skipped = 0; render();
+  }
+  async function save(it, body, err, buttons) {
+    if (busy) return false;
+    busy = true; buttons.forEach(b => { b.disabled = true; }); err.textContent = "";
+    try {
+      const r = await fetch(BASE + "/api/media/" + it.sha, {method: "POST", headers: HEADERS, body: JSON.stringify(body)});
+      let d = {}; try { d = await r.json(); } catch (e) {}
+      if (!r.ok) throw new Error(d.error || ("HTTP " + r.status));
+      return true;
+    } catch (e) {
+      err.textContent = "Not saved: " + (e.message || e) + ". Try again.";
+      return false;
+    } finally { busy = false; buttons.forEach(b => { b.disabled = false; }); }
+  }
+  function render() {
+    const it = list[idx], last = idx + 1 >= list.length;
+    const poster = BASE + "/thumb/" + seg(it.folder, it.name), full = BASE + "/media/" + seg(it.folder, it.name);
+    const img = el("img", {className: "thumb", alt: it.name, src: poster});
+    img.onerror = () => { img.onerror = null; img.removeAttribute("src"); };
+    const preview = el("a", {href: full, target: "_blank"}, img);
+    const area = el("textarea", {rows: 3, maxLength: 500, value: it.caption || "", placeholder: "Who or what is this? e.g. Dr Madihah opening the session"});
+    const err = el("div", {className: "err"});
+    const next = el("button", {type: "button"}, last ? "Save & finish" : "Save & next");
+    const skip = el("button", {type: "button", className: "alt"}, it.caption ? "Remove caption" : "Skip (no detail)");
+    const back = el("button", {type: "button", className: "alt"}, "Back");
+    const stop = el("button", {type: "button", className: "alt"}, "Stop for now");
+    const all = [next, skip, back, stop];
+    const advance = () => { if (last) finish(); else { idx++; render(); } };
+    next.onclick = async () => {
+      if (!area.value.trim()) { err.textContent = "Type a caption, or tap " + skip.textContent + "."; return; }
+      if (await save(it, {caption: area.value}, err, all)) { it.caption = area.value.trim(); saved++; advance(); }
+    };
+    skip.onclick = async () => { if (await save(it, {skipped: true}, err, all)) { it.caption = ""; skipped++; advance(); } };
+    back.onclick = () => { if (idx > 0) { idx--; render(); } };
+    stop.onclick = close;
+    back.hidden = idx === 0;
+    mount.replaceChildren(el("section", {className: "card"},
+      el("h2", {}, el("span", {}, "Add details"), el("span", {className: "dim"}, (idx + 1) + " of " + list.length)),
+      el("progress", {max: list.length, value: idx}), preview,
+      el("div", {className: "name"}, it.name), el("div", {className: "dim"}, it.kind + " · " + mb(it.size)),
+      area, err, next, skip, back, stop));
+  }
+  banner.addEventListener("click", () => start({}));
+  return {start, refresh};
+}
 """

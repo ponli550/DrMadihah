@@ -108,6 +108,14 @@ def _info(root, rel: str) -> dict:
     return {"name": p.name, "folder": str(Path(rel).parent.relative_to("assets")), "size": p.stat().st_size}
 
 
+def known_files(root) -> dict:
+    """{sha256: path relative to the project} for every uploaded file that is still on disk."""
+    root = Path(root)
+    with _lock:
+        by_sha = _load_index(root)["by_sha"]
+    return {sha: rel for sha, rel in by_sha.items() if (root / rel).is_file()}
+
+
 def _sessions(root) -> list:
     out = []
     d = _dir(root)

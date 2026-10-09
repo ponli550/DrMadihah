@@ -110,17 +110,35 @@ def _git(path: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run([exe, *args], cwd=path, capture_output=True, text=True, timeout=60, env=env)
 
 
+def _identity_args(path: Path) -> list:
+    """A fresh machine has no git identity and `git commit` would refuse; borrow one for this commit only."""
+    if not _git(path, "config", "user.name").stdout.strip() or not _git(path, "config", "user.email").stdout.strip():
+        return ["-c", "user.name=umcares", "-c", "user.email=umcares@localhost"]
+    return []
+
+
+def commit_files(root, paths, message: str) -> bool:
+    """Commit just these files if they changed. False when nothing changed or git is not usable; never raises."""
+    root = Path(root)
+    if not (root / ".git").is_dir():
+        return False
+    try:
+        _git(root, "add", "--", *paths)
+        if _git(root, "diff", "--cached", "--quiet", "--", *paths).returncode == 0:
+            return False                                   # nothing staged for these paths
+        r = _git(root, *_identity_args(root), "-c", "commit.gpgsign=false", "commit", "-q", "-m", message, "--", *paths)
+        return r.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def _init_git(path: Path, message: str) -> dict:
     """git init + first commit. A failure here never fails project creation; it is reported."""
     try:
         if _git(path, "init", "-q", "-b", "main").returncode != 0:
             return {"initialised": False, "committed": False, "note": "git init failed"}
         _git(path, "add", "-A")
-        identity = []
-        if not _git(path, "config", "user.name").stdout.strip() or not _git(path, "config", "user.email").stdout.strip():
-            # a fresh machine has no identity and `git commit` would refuse; borrow one for this commit only
-            identity = ["-c", "user.name=umcares", "-c", "user.email=umcares@localhost"]
-        r = _git(path, *identity, "-c", "commit.gpgsign=false", "commit", "-q", "-m", message)
+        r = _git(path, *_identity_args(path), "-c", "commit.gpgsign=false", "commit", "-q", "-m", message)
         if r.returncode != 0:
             return {"initialised": True, "committed": False, "note": r.stderr.strip()[:200] or "commit failed"}
         return {"initialised": True, "committed": True, "note": ""}

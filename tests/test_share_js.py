@@ -83,7 +83,7 @@ class Share(unittest.TestCase):
         self.assertEqual(a["summary"], "2 saved")
         self.assertEqual(a["left"], [], "the parked files are removed only after every one is stored")
         self.assertEqual(a["status"], "Done: Demo")
-        self.assertEqual(a["after"], [{"text": "Open Demo", "href": "/umcares/p/demo/"}])
+        self.assertEqual(a["after"], [{"text": "Open Demo and add details", "href": "/umcares/p/demo/?details=1"}])
         self.assertIn("shared-photo.jpg", self.files("demo", "photos"))      # other tests share this project, so no exact listing
         self.assertIn("shared-clip.mp4", self.files("demo", "inbox"))
         self.assertEqual((self.home / "demo" / "assets" / "inbox" / "shared-clip.mp4").stat().st_size, 700 * 1024)

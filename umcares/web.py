@@ -37,8 +37,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from . import projects, uploads, webpages
-from .layout import AUDIO_EXTS, IMAGE_EXTS, VIDEO_EXTS
+from . import captions, projects, uploads, webpages
+from .layout import kind_of
 
 DEFAULT_PORT = 8733      # 8732 is SekerinShotto's
 BASE = "/umcares"        # where `tailscale serve` mounts us; it strips this before we see the path
@@ -65,17 +65,6 @@ THUMB_W = 360                                    # px; a tile is ~20 KB instead 
 FFMPEG_AT = ("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg")   # launchd's PATH does not include brew
 _thumb_slots = threading.BoundedSemaphore(2)     # a few ffmpeg at once, not 28 when a page opens
 PUBLIC_FIELDS = ("slug", "name", "event_date", "notes", "status", "created", "external", "missing")
-
-
-def kind_of(name: str) -> str:
-    ext = Path(name).suffix.lower()
-    if ext in VIDEO_EXTS:
-        return "video"
-    if ext in IMAGE_EXTS:
-        return "image"
-    if ext in AUDIO_EXTS:
-        return "audio"
-    return "file"
 
 
 def authorized(headers, owner: str) -> bool:
@@ -113,13 +102,45 @@ def list_folder(d: Path) -> list:
 
 
 def list_library(root) -> dict:
-    """Every library folder of one project with its files. Hidden files and in-flight `.part` files are skipped."""
+    """Every library folder of one project with its files. Hidden files and in-flight `.part` files are skipped.
+
+    A file uploaded through the web also carries its sha and caption state, so tiles can show and edit the caption."""
     assets = Path(root) / "assets"
+    notes = captions.by_path(root)
     out = []
     for folder, label in FOLDERS:
         d = assets / folder
-        out.append({"folder": folder, "label": label, "exists": d.is_dir(), "files": list_folder(d)})
+        files = list_folder(d)
+        for f in files:
+            n = notes.get(f"assets/{folder}/{f['name']}")
+            if n:
+                f.update(sha=n["sha"], caption=n["caption"], skipped=n["skipped"])
+        out.append({"folder": folder, "label": label, "exists": d.is_dir(), "files": files})
     return {"folders": out}
+
+
+COMMIT_DELAY = 20.0                      # seconds of quiet after the last caption before git records it
+_commit_timers: dict = {}
+_commit_lock = threading.Lock()
+
+
+def schedule_commit(root) -> None:
+    """One git commit for a whole captioning pass, not one per file: wait until saves stop, then commit media.json."""
+    key = str(root)
+
+    def run():
+        with _commit_lock:
+            _commit_timers.pop(key, None)
+        projects.commit_files(root, [captions.FILE], "media: update captions")
+
+    with _commit_lock:
+        old = _commit_timers.pop(key, None)
+        if old:
+            old.cancel()
+        t = threading.Timer(COMMIT_DELAY, run)
+        t.daemon = True
+        _commit_timers[key] = t
+        t.start()
 
 
 def resolve_media(root, rel: str):
@@ -313,7 +334,9 @@ section,.card{background:var(--card);border:1px solid var(--line);border-radius:
 h2{font-size:15px;margin:0 0 8px;display:flex;justify-content:space-between;gap:8px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
 .item{min-width:0}.thumb{width:100%;aspect-ratio:16/10;object-fit:cover;border-radius:6px;background:var(--line);display:block}
-.name{font-size:13px;word-break:break-all;margin-top:4px}
+.name{font-size:13px;margin-top:4px;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.edit{float:right;border:0;background:none;color:var(--acc);padding:0 4px;width:auto;margin:0;font-size:14px;cursor:pointer}
+textarea{resize:vertical}
 a{color:var(--acc)}
 .play{position:relative;cursor:pointer}
 .badge{position:absolute;inset:0;display:grid;place-items:center;font-size:28px;color:#fff;text-shadow:0 1px 6px #000}
@@ -389,6 +412,7 @@ __PWA__
     <button id="shoot" type="button" class="alt">Take photo</button>
     <button id="film" type="button" class="alt">Record video</button>
   </div>
+  <button id="detailsBtn" type="button" class="alt" hidden>Add details</button>
   <input id="f_pick" type="file" accept="image/*,video/*" multiple hidden>
   <input id="f_shoot" type="file" accept="image/*" capture="environment" hidden>
   <input id="f_film" type="file" accept="video/*" capture="environment" hidden>
@@ -396,9 +420,11 @@ __PWA__
   <div class="dim" id="summary"></div>
   <button id="retry" type="button" class="alt" hidden>Try the failed ones again</button>
 </section>
+<div id="details"></div>
 <div id="lib"></div>
 </main>
 <script src="__ROOT__/uploader.js"></script>
+<script src="__ROOT__/details.js"></script>
 <script>
 const HOME = __HOME__;
 const BASE = __BASE__;
@@ -433,6 +459,16 @@ async function fillThumbs(folders){
     }
   }
 }
+const plural = (n, word) => n + " " + word + (n === 1 ? "" : "s");
+let knownShas = null;
+function tile(f, g) {
+  const edit = f.sha ? el("button", {type: "button", className: "edit", title: "Add or change the caption"}, "✎") : "";
+  if (f.sha) edit.addEventListener("click", () => details.start({only: [f.sha]}));
+  return el("div", {className: "item"}, thumb(f, g.folder),
+    el("div", {className: "name", title: f.name}, edit, f.caption || f.name),
+    el("div", {className: "dim"}, (f.caption ? f.name + " · " : "") + mb(f.size) + (f.sha && !f.caption && !f.skipped ? " · no detail yet" : "")));
+}
+// Returns the shas that appeared since the previous load: the files an upload just added.
 function loadLibrary(){
   return fetch(BASE + "/api/library").then(r => { if(!r.ok) throw new Error(r.status); return r.json(); }).then(d => {
     const lib = document.getElementById("lib");
@@ -441,24 +477,29 @@ function loadLibrary(){
     d.folders.forEach(g => {
       n += g.files.length; g.files.forEach(f => bytes += f.size);
       const grid = el("div", {className:"grid"});
-      g.files.forEach(f => grid.append(el("div", {className:"item"}, thumb(f, g.folder),
-        el("div", {className:"name"}, f.name), el("div", {className:"dim"}, mb(f.size)))));
+      g.files.forEach(f => grid.append(tile(f, g)));
       if (!g.files.length) grid.append(el("div", {className:"dim"}, g.exists ? "empty" : "folder missing"));
-      lib.append(el("section", {}, el("h2", {}, el("span", {}, g.label), el("span", {className:"dim"}, g.files.length + " files")), grid));
+      lib.append(el("section", {}, el("h2", {}, el("span", {}, g.label), el("span", {className:"dim"}, plural(g.files.length, "file"))), grid));
     });
-    document.getElementById("status").textContent = n + " files · " + mb(bytes);
+    document.getElementById("status").textContent = plural(n, "file") + " · " + mb(bytes);
     fillThumbs(d.folders.filter(g => g.files.some(f => f.kind === "video" || f.kind === "image")).map(g => g.folder));
-  }).catch(e => { document.getElementById("status").textContent = "Could not load the library (" + e.message + ")"; });
+    const now = d.folders.flatMap(g => g.files).map(f => f.sha).filter(Boolean);
+    const fresh = knownShas ? now.filter(s => !knownShas.has(s)) : [];
+    knownShas = new Set(now);
+    return fresh;
+  }).catch(e => { document.getElementById("status").textContent = "Could not load the library (" + e.message + ")"; return []; });
 }
-loadLibrary();
 
 // ---- upload: the shared uploader (also used by the share page) ----
 const uploader = createUploader({
   base: BASE,
   queue: document.getElementById("queue"), summary: document.getElementById("summary"),
   speed: document.getElementById("speed"), retry: document.getElementById("retry"),
-  onSaved: loadLibrary,
+  onSaved: () => loadLibrary().then(fresh => { if (fresh.length) details.start({only: fresh}); }),
 });
+const details = createDetails({base: BASE, mount: document.getElementById("details"), banner: document.getElementById("detailsBtn"), onChange: loadLibrary});
+details.refresh();
+loadLibrary().then(() => { if (new URLSearchParams(location.search).get("details")) details.start({}); });
 for (const k of ["pick", "shoot", "film"]) {
   const input = document.getElementById("f_" + k);
   document.getElementById(k).addEventListener("click", () => input.click());
@@ -543,6 +584,9 @@ def make_handler(home, owner: str):
             base = f"{BASE}/p/{slug}"
             if rest.startswith("/api/upload/"):
                 return self._upload(slug, rest, "GET", query)
+            if rest == "/api/media":
+                got = captions.items(root)
+                return self._json(200, {"items": got, "pending": sum(1 for i in got if i["pending"])})
             if rest == "/":
                 p = projects.find_project(home, slug)
                 return self._page(PROJECT_PAGE, home=BASE, base=base, project=public(p))
@@ -575,6 +619,8 @@ def make_handler(home, owner: str):
             path, query = unquote(parts.path), parse_qs(parts.query)
             if path == "/manifest.webmanifest":
                 return self._send(200, json.dumps(manifest()).encode(), "application/manifest+json")
+            if path == "/details.js":
+                return self._send(200, webpages.DETAILS_JS.encode(), "text/javascript; charset=utf-8", {"Cache-Control": "no-cache"})
             if path == "/uploader.js":
                 return self._send(200, webpages.UPLOADER_JS.encode(), "text/javascript; charset=utf-8", {"Cache-Control": "no-cache"})
             if path == "/sw.js":
@@ -675,6 +721,27 @@ def make_handler(home, owner: str):
             except OSError:
                 return self._json(500, {"error": "the machine could not write the file"})
 
+        def _set_detail(self, slug: str, sha: str):
+            root = project_root(home, slug)
+            if root is None:
+                return self._text(404, "not found")
+            if not self._csrf_ok(json_body=True):
+                return self._json(403, {"error": "forbidden"})
+            body = self._json_body()
+            if body is None:
+                return
+            skipped = body.get("skipped", False)
+            if not isinstance(skipped, bool):
+                return self._json(400, {"error": "skipped must be true or false"})
+            try:
+                result = captions.set_detail(root, sha, body.get("caption"), skipped)
+            except captions.CaptionError as e:
+                return self._json(e.status, {"error": e.message})
+            except OSError:
+                return self._json(500, {"error": "the machine could not save the caption"})
+            schedule_commit(root)
+            return self._json(200, result)
+
         def _write(self, method: str):
             if not authorized(self.headers, owner):
                 return self._text(403, "forbidden")
@@ -687,6 +754,9 @@ def make_handler(home, owner: str):
             m = re.fullmatch(r"/p/([a-z0-9-]+)(/api/upload/.*)", path)
             if m:
                 return self._upload(m.group(1), m.group(2), method, query)
+            m = re.fullmatch(r"/p/([a-z0-9-]+)/api/media/([^/]+)", path)
+            if m and method == "POST":
+                return self._set_detail(m.group(1), m.group(2))
             if method == "POST" and path == "/share-target":
                 # the service worker normally takes this locally. Reaching us means it was not in control yet:
                 # say so instead of reading a whole video into a request that cannot be used.
