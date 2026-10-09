@@ -360,6 +360,85 @@ class UploadRoutes(Server):
         self.assertIn("inbox", folders)
 
 
+class Installable(Server):
+    """What Chrome checks before it offers 'Install app'."""
+
+    def png_size(self, data):
+        import struct
+        self.assertEqual(data[:8], b"\x89PNG\r\n\x1a\n")
+        return struct.unpack(">II", data[16:24])
+
+    def pixel(self, data, x, y):
+        import struct
+        import zlib
+        w, h = struct.unpack(">II", data[16:24])
+        pos, idat = 8, b""
+        while pos < len(data):
+            n, kind = struct.unpack(">I4s", data[pos:pos + 8])
+            if kind == b"IDAT":
+                idat += data[pos + 8:pos + 8 + n]
+            pos += 12 + n
+        raw = zlib.decompress(idat)
+        row = raw[y * (1 + w * 3) + 1:(y + 1) * (1 + w * 3)]
+        return tuple(row[x * 3:x * 3 + 3])
+
+    def test_the_manifest_is_valid_and_scoped_to_the_mount(self):
+        status, h, body = self.req("GET", "/manifest.webmanifest")
+        self.assertEqual(status, 200)
+        self.assertEqual(h["Content-Type"], "application/manifest+json")
+        m = json.loads(body)
+        self.assertEqual((m["display"], m["start_url"], m["scope"]), ("standalone", "/umcares/", "/umcares/"))
+        self.assertTrue(m["name"] and m["short_name"])
+        sizes = {(i["sizes"], i["purpose"]) for i in m["icons"]}
+        self.assertTrue({("192x192", "any"), ("512x512", "any"), ("512x512", "maskable")} <= sizes)
+
+    def test_every_icon_the_manifest_lists_exists_and_has_the_size_it_claims(self):
+        for icon in json.loads(self.req("GET", "/manifest.webmanifest")[2])["icons"]:
+            self.assertTrue(icon["src"].startswith("/umcares/"))
+            status, h, body = self.req("GET", icon["src"][len("/umcares"):])
+            self.assertEqual(status, 200, icon["src"])
+            self.assertEqual(h["Content-Type"], "image/png")
+            w = int(icon["sizes"].split("x")[0])
+            self.assertEqual(self.png_size(body), (w, w), icon["src"])
+
+    def test_the_icon_is_drawn_not_blank(self):
+        _, _, std = self.req("GET", "/icon-512.png")
+        self.assertEqual(self.pixel(std, 5, 5), (17, 19, 24))          # outside the card: the dark background
+        self.assertEqual(self.pixel(std, 90, 256), (127, 176, 255))    # on the card: the accent
+        self.assertEqual(self.pixel(std, 220, 256), (17, 19, 24))      # inside the triangle: dark again
+        _, _, mask = self.req("GET", "/icon-maskable-512.png")
+        self.assertEqual(self.pixel(mask, 5, 5), (127, 176, 255))      # maskable is full bleed, so the corner is accent
+
+    def test_an_unknown_icon_is_a_404(self):
+        self.assertEqual(self.req("GET", "/icon-999.png")[0], 404)
+        self.assertEqual(self.req("GET", "/icon-192.png.bak")[0], 404)
+
+    def test_the_service_worker_is_javascript_that_never_touches_a_request(self):
+        status, h, body = self.req("GET", "/sw.js")
+        self.assertEqual(status, 200)
+        self.assertTrue(h["Content-Type"].startswith("text/javascript"))
+        self.assertEqual(h["Cache-Control"], "no-cache")       # a new worker must be noticed
+        text = body.decode()
+        self.assertIn("addEventListener('fetch'", text)
+        self.assertNotIn("respondWith", text)                  # nothing is cached or rewritten
+        self.assertNotIn("caches", text)
+
+    def test_both_pages_link_the_manifest_and_register_the_worker(self):
+        for path in ("/", "/p/demo/"):
+            body = self.req("GET", path)[2].decode()
+            self.assertIn('rel="manifest" href="/umcares/manifest.webmanifest"', body, path)
+            self.assertIn('rel="apple-touch-icon" href="/umcares/icon-192.png"', body, path)
+            self.assertIn('serviceWorker.register("/umcares/sw.js", {scope: "/umcares/"})', body, path)
+            self.assertIn('name="theme-color"', body, path)
+            self.assertNotIn("__PWA__", body)
+            self.assertNotIn("__ROOT__", body)
+
+    def test_the_install_files_are_not_public(self):
+        other = {"Tailscale-User-Login": "x@y.com"}
+        for path in ("/manifest.webmanifest", "/sw.js", "/icon-192.png", "/icon-512.png", "/icon-maskable-512.png"):
+            self.assertEqual(self.req("GET", path, other)[0], 403, path)
+
+
 def uploads_max():
     from umcares import uploads
     return uploads.CHUNK_MAX

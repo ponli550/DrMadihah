@@ -30,7 +30,9 @@ import re
 import shutil
 import subprocess
 import sys
+import struct
 import threading
+import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
@@ -229,6 +231,83 @@ def thumb_batch(cache, root, folder: str, budget: int = 6) -> dict:
     return {"thumbs": thumbs, "pending": pending, "failed": failed}
 
 
+APP_NAME = "umcares"
+APP_BG = "#111318"
+ICON_SIZES = {"icon-192.png": (192, False), "icon-512.png": (512, False), "icon-maskable-512.png": (512, True)}
+
+# A service worker is what makes the page installable. It must not cache or rewrite anything: every request
+# goes straight to the network, so a page, a thumbnail or an upload chunk is never stale or half-stored.
+SW = """\
+self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));
+self.addEventListener('fetch', () => {});
+"""
+
+PWA_HEAD = (
+    '<meta name="theme-color" content="#f6f6f4" media="(prefers-color-scheme: light)">'
+    '<meta name="theme-color" content="#111318" media="(prefers-color-scheme: dark)">'
+    '<link rel="manifest" href="__ROOT__/manifest.webmanifest">'
+    '<link rel="apple-touch-icon" href="__ROOT__/icon-192.png">'
+    '<script>if ("serviceWorker" in navigator) navigator.serviceWorker.register("__ROOT__/sw.js", {scope: "__ROOT__/"}).catch(function () {});</script>'
+)
+
+
+def manifest() -> dict:
+    return {"name": APP_NAME, "short_name": APP_NAME, "id": f"{BASE}/", "start_url": f"{BASE}/", "scope": f"{BASE}/",
+            "display": "standalone", "background_color": APP_BG, "theme_color": APP_BG,
+            "icons": [{"src": f"{BASE}/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+                      {"src": f"{BASE}/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+                      {"src": f"{BASE}/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}]}
+
+
+def _png(n: int, rows: bytes) -> bytes:
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+    raw = b"".join(b"\x00" + rows[y * n * 3:(y + 1) * n * 3] for y in range(n))       # filter 0 on every row
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", n, n, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b""))
+
+
+_icons: dict = {}
+
+
+def icon_png(name: str):
+    """The app icon: a play triangle on a rounded square. Drawn here with the standard library only, because
+    the Premiere machine has no Pillow, and cached because drawing 512x512 in Python takes a moment."""
+    if name not in ICON_SIZES:
+        return None
+    if name not in _icons:
+        n, maskable = ICON_SIZES[name]
+        bg, acc = (17, 19, 24), (127, 176, 255)
+        tri = ((0.40, 0.30), (0.40, 0.70), (0.72, 0.50))
+
+        def in_tri(px, py):
+            (ax, ay), (bx, by), (cx, cy) = tri
+            d1 = (px - bx) * (ay - by) - (ax - bx) * (py - by)
+            d2 = (px - cx) * (by - cy) - (bx - cx) * (py - cy)
+            d3 = (px - ax) * (cy - ay) - (cx - ax) * (py - ay)
+            return not (((d1 < 0) or (d2 < 0) or (d3 < 0)) and ((d1 > 0) or (d2 > 0) or (d3 > 0)))
+
+        def in_card(px, py):                       # rounded square, inset 12%, corner radius 16%
+            if maskable:
+                return True                        # full bleed: the launcher masks it
+            dx = max(0.28 - px, 0.0, px - 0.72)
+            dy = max(0.28 - py, 0.0, py - 0.72)
+            return 0.12 <= px <= 0.88 and 0.12 <= py <= 0.88 and dx * dx + dy * dy <= 0.16 * 0.16
+        rows = bytearray()
+        for y in range(n):
+            for x in range(n):
+                r = g = b = 0
+                for sy in (0.25, 0.75):
+                    for sx in (0.25, 0.75):
+                        px, py = (x + sx) / n, (y + sy) / n
+                        c = bg if in_tri(px, py) and in_card(px, py) else (acc if in_card(px, py) else bg)
+                        r += c[0]; g += c[1]; b += c[2]
+                rows += bytes((r // 4, g // 4, b // 4))
+        _icons[name] = _png(n, bytes(rows))
+    return _icons[name]
+
+
 STYLE = """
 :root{--bg:#f6f6f4;--card:#fff;--line:#dcdcd6;--fg:#1c1c1a;--dim:#6b6b66;--acc:#1f5fbf;--err:#b3261e}
 @media (prefers-color-scheme:dark){:root{--bg:#111318;--card:#1b1e26;--line:#2a2d36;--fg:#e8e8ea;--dim:#9a9aa3;--acc:#7fb0ff;--err:#ff8a80}}
@@ -256,6 +335,7 @@ button.alt{background:var(--card);color:var(--acc);border:1px solid var(--acc)}
 HOME_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+__PWA__
 <title>umcares</title>
 <style>__STYLE__</style></head><body><main>
 <h1>umcares</h1><div class="dim" id="status">Loading…</div>
@@ -303,6 +383,7 @@ document.getElementById("new").addEventListener("submit", async ev => {
 PROJECT_PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+__PWA__
 <title>umcares project</title>
 <style>__STYLE__</style></head><body><main>
 <div class="dim"><a id="back">All projects</a></div>
@@ -542,7 +623,7 @@ def make_handler(home, owner: str):
             self._send(code, json.dumps(obj).encode(), "application/json")
 
         def _page(self, template: str, **tokens):
-            page = template.replace("__STYLE__", STYLE)
+            page = template.replace("__PWA__", PWA_HEAD).replace("__STYLE__", STYLE).replace("__ROOT__", BASE)
             for k, v in tokens.items():
                 page = page.replace(f"__{k.upper()}__", js(v))
             self._send(200, page.encode(), "text/html; charset=utf-8")
@@ -614,6 +695,13 @@ def make_handler(home, owner: str):
                 return self._text(403, "forbidden")
             parts = urlsplit(self.path)
             path, query = unquote(parts.path), parse_qs(parts.query)
+            if path == "/manifest.webmanifest":
+                return self._send(200, json.dumps(manifest()).encode(), "application/manifest+json")
+            if path == "/sw.js":
+                return self._send(200, SW.encode(), "text/javascript; charset=utf-8", {"Cache-Control": "no-cache"})
+            m = re.fullmatch(r"/(icon-(?:192|512|maskable-512)\.png)", path)
+            if m:
+                return self._send(200, icon_png(m.group(1)), "image/png", {"Cache-Control": "private, max-age=86400"})
             if path in ("/", "/index.html"):
                 return self._page(HOME_PAGE, base=BASE)
             if path == "/api/projects":
