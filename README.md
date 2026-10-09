@@ -495,3 +495,80 @@ Two items are worth a decision before submission: only **two filmed
 testimonials** exist against a stated minimum of three, and the **monetary
 value** requirement has no supporting figure. Both are content gaps, not
 production gaps.
+---
+
+## 8. Research: Vox-style motion graphics (next feature)
+
+Goal: let a recipe produce explainer-style motion graphics (Vox and similar),
+not only footage cuts plus stat cards. The recipe stays declarative; the AI
+declares intent, `umcares` does the timing. Nothing below is implemented yet.
+
+### References
+
+| Source | What it is | Use for us |
+|---|---|---|
+| [Create Motion Graphics with Claude (Vox-style & More)](https://youtu.be/LiQPU7_5v68) | Zinho Automates, 17 Jul 2026. Workflow: Claude chat writes a style prompt (e.g. paper-cutout collage, halftone archival photos, annotation arrows), Claude Code takes it, splits the script into scenes, generates every shot through the **Higgsfield MCP** (paid credits) with one locked style reference, lays in voiceover and times it to the visuals. Style is swappable (Vox, cartoon, whiteboard, pixel art, etc.). Its own warning: the style puts numbers on screen, and fixing a wrong one means regenerating the shot, so pin the facts before the prompt. | The *shape* (style prompt, then scenes, then a locked style) is what we want. The *engine* (Higgsfield) is metered API generation and is not ours to adopt. |
+| [RomanSlack/thought-to-text](https://github.com/RomanSlack/thought-to-text) | 20 s film remade from a viral edit. `teardown.py` (librosa, faster-whisper) extracts cuts, beats and palette; Remotion renders 14 scenes in absolute seconds from one beat map; ElevenLabs VO, SuperCollider score. Principle: *keep the timing, swap the nouns.* | Beat map as the single timing source; analysing a reference edit into a template. |
+| [yihui-dev/awesome-opus5-5-videos](https://github.com/yihui-dev/awesome-opus5-5-videos) | Curated list of videos where the model wrote the animation as HTML, Canvas, SVG, GSAP or Three.js. Sections: motion graphics (58), explainers (16), 3D (14), games (12). | Prompt and style gallery. Not a pipeline. |
+| [JohnHeibel/PDoomVideo](https://github.com/JohnHeibel/PDoomVideo) | Music video, one file per chapter. p5.js drawn in headless Chrome, frames written in resumable batches, ffmpeg encode. Model-written `ANIMATION_GUIDE.md` and `STORYBOARD.md` brief parallel subagents. | Resumable frame renderer; storyboard-then-subagents workflow. |
+| [echris6/motion-video-kit](https://github.com/echris6/motion-video-kit) | Claude Code skill for launch commercials: HTML/GSAP plus selective Three.js, HyperFrames renderer. Includes a builder/critic review loop ("Gauntlet"), motion grammar, and scripts for frozen-time checks, loudness (`ebur128`), contact sheets and offline mix. | Closest to our shape. Critic gate and QA scripts map onto `verify.py`; motion grammar maps onto recipe presets. |
+| [3b1b/manim](https://github.com/3b1b/manim) | Python animation engine (`manimgl`) for math explainers. Needs Python 3.10+, FFmpeg, OpenGL, optional LaTeX. Distinct from ManimCommunity; do not mix the two. | Candidate backend for diagrams, graphs and equations. Weak fit for Vox-style collage. |
+
+### Decisions
+
+- **Renders on the remote Mac's CPU.** That is why the remote exists; the
+  graphics render next to Premiere and nothing is pushed back and forth.
+- **json2video stays.** It keeps the Azure `ms-MY` voiceover and the existing
+  stat/title cards. This feature adds nothing to it and removes nothing.
+- **No new metered APIs, no image-generation API.** Higgsfield and anything
+  like it are out. Motion graphics are code-rendered (HTML/GSAP via headless
+  Chrome, or manim), which costs CPU time only.
+- **Facts are pinned in the recipe before any render.** Stat cards already
+  carry the programme's figures; a wrong number baked into a frame costs a
+  re-render, and in a report video it is a credibility error.
+
+### Open questions
+
+- **Renderer.** Candidates: HTML/GSAP via headless Chrome (PDoomVideo,
+  motion-video-kit), Remotion (React, seek-safe), manim (graphs, equations).
+  Must run headless on the remote Mac; each adds an install to check in
+  `doctor`.
+- **Stills.** Vox collage wants cutout and halftone imagery. Without an image
+  API it comes from our own photos (event stills, `kenburns`) processed with
+  ffmpeg or Pillow. Confirm that looks acceptable before committing.
+- **Recipe shape.** A scene or card type that names a template and parameters,
+  never keyframes, so durations stay resolver-owned.
+- **Verification.** Reuse frozen-time and loudness checks as render gates.
+
+### Web app and modes (planned)
+
+`umcares web` runs on the remote Mac and is published to the tailnet only with
+`tailscale serve`, the same pattern as SekerinShotto's `receiver.py`: a stdlib
+server on `127.0.0.1`, access limited to the owner's `Tailscale-User-Login`.
+It is the capture, library and approval surface; it never computes a timing.
+
+| Mode | Who authors the recipe | Notes |
+|---|---|---|
+| **A** | Claude Code, run by hand on the Mac | most polished; the web shows the result and approves |
+| **B** | templates, no model | fast draft: slow-mo montage, speed ramps, LUT grade, beat-synced cuts, text overlay |
+| **C** | the web triggers `claude -p` on the Mac (subscription) | limits and terms **not verified**; restrict allowed tools, validate, require approval before render |
+
+Rules the web must keep:
+
+- **Uploads are deduplicated by sha256.** Same hash returns the existing file
+  (so a retry is harmless); same name with a different hash is kept under a new
+  suffix, never overwritten. A file counts as uploaded only once its hash is stored.
+- **Every upload is probed and prepared** (VP9 to H.264) before it can be used.
+- **Delete moves to a trash folder** and warns if a recipe still references it.
+- **No mutation while a build or render is running.**
+- **Recipe writes go through `recipe validate`** with a timestamped backup.
+- **Storage stays under the project root**, never `~/Downloads`, `~/Documents`
+  or `~/Desktop` (macOS TCC).
+
+Social output: 9:16 (1080x1920), 30 fps, burned-in captions, 15-60 s. Reframing
+16:9 footage to vertical needs subject tracking, not a centre crop.
+
+**Music.** CapCut templates cannot be imported, so the look is recreated in
+ffmpeg and librosa. A commercial song (e.g. a sad Indonesian track) in a posted
+video gets muted or blocked. Export with no music, or a quiet placeholder, and add the
+track in the platform's own app; otherwise use the royalty-free folder.
