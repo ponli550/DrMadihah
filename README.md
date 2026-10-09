@@ -573,27 +573,30 @@ ffmpeg and librosa. A commercial song (e.g. a sad Indonesian track) in a posted
 video gets muted or blocked. Export with no music, or a quiet placeholder, and add the
 track in the platform's own app; otherwise use the royalty-free folder.
 
-#### Deploying the web app (phase 1, done by hand)
-
-On the Premiere machine, run it as a LaunchAgent so it survives logout, crashes
-and reboots. Do not start it from an ssh session: a leftover instance keeps the
-port, a restart then fails with "Address already in use" and the old server
-keeps answering, which looks like a flaky proxy.
+#### Deploying the web app
 
 ```bash
-umcares push umcares/web.py <remote-root>/web/web.py
-# ~/Library/LaunchAgents/com.umcares.web.plist runs:
-#   python3 -I <remote-root>/web/web.py --root <remote-root>
-# with env UMC_WEB_OWNER=<your tailscale login>, RunAtLoad + KeepAlive
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.umcares.web.plist
-tailscale serve --bg --set-path /umcares http://127.0.0.1:8733   # tailnet only
-launchctl kickstart -k gui/$(id -u)/com.umcares.web              # restart after a push
+umcares web deploy --owner <your tailscale login>   # or set UMC_WEB_OWNER
+umcares web --serve                                 # once: publish on the tailnet (tailscale serve, never Funnel)
 ```
 
-- The plist holds the owner login and absolute paths, so it is not committed.
-- `tailscale serve` mounts by path prefix; do not add a second mount whose name
-  starts with `/umcares`.
-- The first request after publishing can fail while the HTTPS certificate is issued.
+`deploy` pushes `__init__.py`, `layout.py`, `projects.py` and `web.py` to
+`<remote-root>/web/app/umcares/`, checks them byte-for-byte, rewrites the LaunchAgent
+plist only if it changed, lets launchd (re)start it, and fails unless the service
+answers. It also registers the existing project folder, without moving it. It does
+not publish to the tailnet by itself.
+
+Never start the server by hand over ssh: a leftover instance keeps the port, the
+restart then dies with "Address already in use", and the old server keeps answering,
+which looks like a flaky proxy. `tailscale serve` mounts by path prefix, so do not
+add a second mount whose name starts with `/umcares`. The first request after
+publishing can fail while the HTTPS certificate is issued.
+
+Projects live in `~/Projects/umcares-projects/<slug>/` on the remote (override with
+`UMC_PROJECTS_HOME`). Creating one from the web makes the tree, `project.json`, a
+README, a `.gitignore` and a git repo; the first commit uses `umcares@localhost` as
+author because that machine has no git identity. The thumbnail cache lives in
+`<home>/.cache`, outside every project, so it never dirties a project's repo.
 
 #### Measured link speed (9 Oct 2026) — read before building uploads
 

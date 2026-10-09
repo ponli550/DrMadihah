@@ -14,6 +14,7 @@ from pathlib import Path
 from . import (auth, doctor, inspect as inspect_mod, log, media, post, recipe as
                recipe_mod, render as render_mod, safe, scaffold,
                script as script_mod, secrets, session, spinner, stack, web)
+from . import projects as projects_mod
 from .example import EXAMPLE_RECIPE
 from . import __version__
 from .config import Config
@@ -180,10 +181,21 @@ def cmd_secrets(args, cfg):
 
 
 def cmd_web(args, cfg):
-    """Serve the read-only library browser. Meant to run ON the Premiere machine."""
+    """Serve the projects web app (run), or put it on the Premiere machine (deploy)."""
     import os
     import subprocess
     owner = args.owner or os.environ.get("UMC_WEB_OWNER", "")
+    if args.action == "deploy":
+        from . import webdeploy
+        t = _transport(args, cfg)
+        with spinner.spin("deploying the web app", 60):
+            report = webdeploy.deploy(t, cfg.remote.root, owner, args.port)
+        if not report["published"]:
+            log.info("not on the tailnet yet; run: umcares web --serve   (or on that machine: "
+                     + " ".join(web.serve_command(args.port)) + ")")
+        log.ok(f"web app running on the remote (http {report['http']})")
+        log.out(report)
+        return 0
     if args.serve:
         cmd = web.serve_command(args.port)
         if args.print_serve:
@@ -191,7 +203,7 @@ def cmd_web(args, cfg):
             return 0
         log.info("publishing to the tailnet: " + " ".join(cmd))
         return subprocess.run(cmd).returncode
-    return web.run(args.root or cfg.root, owner, args.port, awake=not args.no_caffeinate)
+    return web.run(args.home or projects_mod.DEFAULT_HOME, owner, args.port, awake=not args.no_caffeinate)
 
 
 def cmd_init(args, cfg):
@@ -967,8 +979,10 @@ def build_parser() -> argparse.ArgumentParser:
     i.add_argument("--plan", action="store_true", help="show what would be created")
     i.set_defaults(func=cmd_init)
 
-    w = sub.add_parser("web", help="read-only media library UI (run on the Premiere machine)")
-    w.add_argument("--root", help="project root holding assets/ (default: this checkout)")
+    w = sub.add_parser("web", help="projects and media web app (run on the Premiere machine)")
+    w.add_argument("action", nargs="?", choices=["run", "deploy"], default="run",
+                   help="run = serve here; deploy = install/refresh it on the remote as a LaunchAgent")
+    w.add_argument("--home", help="folder that holds the projects (default ~/Projects/umcares-projects)")
     w.add_argument("--owner", help="the one Tailscale login allowed in (or UMC_WEB_OWNER)")
     w.add_argument("--port", type=int, default=web.DEFAULT_PORT)
     w.add_argument("--no-caffeinate", action="store_true",
