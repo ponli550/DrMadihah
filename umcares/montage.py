@@ -308,17 +308,19 @@ def resolve(validated: dict, root) -> dict:
         if fade:
             fade = min(fade, round(0.4 * s["duration"], 3))
     # keep within the length limit by dropping clips from the end (cards stay)
-    limit, dropped = float(r["max_seconds"]), 0
+    limit, dropped, left_out = float(r["max_seconds"]), 0, []
     def total_of(ss):
         return sum(s["duration"] for s in ss) - fade * max(0, len(ss) - 1)
     while total_of(segs) > limit + 1e-6:
         idx = next((j for j in range(len(segs) - 1, -1, -1) if segs[j]["kind"] in ("photo", "video")), None)
         if idx is None or sum(1 for s in segs if s["kind"] in ("photo", "video")) <= 1:
             break
-        segs.pop(idx)
+        gone = segs.pop(idx)
+        left_out.insert(0, gone["text"] or gone["name"])
         dropped += 1
     if dropped:
-        warnings.append(f"{dropped} clip{'s' if dropped != 1 else ''} left out to stay within {limit:g} seconds")
+        names = ", ".join(left_out[:4]) + (f" and {dropped - 4} more" if dropped > 4 else "")
+        warnings.append(f"{dropped} clip{'s' if dropped != 1 else ''} left out to stay within {limit:g} seconds: {names}")
     if total_of(segs) > limit + 1e-6:
         warnings.append(f"even with one clip the video is {total_of(segs):.1f}s, longer than the {limit:g}s limit: shorten the cards or raise max_seconds")
     t = 0.0
@@ -590,11 +592,15 @@ class Renderer:
     def submit(self, root, recipe) -> dict:
         root = Path(root)
         plan = plan_for(recipe, root)                       # raises RecipeError / MontageError before anything is queued
+        key = json.dumps(recipe, sort_keys=True, default=str)
         with self.cv:
+            same = next((j for j in self.jobs if j["root"] == str(root) and j["state"] in ("queued", "running") and j.get("_key") == key), None)
+            if same:                                         # a second press of Make must not queue a second copy
+                return self.public(same)
             job = {"id": f"{int(time.time() * 1000):x}{len(self.jobs)}", "root": str(root), "state": "queued", "percent": 0,
                    "error": None, "output": None, "title": plan["title"] or "Montage", "format": plan["format"],
                    "template": plan["template"], "total": plan["total"], "pieces": len(plan["segments"]),
-                   "warnings": plan["warnings"], "_plan": plan, "_recipe": recipe}
+                   "warnings": plan["warnings"], "_plan": plan, "_recipe": recipe, "_key": key}
             self.jobs.append(job)
             self.jobs = self.jobs[-100:]
             if self.thread is None or not self.thread.is_alive():

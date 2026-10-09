@@ -452,6 +452,27 @@ class Details(Server):
         self.assertEqual(calls[0][1], ["media.json"])
 
 
+class PageStyles(Server):
+    """Layout rules that only show up on a real screen, pinned by what the page ships."""
+
+    def test_checkboxes_are_not_stretched_to_full_width_like_text_fields(self):
+        css = self.req("GET", "/p/demo/")[2].decode()
+        self.assertIn("input[type=checkbox]{width:auto", css)
+
+    def test_the_move_buttons_are_not_floated_so_up_comes_before_down(self):
+        page = self.req("GET", "/p/demo/")[2].decode()
+        rule = next(line for line in page.splitlines() if line.startswith(".mv{"))
+        self.assertNotIn("float", rule)
+        js = self.req("GET", "/montage.js")[2].decode()
+        self.assertLess(js.index('"Move earlier"'), js.index('"Move later"'))
+        self.assertNotIn('className: "edit", title: "Move', js, "the float-right pencil style must not be used for the arrows")
+
+    def test_an_error_is_red_and_an_ordinary_notice_is_not(self):
+        page = self.req("GET", "/p/demo/")[2].decode()
+        self.assertIn(".notice.err{color:var(--err)}", page)
+        self.assertNotIn(".notice{font-size:14px;min-height:1.2em;color:var(--err)", page)
+
+
 class Installable(Server):
     """What Chrome checks before it offers 'Install app'."""
 

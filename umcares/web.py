@@ -364,6 +364,9 @@ a{color:var(--acc)}
 .play{position:relative;cursor:pointer}
 .badge{position:absolute;inset:0;display:grid;place-items:center;font-size:28px;color:#fff;text-shadow:0 1px 6px #000}
 input,textarea,button{font:inherit;width:100%;padding:10px;margin:4px 0;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--fg)}
+input[type=checkbox]{width:auto;margin:0 8px 0 0;padding:0;vertical-align:middle}
+.mv{width:auto;margin:0 0 0 6px;padding:2px 10px;background:none;border:1px solid var(--line);color:var(--acc);font-size:16px;cursor:pointer}
+.notice{font-size:14px;min-height:1.2em}.notice.err{color:var(--err)}.notice.ok{color:var(--fg)}
 button{background:var(--acc);color:#fff;border:0;font-weight:600;cursor:pointer}button:disabled{opacity:.5}
 .err{color:var(--err);font-size:14px;min-height:1.2em}
 .row{display:flex;gap:10px;flex-wrap:wrap;align-items:baseline;justify-content:space-between}

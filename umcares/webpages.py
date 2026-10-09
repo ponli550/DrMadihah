@@ -479,7 +479,7 @@ function createMontage(opts) {
   const HEADERS = {"Content-Type": "application/json", "X-Requested-With": "umcares"};
   let st = null, order = [], picked = new Set(), rows = [], ctl = null, timer = null;
   let form = {format: "reels", template: "slowmo", title: "", captions: true, music: "", max: "30"};
-  let jobsBox = null, planBox = null, noticeBox = null, listBox = null;
+  let jobsBox = null, planBox = null, noticeBox = null, listBox = null, goBtn = null, runBtns = [];
 
   const mb = n => n < 1048576 ? Math.max(1, Math.round(n / 1024)) + " KB" : (n / 1048576).toFixed(1) + " MB";
   const secs = n => (Math.round(n * 10) / 10) + " s";
@@ -523,8 +523,9 @@ function createMontage(opts) {
     render();
     say("Recipe loaded. Change anything, then Preview or Make video.");
   }
-  function say(text, problems) {
+  function say(text, problems, isError) {
     if (!noticeBox) return;
+    noticeBox.className = "notice " + (isError ? "err" : "ok");       // only a failure is red
     noticeBox.replaceChildren(text);
     (problems || []).forEach(p => noticeBox.append(el("div", {className: "dim"}, "• " + p)));
   }
@@ -542,8 +543,8 @@ function createMontage(opts) {
       const i = byRef[ref];
       const check = el("input", {type: "checkbox", checked: picked.has(ref)});
       rows.push({ref, check});
-      const up = el("button", {type: "button", className: "edit", title: "Move earlier"}, "↑");
-      const down = el("button", {type: "button", className: "edit", title: "Move later"}, "↓");
+      const up = el("button", {type: "button", className: "mv", title: "Move earlier"}, "↑");
+      const down = el("button", {type: "button", className: "mv", title: "Move later"}, "↓");
       up.addEventListener("click", () => move(ref, -1));
       down.addEventListener("click", () => move(ref, 1));
       return el("div", {className: "urow"}, el("div", {className: "row"},
@@ -560,15 +561,16 @@ function createMontage(opts) {
         ...p.warnings.map(w => el("div", {className: "dim"}, "⚠ " + w)),
         ...p.segments.map(s => el("div", {className: "dim"}, secs(s.start) + "  " + (s.kind === "title" || s.kind === "end" ? s.kind + " card: " + s.text : s.name + (s.text ? " — " + s.text : "")) + "  (" + secs(s.duration) + ")")));
       say("");
-    } catch (e) { planBox.replaceChildren(); say("Cannot make this yet: " + e.message, e.problems); }
+    } catch (e) { planBox.replaceChildren(); say("Cannot make this yet: " + e.message, e.problems, true); }
   }
   async function make(rec) {
+    if (st && st.active) { say("A video is already rendering. It must finish (or be cancelled) first."); return; }
     try {
       await call("POST", "/api/montage", JSON.stringify({recipe: rec || buildRecipe()}));
       say("Rendering. This runs on the Premiere machine at low priority, one video at a time.");
       planBox.replaceChildren();
       poll();
-    } catch (e) { say("Cannot make this yet: " + e.message, e.problems); }
+    } catch (e) { say("Cannot make this yet: " + e.message, e.problems, true); }
   }
   async function save() {
     const name = prompt("Name this recipe (letters, digits, spaces, - and _)");
@@ -578,24 +580,26 @@ function createMontage(opts) {
       await load(); render();                                       // render() builds a fresh notice area, so say() comes after it
       say("Saved " + d.saved + " in recipes/.");
     }
-    catch (e) { say("Not saved: " + e.message, e.problems); }
+    catch (e) { say("Not saved: " + e.message, e.problems, true); }
   }
   async function brief() {
     try {
       const r = await fetch(BASE + "/api/montage/brief"); const text = await r.text();
       try { await navigator.clipboard.writeText(text); say("Brief copied. Paste it to Claude: it lists your files, their captions and the recipe format. Save what it writes as a recipe, or paste it into recipes/ on the machine."); }
       catch (e) { say("Select and copy this brief:"); noticeBox.append(el("textarea", {rows: 8, value: text, readOnly: true})); }
-    } catch (e) { say("Could not load the brief (" + e.message + ")"); }
+    } catch (e) { say("Could not load the brief (" + e.message + ")", [], true); }
   }
   async function cancel() { try { await call("POST", "/api/montage/cancel", "{}"); } catch (e) {} poll(); }
   function renderJobs() {
     if (!jobsBox || !st) return;
+    if (goBtn) { goBtn.disabled = !st.can_render || st.active; goBtn.textContent = st.active ? "Rendering…" : "Make video"; }
+    runBtns.forEach(b => { b.disabled = st.active; });
     const kids = [];
-    st.jobs.slice(-4).reverse().forEach(j => {
+    st.jobs.slice(-4).reverse().forEach((j, n) => {
       const line = el("div", {className: "row"}, el("span", {className: "name"}, j.title + " · " + j.template + " · " + j.format),
         el("span", {className: "dim"}, j.state === "running" ? "rendering " + j.percent + "%" : j.state === "queued" ? "waiting" : j.state === "done" ? "✓ done" : j.state === "failed" ? "✗ " + j.error : "cancelled"));
       kids.push(el("div", {className: "urow"}, line, (j.state === "running" || j.state === "queued") ? el("progress", {max: 100, value: j.percent}) : ""));
-      (j.warnings || []).forEach(w => kids.push(el("div", {className: "dim"}, "⚠ " + w)));
+      if (n === 0) (j.warnings || []).forEach(w => kids.push(el("div", {className: "dim"}, "⚠ " + w)));     // only the newest job's
     });
     const latest = st.jobs.filter(j => j.state === "done").slice(-1)[0];
     if (latest) kids.push(el("video", {className: "thumb", controls: true, playsInline: true, src: BASE + "/exports/" + encodeURIComponent(latest.output)}));
@@ -625,8 +629,9 @@ function createMontage(opts) {
       music: select([["", "No music (add a track in the app when you post)"]].concat(st.catalog.filter(i => i.kind === "audio").map(i => [i.name, i.name])), form.music),
       max: select([["15", "up to 15 s"], ["30", "up to 30 s"], ["45", "up to 45 s"], ["60", "up to 60 s"], ["90", "up to 90 s"]], form.max),
     };
-    listBox = el("div", {}); planBox = el("div", {}); noticeBox = el("div", {className: "err"}); jobsBox = el("div", {});
+    listBox = el("div", {}); planBox = el("div", {}); noticeBox = el("div", {className: "notice ok"}); jobsBox = el("div", {});
     const go = el("button", {type: "button"}, "Make video");
+    goBtn = go; runBtns = [];
     const look = el("button", {type: "button", className: "alt"}, "Preview plan");
     const keep = el("button", {type: "button", className: "alt"}, "Save recipe…");
     const ask = el("button", {type: "button", className: "alt"}, "Copy brief for Claude");
@@ -634,8 +639,8 @@ function createMontage(opts) {
     keep.addEventListener("click", save); ask.addEventListener("click", brief);
     if (!st.can_render) { go.disabled = true; look.disabled = true; }
     const saved = st.recipes.map(r => {
-      const use = el("button", {type: "button", className: "edit"}, "Use"), run = el("button", {type: "button", className: "edit"}, "Make");
-      if (r.valid) { use.addEventListener("click", () => useRecipe(r.recipe)); run.addEventListener("click", () => make(r.recipe)); }
+      const use = el("button", {type: "button", className: "mv"}, "Use"), run = el("button", {type: "button", className: "mv"}, "Make");
+      if (r.valid) { use.addEventListener("click", () => useRecipe(r.recipe)); run.addEventListener("click", () => make(r.recipe)); runBtns.push(run); }
       return el("div", {className: "urow"}, el("div", {className: "row"}, el("span", {className: "name"}, r.name),
         r.valid ? el("span", {}, use, run) : el("span", {className: "dim"}, "needs fixing")),
         ...(r.valid ? [] : r.problems.map(p => el("div", {className: "dim"}, "• " + p))));

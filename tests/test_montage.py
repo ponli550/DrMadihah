@@ -255,7 +255,14 @@ class Resolving(Fixtures):
         self.assertEqual((kinds[0], kinds[-1]), ("title", "end"))
         self.assertEqual(kinds.count("photo"), 2, "one clip left out, from the end")
         self.assertEqual([s["name"] for s in p["segments"] if s["kind"] == "photo"], ["land.jpg", "port.jpg"])
-        self.assertEqual(p["warnings"], ["1 clip left out to stay within 9 seconds"])
+        self.assertEqual(p["warnings"], ["1 clip left out to stay within 9 seconds: square.jpg"], "it names what was dropped")
+
+    def test_the_warning_names_the_dropped_clips_by_caption_and_shortens_a_long_list(self):
+        self.add("land.jpg", "port.jpg")
+        clips = [{"media": "land.jpg" if i % 2 else "port.jpg", "caption": f"c{i}", "hold": 6} for i in range(7)]
+        p = self.plan(clips, max_seconds=10, template="punchy")
+        self.assertEqual(len(p["segments"]), 1)
+        self.assertEqual(p["warnings"], ["6 clips left out to stay within 10 seconds: c1, c2, c3, c4 and 2 more"])
 
     def test_when_even_one_clip_and_the_cards_are_too_long_it_says_so_instead_of_pretending(self):
         self.add("land.jpg", "port.jpg")
@@ -414,7 +421,7 @@ class Rendering(Fixtures):
         self.add("land.jpg")
         rec = recipe([{"media": "land.jpg"}], template="punchy")
         montage.RENDERER.submit(self.root, rec)
-        montage.RENDERER.submit(self.root, rec)
+        montage.RENDERER.submit(self.root, {**rec, "template": "clean"})      # same title and format, so the same file name
         montage.RENDERER.wait_idle(120)
         done = [j for j in montage.RENDERER.snapshot(self.root) if j["state"] == "done"]
         self.assertEqual(len({j["output"] for j in done}), 2)
@@ -463,6 +470,22 @@ class Rendering(Fixtures):
             job, _ = self.render(recipe([{"media": "land.jpg"}]))
         self.assertEqual(job["state"], "failed")
         self.assertIn("not enough free disk space", job["error"])
+
+    def test_pressing_make_twice_with_the_same_recipe_is_one_job_not_two(self):
+        self.add("land.jpg")
+        rec = recipe([{"media": "land.jpg"}], template="punchy")
+        with prepare.HEAVY:                                              # keep the first one waiting
+            a = montage.RENDERER.submit(self.root, rec)
+            b = montage.RENDERER.submit(self.root, json.loads(json.dumps(rec)))
+            c = montage.RENDERER.submit(self.root, {**rec, "template": "clean"})
+        self.assertEqual(a["id"], b["id"])
+        self.assertNotEqual(a["id"], c["id"], "a different recipe is a different job")
+        self.assertEqual(len(montage.RENDERER.snapshot(self.root)), 2)
+        montage.RENDERER.wait_idle(120)
+        again = montage.RENDERER.submit(self.root, rec)                    # finished, so asking again is a new video
+        self.assertNotEqual(again["id"], a["id"])
+        montage.RENDERER.wait_idle(120)
+        self.assertEqual(len([j for j in montage.RENDERER.snapshot(self.root) if j["state"] == "done"]), 3)
 
     def test_a_bad_recipe_is_refused_at_submit_and_queues_nothing(self):
         with self.assertRaises(montage.RecipeError):

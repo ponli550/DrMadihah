@@ -105,6 +105,11 @@ class Card(unittest.TestCase):
     def test_making_a_video_shows_progress_then_plays_it_and_lists_it(self):
         out = self.run_js("make")
         v = out["view"]
+        during = out["during"]
+        self.assertIn("Rendering…", during["buttons"], "Make is replaced while a render is running")
+        self.assertNotIn("Make video", during["buttons"])
+        self.assertEqual(len([c for c in out["calls"] if c == "POST /api/montage"]), 1, "the second press queued nothing")
+        self.assertIn("Make video", v["buttons"], "and it comes back when the render finishes")
         self.assertIsNotNone(v["video"], v["jobs"])
         self.assertRegex(v["video"], r"^/umcares/p/demo/exports/[a-z0-9-]+-reels-\d{8}-\d{6}\.mp4$")
         self.assertIn("✓ done", v["jobs"])
@@ -115,6 +120,7 @@ class Card(unittest.TestCase):
 
     def test_a_recipe_that_cannot_be_made_says_why_in_the_card(self):
         v = self.run_js("bad")["view"]
+        self.assertIn("err", v["noticeClass"].split(), "a failure is red")
         self.assertIn("Cannot make this yet", v["notice"])
         self.assertIn("clips: give at least one clip", v["notice"])
         self.assertEqual(list((self.root / "exports").glob("*.mp4")), [])
@@ -129,6 +135,8 @@ class Card(unittest.TestCase):
     def test_the_brief_for_claude_is_copied_with_the_files_and_captions(self):
         out = self.run_js("brief")
         self.assertIn("Brief copied", out["view"]["notice"])
+        self.assertIn("ok", out["view"]["noticeClass"].split(), "good news is not shown in the error colour")
+        self.assertNotIn("err", out["view"]["noticeClass"].split())
         self.assertIn("# Montage brief: Demo", out["clip"])
         self.assertIn("The dean opening the event", out["clip"])
         self.assertIn("song.m4a", out["clip"])

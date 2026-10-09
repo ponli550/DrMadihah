@@ -43,7 +43,7 @@ const view = () => {
   const c = card();
   if (!c) return { open: false };
   const [fmt, tpl, music, max] = selects();
-  const err = all(c, n => n.className === "err")[0];
+  const err = all(c, n => (n.className || "").split(" ").includes("notice"))[0];
   const at = c.children.indexOf(err);
   const rowsBox = c.children[c.children.indexOf(err) - 1];
   return {
@@ -51,7 +51,7 @@ const view = () => {
     formats: labels(fmt), templates: labels(tpl), music: labels(music), lengths: labels(max),
     values: { format: fmt.value, template: tpl.value, music: music.value, max: max.value },
     rows: rowsBox.children.map(r => ({ text: r.children[0].children[0].textContent, checked: r.children[0].children[0].children[0].checked, sub: r.children[1] && r.children[1].textContent || "" })),
-    notice: deepText(err), plan: deepText(c.children[at + 1]), jobs: deepText(c.children[c.children.length - 1]),
+    notice: deepText(err), noticeClass: err.className, plan: deepText(c.children[at + 1]), jobs: deepText(c.children[c.children.length - 1]),
     video: (all(c, n => n.tag === "video")[0] || {}).src || null,
     links: all(c, n => n.tag === "a").map(a => a.href),
     buttons: all(c, n => n.tag === "button").map(b => b.textContent).filter(t => !["↑", "↓"].includes(t)),
@@ -88,6 +88,8 @@ const check = (i, v) => { all(card(), n => n.tag === "input" && n.type === "chec
   } else if (scenario === "make") {
     selects()[1].value = "punchy";
     await press(button("Make video"));
+    out.during = view();                                            // right after pressing Make, before it finishes
+    await press(button("Rendering…") || { _l: {}, onclick: null });  // a second press must do nothing
     const t0 = Date.now();
     while (Date.now() - t0 < 120000) { const v = view(); if (v.video) break; await sleep(150); }
     await sleep(400);
