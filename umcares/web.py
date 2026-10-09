@@ -27,9 +27,10 @@ import shutil
 import subprocess
 import sys
 import threading
+import base64
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 DEFAULT_PORT = 8733      # 8732 is SekerinShotto's
 BASE = "/umcares"        # where `tailscale serve` mounts us; it strips this before we see the path
@@ -76,20 +77,25 @@ def authorized(headers, owner: str) -> bool:
     return (headers.get("Host") or "").split(":")[0] in ("127.0.0.1", "localhost")
 
 
+def list_folder(d: Path) -> list:
+    files = []
+    if d.is_dir():
+        for p in sorted(d.iterdir(), key=lambda p: p.name.lower()):
+            if p.name.startswith(".") or ".part" in p.suffixes or not p.is_file():
+                continue
+            st = p.stat()
+            files.append({"name": p.name, "size": st.st_size,
+                          "mtime": int(st.st_mtime), "kind": kind_of(p.name)})
+    return files
+
+
 def list_library(root) -> dict:
     """Every library folder with its files. Hidden files and in-flight `.part` files are skipped."""
     assets = Path(root) / "assets"
     out = []
     for folder, label in FOLDERS:
         d = assets / folder
-        files = []
-        if d.is_dir():
-            for p in sorted(d.iterdir(), key=lambda p: p.name.lower()):
-                if p.name.startswith(".") or ".part" in p.suffixes or not p.is_file():
-                    continue
-                st = p.stat()
-                files.append({"name": p.name, "size": st.st_size,
-                              "mtime": int(st.st_mtime), "kind": kind_of(p.name)})
+        files = list_folder(d)
         out.append({"folder": folder, "label": label, "exists": d.is_dir(), "files": files})
     return {"folders": out}
 
@@ -135,17 +141,52 @@ def find_ffmpeg():
     return shutil.which("ffmpeg") or next((p for p in FFMPEG_AT if os.access(p, os.X_OK)), None)
 
 
+def thumb_path(root, src: Path):
+    """Where this file's thumbnail lives (made or not), or None for a kind that has none."""
+    if kind_of(src.name) not in ("video", "image"):
+        return None
+    st = src.stat()
+    # resolved, so the same file asked for by two routes (or through a symlinked root) is one cache entry
+    key = hashlib.sha1(f"{src.resolve()}|{st.st_size}|{int(st.st_mtime)}".encode()).hexdigest()[:20]
+    return Path(root).joinpath(*THUMB_DIR, key + ".jpg")
+
+
+def thumb_batch(root, folder: str, budget: int = 6) -> dict:
+    """One folder's thumbnails as data URIs, in a single response.
+
+    Through `tailscale serve` on a busy Mac every request costs 0.2-2 s, so fifty thumbnail requests
+    are slower than one that carries them all. At most `budget` missing thumbnails are made per call;
+    the rest come back in `pending` and the client asks again. `failed` ones are never retried by the page.
+    """
+    d = Path(root) / "assets" / folder
+    thumbs, pending, failed, made = {}, [], [], 0
+    for f in list_folder(d):
+        if f["kind"] not in ("video", "image"):
+            continue
+        src = d / f["name"]
+        t = thumb_path(root, src)
+        if t is not None and not t.is_file():
+            if made >= budget:
+                pending.append(f["name"])
+                continue
+            made += 1
+            t = thumb_for(root, src)
+        if t is None:
+            failed.append(f["name"])
+        else:
+            thumbs[f["name"]] = "data:image/jpeg;base64," + base64.b64encode(t.read_bytes()).decode()
+    return {"thumbs": thumbs, "pending": pending, "failed": failed}
+
+
 def thumb_for(root, src: Path):
     """A cached JPEG for a video or image, or None if it cannot be made (no ffmpeg, unreadable, HEIC).
 
     The cache key includes size and mtime, so replacing a file replaces its thumbnail. The JPEG is
     written to a sibling .part and moved into place, so a request never sees half a file.
     """
-    if kind_of(src.name) not in ("video", "image"):
+    out = thumb_path(root, src)
+    if out is None:
         return None
-    st = src.stat()
-    key = hashlib.sha1(f"{src}|{st.st_size}|{int(st.st_mtime)}".encode()).hexdigest()[:20]
-    out = Path(root).joinpath(*THUMB_DIR, key + ".jpg")
     if out.is_file():
         return out
     ff = find_ffmpeg()
@@ -201,17 +242,29 @@ function el(tag, props, ...kids){
   kids.forEach(k => e.append(k));
   return e;
 }
+const tiles = {};
 function thumb(f, folder){
   const src = url(folder, f.name);
-  const poster = BASE + "/thumb/" + folder.split("/").concat([f.name]).map(encodeURIComponent).join("/");
   if (f.kind === "audio") return el("audio", {src, preload:"none", controls:true, style:"width:100%"});
   if (f.kind === "file") return el("a", {href:src}, "open");
-  const img = el("img", {className:"thumb", src:poster, loading:"lazy", alt:f.name});
-  img.onerror = () => { img.onerror = null; img.removeAttribute("src"); };   // no thumbnail: a grey tile, still tappable
+  const img = el("img", {className:"thumb", alt:f.name});
+  (tiles[folder] = tiles[folder] || {})[f.name] = img;
   if (f.kind === "image") return el("a", {href:src, target:"_blank"}, img);
   const tile = el("div", {className:"play"}, img, el("span", {className:"badge"}, "▶"));
   tile.onclick = () => tile.replaceWith(el("video", {className:"thumb", src, controls:true, autoplay:true, playsInline:true}));
   return tile;
+}
+// One request per folder, one folder at a time: the tailnet proxy is slow per request, not per byte.
+async function fillThumbs(folders){
+  for (const folder of folders){
+    for (let round = 0; round < 40; round++){
+      let d;
+      try { const r = await fetch(BASE + "/api/thumbs?folder=" + encodeURIComponent(folder)); if (!r.ok) break; d = await r.json(); }
+      catch (e) { break; }
+      for (const [name, uri] of Object.entries(d.thumbs)) { const i = (tiles[folder] || {})[name]; if (i && !i.src) i.src = uri; }
+      if (!d.pending.length) break;
+    }
+  }
 }
 fetch(BASE + "/api/library").then(r => { if(!r.ok) throw new Error(r.status); return r.json(); }).then(d => {
   const lib = document.getElementById("lib");
@@ -225,6 +278,7 @@ fetch(BASE + "/api/library").then(r => { if(!r.ok) throw new Error(r.status); re
     lib.append(el("section", {}, el("h2", {}, el("span", {}, g.label), el("span", {className:"dim"}, g.files.length + " files")), grid));
   });
   document.getElementById("status").textContent = n + " files · " + mb(bytes) + " · read-only";
+  fillThumbs(d.folders.filter(g => g.files.some(f => f.kind === "video" || f.kind === "image")).map(g => g.folder));
 }).catch(e => { document.getElementById("status").textContent = "Could not load the library (" + e.message + ")"; });
 </script></body></html>
 """
@@ -292,6 +346,16 @@ def make_handler(root, owner: str):
                 return self._send(200, page.encode(), "text/html; charset=utf-8")
             if path == "/api/library":
                 return self._send(200, json.dumps(list_library(root)).encode(), "application/json")
+            if path == "/api/thumbs":
+                q = parse_qs(urlsplit(self.path).query)
+                folder = (q.get("folder") or [""])[0]
+                if folder not in FOLDER_NAMES:
+                    return self._text(404, "not found")
+                try:
+                    budget = max(1, min(8, int((q.get("budget") or ["6"])[0])))
+                except ValueError:
+                    budget = 6
+                return self._send(200, json.dumps(thumb_batch(root, folder, budget)).encode(), "application/json")
             if path.startswith("/thumb/"):
                 src = resolve_media(root, path[len("/thumb/"):])
                 t = thumb_for(root, src) if src else None

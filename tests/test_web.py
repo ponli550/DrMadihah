@@ -225,6 +225,36 @@ class Thumbnails(unittest.TestCase):
         self.assertEqual(self.get("/thumb/edit_ready/..%2F..%2Fweb%2Fweb.py")[0], 404)
         self.assertEqual(self.get("/thumb/nope/c.mp4")[0], 404)
 
+    def test_a_folder_comes_back_in_one_response_as_data_uris(self):
+        status, h, body = self.get("/api/thumbs?folder=edit_ready&budget=8")
+        d = __import__("json").loads(body)
+        self.assertEqual(status, 200)
+        self.assertTrue(d["thumbs"]["c.mp4"].startswith("data:image/jpeg;base64,"))
+        self.assertEqual(d["failed"], ["bad.mp4"])
+        self.assertEqual(d["pending"], [])
+
+    def test_the_budget_caps_work_per_call_and_the_rest_is_pending(self):
+        import json
+        root = Path(tempfile.mkdtemp())
+        v = root / "assets" / "cards"
+        v.mkdir(parents=True)
+        for n in ("a", "b", "c"):
+            subprocess.run([web.find_ffmpeg(), "-v", "error", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=10:duration=1",
+                            "-pix_fmt", "yuv420p", str(v / (n + ".mp4"))], check=True)
+        first = web.thumb_batch(root, "cards", budget=1)
+        self.assertEqual((len(first["thumbs"]), len(first["pending"])), (1, 2))
+        second = web.thumb_batch(root, "cards", budget=1)
+        self.assertEqual((len(second["thumbs"]), len(second["pending"])), (2, 1))
+        third = web.thumb_batch(root, "cards", budget=8)
+        self.assertEqual((len(third["thumbs"]), third["pending"]), (3, []))
+        json.dumps(third)                                          # serialisable
+        shutil.rmtree(root, ignore_errors=True)
+
+    def test_an_unknown_folder_is_a_404(self):
+        self.assertEqual(self.get("/api/thumbs?folder=..")[0], 404)
+        self.assertEqual(self.get("/api/thumbs?folder=nope")[0], 404)
+        self.assertEqual(self.get("/api/thumbs")[0], 404)
+
     def test_the_cache_folder_is_not_in_the_library(self):
         self.get("/thumb/edit_ready/c.mp4")
         names = [f["name"] for g in web.list_library(self.root)["folders"] for f in g["files"]]
