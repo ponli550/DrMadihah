@@ -28,7 +28,12 @@ DEFAULT_HOME = Path.home() / "Projects" / "umcares-projects"
 PROJECT_FILE = "project.json"
 REGISTRY_FILE = "registry.json"
 RESERVED = {"registry", "trash"}
-EXTRA_DIRS = [("recipes", "recipe JSON files: scenes, narration, cards, music")]
+EXTRA_DIRS = [
+    ("recipes", "recipe JSON files: scenes, narration, cards, music"),
+    ("assets/inbox", "new uploads, not yet sorted into A-roll or B-roll"),
+]
+# Upload bookkeeping and the unsorted inbox are state, not history.
+STATE_IGNORES = [".umcares/", "assets/inbox/"]
 STATUSES = ("active", "delivered", "archived")
 
 # Media stays on disk, out of git: it is large, regenerable, and not the history worth keeping.
@@ -40,6 +45,8 @@ assets/edit_ready/
 assets/music/
 assets/vo/
 assets/cards/
+assets/inbox/
+.umcares/
 exports/
 project/
 .trash/
@@ -156,6 +163,29 @@ def create_project(home, name: str, event_date: str = "", notes: str = "", init_
         shutil.rmtree(building, ignore_errors=True)
         raise
     return {**meta, "path": str(final), "git": git}
+
+
+def ensure_ignored(root, lines=None) -> bool:
+    """Make git ignore upload state in an EXISTING project, without touching its tracked .gitignore.
+
+    Appends to .git/info/exclude, which is local and never committed, so a project made before uploads
+    existed does not suddenly show a modified .gitignore. A folder that is not a git repo is left alone.
+    """
+    git_dir = Path(root) / ".git"
+    if not git_dir.is_dir():                       # not a repo (or a worktree's .git file): nothing to exclude from
+        return False
+    exclude = git_dir / "info" / "exclude"
+    exclude.parent.mkdir(exist_ok=True)            # some git builds do not create info/ at `git init`
+    lines = lines or STATE_IGNORES
+    have = exclude.read_text(encoding="utf-8").splitlines() if exclude.is_file() else []
+    missing = [ln for ln in lines if ln not in have]
+    if not missing:
+        return False
+    text = "\n".join(have) + ("\n" if have else "")
+    tmp = exclude.with_name("exclude.part")
+    tmp.write_text(text + "".join(ln + "\n" for ln in missing), encoding="utf-8")
+    os.replace(tmp, exclude)
+    return True
 
 
 def _read_registry(home: Path) -> list:

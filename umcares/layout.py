@@ -19,3 +19,8 @@ TREE = [
     ("exports",             "masters and delivery files"),
     ("project",             "the .prproj"),
 ]
+
+# What the web app treats as media. One definition, so the library view and the upload check agree.
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".heic", ".webp", ".gif"}
+VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".mkv", ".webm"}
+AUDIO_EXTS = {".mp3", ".wav", ".m4a", ".aac"}

@@ -10,11 +10,12 @@ is let in, and with no owner configured nobody is — a tailnet can hold other p
 devices. A request with no such header came straight to 127.0.0.1 and is allowed only if
 its Host is localhost, which is what stops a DNS-rebinding page from reading the library.
 
-The one write is creating a project. Because the login header is added automatically, a
+The writes are creating a project and uploading media. Because the login header is added automatically, a
 page on another site open in the owner's browser could otherwise forge that POST, so it
 must carry a custom header and a JSON body, which a cross-site form cannot send.
 
 Files served are confined to a project's library folders under <project>/assets.
+Uploads are resumable chunks handled by uploads.py; nothing partial is ever listed.
 
 Run as a module (`python3 -m umcares.web`); stdlib only.
 """
@@ -34,7 +35,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from . import projects
+from . import projects, uploads
+from .layout import AUDIO_EXTS, IMAGE_EXTS, VIDEO_EXTS
 
 DEFAULT_PORT = 8733      # 8732 is SekerinShotto's
 BASE = "/umcares"        # where `tailscale serve` mounts us; it strips this before we see the path
@@ -46,6 +48,7 @@ FOLDERS = [
     ("footage/A", "A-roll"),
     ("footage/B", "B-roll"),
     ("photos", "Photos"),
+    ("inbox", "Inbox (new videos, unsorted)"),
     ("edit_ready", "Edit ready (H.264)"),
     ("music", "Music"),
     ("logos", "Logos"),
@@ -54,9 +57,6 @@ FOLDERS = [
 ]
 FOLDER_NAMES = {f for f, _ in FOLDERS}
 
-VIDEO = {".mp4", ".mov", ".m4v", ".mkv", ".webm"}
-IMAGE = {".jpg", ".jpeg", ".png", ".heic", ".webp", ".gif"}
-AUDIO = {".mp3", ".wav", ".m4a", ".aac"}
 CHUNK = 1 << 20
 
 THUMB_W = 360                                    # px; a tile is ~20 KB instead of a video's first megabytes
@@ -67,11 +67,11 @@ PUBLIC_FIELDS = ("slug", "name", "event_date", "notes", "status", "created", "ex
 
 def kind_of(name: str) -> str:
     ext = Path(name).suffix.lower()
-    if ext in VIDEO:
+    if ext in VIDEO_EXTS:
         return "video"
-    if ext in IMAGE:
+    if ext in IMAGE_EXTS:
         return "image"
-    if ext in AUDIO:
+    if ext in AUDIO_EXTS:
         return "audio"
     return "file"
 
@@ -248,6 +248,9 @@ input,textarea,button{font:inherit;width:100%;padding:10px;margin:4px 0;border-r
 button{background:var(--acc);color:#fff;border:0;font-weight:600;cursor:pointer}button:disabled{opacity:.5}
 .err{color:var(--err);font-size:14px;min-height:1.2em}
 .row{display:flex;gap:10px;flex-wrap:wrap;align-items:baseline;justify-content:space-between}
+.btns{display:flex;gap:8px;flex-wrap:wrap}.btns button{flex:1;min-width:140px}
+button.alt{background:var(--card);color:var(--acc);border:1px solid var(--acc)}
+.urow{margin:10px 0;font-size:14px}progress{width:100%;height:8px}
 """
 
 HOME_PAGE = """<!doctype html>
@@ -304,6 +307,20 @@ PROJECT_PAGE = """<!doctype html>
 <style>__STYLE__</style></head><body><main>
 <div class="dim"><a id="back">All projects</a></div>
 <h1 id="title"></h1><div class="dim" id="status">Loading…</div>
+<section class="card" id="add">
+  <h2><span>Add photos or videos</span><span class="dim" id="speed"></span></h2>
+  <div class="btns">
+    <button id="pick" type="button">Choose from library</button>
+    <button id="shoot" type="button" class="alt">Take photo</button>
+    <button id="film" type="button" class="alt">Record video</button>
+  </div>
+  <input id="f_pick" type="file" accept="image/*,video/*" multiple hidden>
+  <input id="f_shoot" type="file" accept="image/*" capture="environment" hidden>
+  <input id="f_film" type="file" accept="video/*" capture="environment" hidden>
+  <div id="queue"></div>
+  <div class="dim" id="summary"></div>
+  <button id="retry" type="button" class="alt" hidden>Try the failed ones again</button>
+</section>
 <div id="lib"></div>
 </main>
 <script>
@@ -316,7 +333,7 @@ document.getElementById("title").textContent = PROJECT.name;
 const mb = n => n < 1048576 ? Math.max(1, Math.round(n/1024)) + " KB" : (n/1048576).toFixed(1) + " MB";
 const url = (folder, name) => BASE + "/media/" + folder.split("/").concat([name]).map(encodeURIComponent).join("/");
 function el(tag, props, ...kids){ const e = document.createElement(tag); Object.assign(e, props || {}); kids.forEach(k => e.append(k)); return e; }
-const tiles = {};
+let tiles = {};
 function thumb(f, folder){
   const src = url(folder, f.name);
   if (f.kind === "audio") return el("audio", {src, preload:"none", controls:true, style:"width:100%"});
@@ -340,20 +357,154 @@ async function fillThumbs(folders){
     }
   }
 }
-fetch(BASE + "/api/library").then(r => { if(!r.ok) throw new Error(r.status); return r.json(); }).then(d => {
-  const lib = document.getElementById("lib");
-  let n = 0, bytes = 0;
-  d.folders.forEach(g => {
-    n += g.files.length; g.files.forEach(f => bytes += f.size);
-    const grid = el("div", {className:"grid"});
-    g.files.forEach(f => grid.append(el("div", {className:"item"}, thumb(f, g.folder),
-      el("div", {className:"name"}, f.name), el("div", {className:"dim"}, mb(f.size)))));
-    if (!g.files.length) grid.append(el("div", {className:"dim"}, g.exists ? "empty" : "folder missing"));
-    lib.append(el("section", {}, el("h2", {}, el("span", {}, g.label), el("span", {className:"dim"}, g.files.length + " files")), grid));
-  });
-  document.getElementById("status").textContent = n + " files · " + mb(bytes) + " · read-only";
-  fillThumbs(d.folders.filter(g => g.files.some(f => f.kind === "video" || f.kind === "image")).map(g => g.folder));
-}).catch(e => { document.getElementById("status").textContent = "Could not load the library (" + e.message + ")"; });
+function loadLibrary(){
+  return fetch(BASE + "/api/library").then(r => { if(!r.ok) throw new Error(r.status); return r.json(); }).then(d => {
+    const lib = document.getElementById("lib");
+    lib.replaceChildren(); tiles = {};
+    let n = 0, bytes = 0;
+    d.folders.forEach(g => {
+      n += g.files.length; g.files.forEach(f => bytes += f.size);
+      const grid = el("div", {className:"grid"});
+      g.files.forEach(f => grid.append(el("div", {className:"item"}, thumb(f, g.folder),
+        el("div", {className:"name"}, f.name), el("div", {className:"dim"}, mb(f.size)))));
+      if (!g.files.length) grid.append(el("div", {className:"dim"}, g.exists ? "empty" : "folder missing"));
+      lib.append(el("section", {}, el("h2", {}, el("span", {}, g.label), el("span", {className:"dim"}, g.files.length + " files")), grid));
+    });
+    document.getElementById("status").textContent = n + " files · " + mb(bytes);
+    fillThumbs(d.folders.filter(g => g.files.some(f => f.kind === "video" || f.kind === "image")).map(g => g.folder));
+  }).catch(e => { document.getElementById("status").textContent = "Could not load the library (" + e.message + ")"; });
+}
+loadLibrary();
+
+// ---- upload: resumable chunks, two files at a time, adaptive chunk size ----
+const CSRF = {"X-Requested-With": "umcares"};
+const JSON_HEADERS = Object.assign({"Content-Type": "application/json"}, CSRF);
+const BIN_HEADERS = Object.assign({"Content-Type": "application/octet-stream"}, CSRF);
+const MIN_CHUNK = 256 * 1024, MAX_CHUNK = 4 * 1024 * 1024, PARALLEL = 2;
+const BACKOFF = [1000, 3000, 8000, 15000, 30000];
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+class Fatal extends Error {}
+let waiting = [], running = 0, sentTotal = 0, planTotal = 0, samples = [], failed = [], timer = null, wake = null;
+
+async function call(method, path, body, headers){
+  const r = await fetch(BASE + path, {method, headers, body});
+  let d = {}; try { d = await r.json(); } catch (e) {}
+  return {ok: r.ok, status: r.status, d};
+}
+function speedText(){
+  const now = Date.now();
+  samples = samples.filter(s => now - s[0] < 15000);
+  if (!samples.length) return "";
+  const bytes = samples.reduce((a, s) => a + s[1], 0);
+  const bps = bytes / Math.max(1, Math.min(15, (now - samples[0][0]) / 1000));
+  return bps >= 1048576 ? (bps / 1048576).toFixed(1) + " MB/s" : Math.round(bps / 1024) + " KB/s";
+}
+function updateOverall(){
+  const sp = document.getElementById("speed");
+  if (!running && !waiting.length) { sp.textContent = ""; return; }
+  const pct = planTotal ? Math.floor(100 * sentTotal / planTotal) : 0;
+  sp.textContent = pct + "% · " + mb(sentTotal) + " of " + mb(planTotal) + " · " + (speedText() || "starting");
+}
+function setMsg(item, text){ item.msg.textContent = text; }
+function advance(item, n){ item.sent += n; sentTotal += n; item.bar.value = item.sent; samples.push([Date.now(), n]); updateOverall(); }
+function resync(item, from, to){ const d = to - from; item.sent += d; sentTotal += d; item.bar.value = item.sent; }
+
+async function uploadOne(item){
+  const f = item.file;
+  setMsg(item, "checking…");
+  const s = await call("POST", "/api/upload/start", JSON.stringify({name: f.name, size: f.size, mtime: f.lastModified}), JSON_HEADERS);
+  if (!s.ok) throw new Fatal((s.d && s.d.error) || ("HTTP " + s.status));
+  if (s.d.status === "have") { item.sent = f.size; item.bar.value = f.size; sentTotal += f.size; return {state: "skipped", text: "already uploaded"}; }
+  const id = s.d.id;
+  let offset = s.d.offset, chunk = MIN_CHUNK, fails = 0;
+  if (offset) { item.sent = offset; sentTotal += offset; item.bar.value = offset; }
+  setMsg(item, offset ? "resuming…" : "uploading…");
+  while (offset < f.size) {
+    const end = Math.min(f.size, offset + chunk), t0 = performance.now();
+    try {
+      const r = await call("PUT", "/api/upload/" + id + "?offset=" + offset, f.slice(offset, end), BIN_HEADERS);
+      if (r.ok) {
+        advance(item, r.d.offset - offset); offset = r.d.offset; fails = 0; setMsg(item, "uploading…");
+        const dt = (performance.now() - t0) / 1000;
+        chunk = dt < 4 ? Math.min(MAX_CHUNK, chunk * 2) : dt > 15 ? Math.max(MIN_CHUNK, chunk >> 1) : chunk;
+      } else if (r.status === 409 && typeof r.d.offset === "number") {
+        resync(item, offset, r.d.offset); offset = r.d.offset;          // the server is ahead or behind: trust it
+      } else if (r.status >= 400 && r.status < 500 && r.status !== 400 && r.status !== 408 && r.status !== 429) {
+        throw new Fatal(r.d.error || ("HTTP " + r.status));
+      } else {
+        throw new Error(r.d.error || ("HTTP " + r.status));            // 400 here is a chunk cut short: resend it
+      }
+    } catch (e) {
+      if (e instanceof Fatal) throw e;
+      if (++fails > BACKOFF.length) throw new Error("the connection keeps failing");
+      setMsg(item, "retrying…");
+      await sleep(BACKOFF[fails - 1]);
+      const st = await call("GET", "/api/upload/" + id).catch(() => null);
+      if (st && st.ok && typeof st.d.offset === "number") { resync(item, offset, st.d.offset); offset = st.d.offset; }
+    }
+  }
+  const fin = await call("POST", "/api/upload/" + id + "/finish", "{}", JSON_HEADERS);
+  if (!fin.ok) throw new Fatal((fin.d && fin.d.error) || ("HTTP " + fin.status));
+  return fin.d.status === "duplicate"
+    ? {state: "skipped", text: "same content as " + fin.d.file.name}
+    : {state: "done", text: "saved in " + fin.d.file.folder};
+}
+function addRow(item){
+  item.bar = el("progress", {max: item.file.size || 1, value: 0});
+  item.msg = el("span", {className: "dim"}, "waiting");
+  item.row = el("div", {className: "urow"}, el("div", {className: "row"}, el("span", {className: "name"}, item.file.name), item.msg), item.bar);
+  document.getElementById("queue").append(item.row);
+}
+async function runItem(item){
+  try {
+    const r = await uploadOne(item);
+    item.state = r.state; setMsg(item, (r.state === "done" ? "✓ " : "↷ ") + r.text);
+  } catch (e) {
+    item.state = "failed"; setMsg(item, "✗ " + (e.message || e)); failed.push(item);
+  }
+  running--;
+  pump();
+}
+function pump(){
+  while (running < PARALLEL && waiting.length) { running++; runItem(waiting.shift()); }
+  updateOverall();
+  if (!running && !waiting.length) allDone();
+}
+async function lockScreen(){
+  try { if (navigator.wakeLock && !wake) { wake = await navigator.wakeLock.request("screen"); wake.addEventListener("release", () => { wake = null; }); } } catch (e) {}
+}
+function allDone(){
+  if (timer) { clearInterval(timer); timer = null; }
+  try { if (wake) wake.release(); } catch (e) {} wake = null;
+  const rows = Array.from(document.querySelectorAll("#queue .urow"));
+  const text = rows.map(r => r.querySelector(".dim").textContent);
+  const saved = text.filter(t => t.startsWith("✓")).length, skipped = text.filter(t => t.startsWith("↷")).length;
+  document.getElementById("summary").textContent = saved + " saved" + (skipped ? ", " + skipped + " already there" : "") + (failed.length ? ", " + failed.length + " failed" : "");
+  document.getElementById("retry").hidden = !failed.length;
+  document.getElementById("speed").textContent = "";
+  if (saved) loadLibrary();
+}
+function enqueue(files){
+  if (!files.length) return;
+  document.getElementById("summary").textContent = "";
+  document.getElementById("retry").hidden = true;
+  if (!running && !waiting.length) { sentTotal = 0; planTotal = 0; samples = []; failed = []; document.getElementById("queue").replaceChildren(); }
+  for (const f of files) { const item = {file: f, sent: 0, state: "waiting"}; addRow(item); waiting.push(item); planTotal += f.size; }
+  lockScreen();
+  if (!timer) timer = setInterval(updateOverall, 1000);
+  pump();
+}
+for (const k of ["pick", "shoot", "film"]) {
+  const input = document.getElementById("f_" + k);
+  document.getElementById(k).addEventListener("click", () => input.click());
+  input.addEventListener("change", () => { enqueue(Array.from(input.files)); input.value = ""; });
+}
+document.getElementById("retry").addEventListener("click", () => {
+  const again = failed.map(i => i.file); failed = [];
+  document.querySelectorAll("#queue .urow").forEach(r => { if (r.querySelector(".dim").textContent.startsWith("✗")) r.remove(); });
+  planTotal = sentTotal; enqueue(again);
+});
+window.addEventListener("beforeunload", e => { if (running || waiting.length) { e.preventDefault(); e.returnValue = ""; } });
 </script></body></html>
 """
 
@@ -430,6 +581,8 @@ def make_handler(home, owner: str):
             if root is None:
                 return self._text(404, "not found")
             base = f"{BASE}/p/{slug}"
+            if rest.startswith("/api/upload/"):
+                return self._upload(slug, rest, "GET", query)
             if rest == "/":
                 p = projects.find_project(home, slug)
                 return self._page(PROJECT_PAGE, home=BASE, base=base, project=public(p))
@@ -471,27 +624,39 @@ def make_handler(home, owner: str):
 
         do_HEAD = do_GET
 
-        def do_POST(self):
-            if not authorized(self.headers, owner):
-                return self._text(403, "forbidden")
-            if unquote(urlsplit(self.path).path) != "/api/projects":
-                return self._text(405, "read-only")
-            # a cross-site form cannot set this header or send JSON, and we send no CORS headers
-            if self.headers.get(CSRF_HEADER[0]) != CSRF_HEADER[1] or \
-                    (self.headers.get("Content-Type") or "").split(";")[0].strip() != "application/json":
-                return self._json(403, {"error": "forbidden"})
+        def _csrf_ok(self, json_body: bool) -> bool:
+            """tailscale adds the owner's login to any request from the owner's browser, so a write must also
+            carry a header a cross-site page cannot send (it would need a CORS preflight we never answer)."""
+            if self.headers.get(CSRF_HEADER[0]) != CSRF_HEADER[1]:
+                return False
+            if json_body:
+                return (self.headers.get("Content-Type") or "").split(";")[0].strip() == "application/json"
+            return True
+
+        def _json_body(self):
+            """The request's JSON object, or None after answering 400 (empty, oversized or malformed)."""
             try:
                 n = int(self.headers.get("Content-Length") or 0)
             except ValueError:
                 n = 0
             if not 0 < n <= MAX_BODY:
-                return self._json(400, {"error": "empty or oversized request"})
+                self._json(400, {"error": "empty or oversized request"})
+                return None
             try:
                 body = json.loads(self.rfile.read(n))
-                name, date, notes = body["name"], body.get("event_date") or "", body.get("notes") or ""
-                if not all(isinstance(x, str) for x in (name, date, notes)) or len(name) > 100 or len(notes) > 2000:
-                    raise ValueError
-            except (ValueError, KeyError, TypeError):
+            except ValueError:
+                body = None
+            if not isinstance(body, dict):
+                self._json(400, {"error": "expected a JSON object"})
+                return None
+            return body
+
+        def _create_project(self):
+            body = self._json_body()
+            if body is None:
+                return
+            name, date, notes = body.get("name"), body.get("event_date") or "", body.get("notes") or ""
+            if not all(isinstance(x, str) for x in (name, date, notes)) or len(name) > 100 or len(notes) > 2000:
                 return self._json(400, {"error": "name must be text of at most 100 characters"})
             try:
                 made = projects.create_project(home, name, date, notes)
@@ -502,10 +667,65 @@ def make_handler(home, owner: str):
             return self._json(201, {"project": public({**made, "external": False, "missing": False}),
                                     "git": made["git"]})
 
+        def _upload(self, slug: str, rest: str, method: str, query: dict):
+            root = project_root(home, slug)
+            if root is None:
+                return self._text(404, "not found")
+            m = re.fullmatch(r"/api/upload/(?:(start)|([0-9a-f]{16})(/finish)?)", rest)
+            if not m:
+                return self._text(404, "not found")
+            if method != "GET" and not self._csrf_ok(json_body=(method == "POST")):
+                return self._json(403, {"error": "forbidden"})
+            try:
+                if m.group(1):                                        # start
+                    if method != "POST":
+                        return self._text(405, "use POST")
+                    body = self._json_body()
+                    if body is None:
+                        return
+                    return self._json(200, uploads.start(root, body.get("name"), body.get("size"), body.get("mtime")))
+                uid, finishing = m.group(2), bool(m.group(3))
+                if method == "GET" and not finishing:
+                    return self._json(200, uploads.status(root, uid))
+                if method == "PUT" and not finishing:
+                    try:
+                        offset = int((query.get("offset") or [""])[0])
+                        length = int(self.headers.get("Content-Length") or 0)
+                    except ValueError:
+                        return self._json(400, {"error": "offset and length must be numbers"})
+                    return self._json(200, uploads.append(root, uid, offset, self.rfile, length))
+                if method == "POST" and finishing:
+                    return self._json(200, uploads.finish(root, uid))
+                return self._text(405, "wrong method for this address")
+            except uploads.UploadError as e:
+                return self._json(e.status, {"error": e.message, **e.extra})
+            except OSError:
+                return self._json(500, {"error": "the machine could not write the file"})
+
+        def _write(self, method: str):
+            if not authorized(self.headers, owner):
+                return self._text(403, "forbidden")
+            parts = urlsplit(self.path)
+            path, query = unquote(parts.path), parse_qs(parts.query)
+            if method == "POST" and path == "/api/projects":
+                if not self._csrf_ok(json_body=True):
+                    return self._json(403, {"error": "forbidden"})
+                return self._create_project()
+            m = re.fullmatch(r"/p/([a-z0-9-]+)(/api/upload/.*)", path)
+            if m:
+                return self._upload(m.group(1), m.group(2), method, query)
+            return self._text(405, "read-only")
+
+        def do_POST(self):
+            self._write("POST")
+
+        def do_PUT(self):
+            self._write("PUT")
+
         def _refuse_write(self):
             self._text(405, "read-only")
 
-        do_PUT = do_DELETE = do_PATCH = _refuse_write
+        do_DELETE = do_PATCH = _refuse_write
 
     return H
 

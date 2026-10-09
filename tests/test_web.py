@@ -279,6 +279,92 @@ class CreateProject(Server):
         self.assertEqual(self.req("POST", "/api/library", self.OK, b"{}")[0], 405)
 
 
+class UploadRoutes(Server):
+    JSON = {"Content-Type": "application/json", "X-Requested-With": "umcares"}
+    BIN = {"Content-Type": "application/octet-stream", "X-Requested-With": "umcares"}
+
+    def start(self, name, size, mtime=1, slug="demo", headers=None):
+        body = json.dumps({"name": name, "size": size, "mtime": mtime}).encode()
+        return self.req("POST", f"/p/{slug}/api/upload/start", headers or self.JSON, body)
+
+    def test_a_whole_upload_over_http_lands_in_the_library(self):
+        status, _, body = self.start("web1.jpg", 10)
+        self.assertEqual(status, 200)
+        d = json.loads(body)
+        self.assertEqual((d["status"], d["offset"]), ("new", 0))
+        up = f"/p/demo/api/upload/{d['id']}"
+        self.assertEqual(self.req("PUT", up + "?offset=0", self.BIN, b"01234")[0], 200)
+        status, _, body = self.req("GET", up)
+        self.assertEqual(json.loads(body), {"offset": 5, "size": 10})
+        self.assertEqual(self.req("PUT", up + "?offset=5", self.BIN, b"56789")[0], 200)
+        status, _, body = self.req("POST", up + "/finish", self.JSON, b"{}")
+        self.assertEqual((status, json.loads(body)["status"]), (200, "saved"))
+        self.assertEqual((self.demo / "assets" / "photos" / "web1.jpg").read_bytes(), b"0123456789")
+        self.assertIn(b"web1.jpg", self.req("GET", "/p/demo/api/library")[2])
+
+    def test_a_wrong_offset_is_a_409_that_says_where_the_upload_stands(self):
+        d = json.loads(self.start("web2.jpg", 10)[2])
+        up = f"/p/demo/api/upload/{d['id']}"
+        self.req("PUT", up + "?offset=0", self.BIN, b"01234")
+        status, _, body = self.req("PUT", up + "?offset=0", self.BIN, b"01234")        # a retry of an acknowledged chunk
+        self.assertEqual((status, json.loads(body)["offset"]), (409, 5))
+
+    def test_writes_without_the_custom_header_are_refused(self):
+        self.assertEqual(self.start("web3.jpg", 5, headers={"Content-Type": "application/json"})[0], 403)
+        d = json.loads(self.start("web3.jpg", 5)[2])
+        up = f"/p/demo/api/upload/{d['id']}"
+        self.assertEqual(self.req("PUT", up + "?offset=0", {"Content-Type": "application/octet-stream"}, b"12345")[0], 403)
+        self.assertEqual(self.req("POST", up + "/finish", {"Content-Type": "application/json"}, b"{}")[0], 403)
+        self.assertEqual(self.req("POST", up + "/finish", {"X-Requested-With": "umcares"}, b"{}")[0], 403)   # not JSON
+        self.assertEqual(self.req("GET", up)[1].get("Content-Type"), "application/json")      # reading status needs no header
+
+    def test_another_login_cannot_upload_or_read_status(self):
+        other = {"Tailscale-User-Login": "x@y.com"}
+        self.assertEqual(self.start("web4.jpg", 5, headers={**self.JSON, **other})[0], 403)
+        d = json.loads(self.start("web4.jpg", 5)[2])
+        self.assertEqual(self.req("GET", f"/p/demo/api/upload/{d['id']}", other)[0], 403)
+        self.assertEqual(self.req("PUT", f"/p/demo/api/upload/{d['id']}?offset=0", {**self.BIN, **other}, b"12345")[0], 403)
+
+    def test_an_unknown_project_or_session_is_a_404(self):
+        self.assertEqual(self.start("a.jpg", 5, slug="nope")[0], 404)
+        self.assertEqual(self.req("GET", "/p/demo/api/upload/" + "0" * 16)[0], 404)
+        self.assertEqual(self.req("PUT", "/p/demo/api/upload/" + "0" * 16 + "?offset=0", self.BIN, b"x")[0], 404)
+        self.assertEqual(self.req("GET", "/p/demo/api/upload/not-an-id")[0], 404)
+
+    def test_unsupported_types_and_bad_sizes_are_a_400_with_a_message(self):
+        for name, size in (("notes.txt", 5), ("a.jpg", 0), ("a.jpg", "big"), ("a.jpg", -3)):
+            status, _, body = self.start(name, size)
+            self.assertEqual(status, 400, (name, size))
+            self.assertIn("error", json.loads(body))
+
+    def test_a_non_string_name_is_a_400_not_a_crash(self):
+        body = json.dumps({"name": 5, "size": 5}).encode()
+        self.assertEqual(self.req("POST", "/p/demo/api/upload/start", self.JSON, body)[0], 400)
+
+    def test_an_upload_cannot_write_outside_the_library(self):
+        d = json.loads(self.start("../../../escape.jpg", 5)[2])
+        up = f"/p/demo/api/upload/{d['id']}"
+        self.req("PUT", up + "?offset=0", self.BIN, b"12345")
+        status, _, body = self.req("POST", up + "/finish", self.JSON, b"{}")
+        self.assertEqual(json.loads(body)["file"]["name"], "escape.jpg")
+        self.assertFalse((self.home / "escape.jpg").exists())
+        self.assertTrue((self.demo / "assets" / "photos" / "escape.jpg").is_file())
+
+    def test_an_oversized_chunk_declaration_is_refused(self):
+        d = json.loads(self.start("web5.jpg", 100)[2])
+        status, _, _ = self.req("PUT", f"/p/demo/api/upload/{d['id']}?offset=0", {**self.BIN, "Content-Length": str(uploads_max() + 1)}, b"x")
+        self.assertEqual(status, 400)
+
+    def test_the_inbox_is_listed_in_the_library(self):
+        folders = [g["folder"] for g in json.loads(self.req("GET", "/p/demo/api/library")[2])["folders"]]
+        self.assertIn("inbox", folders)
+
+
+def uploads_max():
+    from umcares import uploads
+    return uploads.CHUNK_MAX
+
+
 @unittest.skipUnless(web.find_ffmpeg(), "needs ffmpeg")
 class Thumbnails(Server):
     @classmethod
