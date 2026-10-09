@@ -598,26 +598,41 @@ README, a `.gitignore` and a git repo; the first commit uses `umcares@localhost`
 author because that machine has no git identity. The thumbnail cache lives in
 `<home>/.cache`, outside every project, so it never dirties a project's repo.
 
-#### Measured link speed (9 Oct 2026) — read before building uploads
+#### Uploads
 
-Before phase 2, the path between the dev Mac and the Premiere Mac was measured
-with the web app live. The server is not the limit:
+The project page has three buttons: choose from the library, take a photo, record a video.
+Files go up in resumable chunks, two at a time, with live MB/s on the bar.
 
-| Path | 1 MB |
+- The server's partial file length is the single truth. A chunk is accepted only at exactly
+  that offset, so a lost reply or a retry never duplicates or corrupts anything, and a page
+  reload resumes where it stopped. The chunk size adapts: it doubles when a chunk takes under
+  4 s and halves above 15 s, between 256 KB and 4 MB.
+- Same file picked twice (name, size, modified time): recognised before any bytes move.
+  Same content under another name: stored once, found by sha256 when the upload completes.
+  Only uploads are compared; files already in a library from before uploads existed are not hashed.
+- Photos land in `assets/photos/`, videos in `assets/inbox/` (A-roll or B-roll is a judgement
+  about the shot, so it is not guessed). Only photos and videos are accepted, up to 4 GB each,
+  and an upload is refused if it would leave under 2 GB free on the machine.
+- Nothing partial is ever listed: a file appears under its final name in one atomic rename,
+  after its size is checked. Upload state lives in `<project>/.umcares/`, ignored by git
+  (`.gitignore` for new projects, `.git/info/exclude` for older ones, so no tracked file changes).
+- Not built yet: converting VP9 or other unsupported video to H.264 (so an iPhone `.mov` or a
+  Google Photos VP9 clip is stored as sent), and the one-by-one caption pass after a bulk upload.
+
+#### Measured link speed (9 Oct 2026)
+
+Between the dev Mac and the Premiere Mac, with the web app live. The server is not the limit
+(loopback: 1 MB in 4 ms). The path is erratic, not capped:
+
+| When | Result |
 |---|---|
-| server to itself on the Premiere Mac (loopback) | 4 ms |
-| `tailscale serve` proxy, from the dev Mac | ~90 s for 622 KB (about 7 KB/s) |
-| plain ssh over the tailnet, no proxy | 194 s (about 5 KB/s) |
+| earlier, Premiere at 66-76% CPU | ssh 1 MB in 194 s (about 5 KB/s); `tailscale serve` about 7 KB/s |
+| later, a 1 MB upload in 4 chunks | 72.5 s in all: 256 KB took 15 s, then 54 s, then 1.8 s; 512 KB then took 1.1 s (about 465 KB/s) |
 
-Small packets are fine (ping 35-74 ms, no loss, large packets pass, so not MTU),
-but bulk transfer crawls, and a plain LAN ping jitters between 5 and 112 ms.
-At that rate a 90 MB clip takes hours, so video upload is not viable until this
-is explained. Prime suspect, not proven: the Premiere Mac was CPU-saturated
-(Premiere 66-76%, `PerfPowerServices` 99%, load average 3-4) and tailscaled
-shares that CPU. Its Wi-Fi is 2.4 GHz channel 13, signal -56 dBm, which is
-healthy on paper but a crowded band. To decide: repeat the 1 MB ssh timing
-with Premiere closed, then on 5 GHz or Ethernet. A phone on cellular is a
-different and probably worse path again; measure it too.
-
-The page copes by making few requests (one per folder, thumbnails inline), but
-it cannot make a slow link fast.
+Small packets were always fine (ping 35-74 ms, no loss, large packets pass, so not MTU), but a
+plain LAN ping jittered between 5 and 112 ms. Long stalls followed by fast stretches suggest
+contention on the Premiere Mac (it was CPU-saturated: Premiere, `PerfPowerServices`, load
+average 3-4) or its crowded 2.4 GHz Wi-Fi (channel 13, -56 dBm), not a fixed cap; neither is
+proven. This is why uploads are chunked, resumable and adaptive, and why the page makes few
+requests (one thumbnail request per folder). To decide the cause: repeat the timing with
+Premiere closed, then on 5 GHz or Ethernet, and from a phone on cellular.

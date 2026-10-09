@@ -517,6 +517,7 @@ def js(value) -> str:
 def make_handler(home, owner: str):
     class H(BaseHTTPRequestHandler):
         server_version = "umcares-web"
+        timeout = 300            # a connection that goes silent for 5 minutes is dropped, not held (an upload is chunked, so nothing is lost)
 
         def log_message(self, fmt, *args):       # one quiet line per request, on stderr
             sys.stderr.write("web: " + (fmt % args) + "\n")
