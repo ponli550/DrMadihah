@@ -21,7 +21,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import uploads
+from . import prepare, uploads
 from .layout import kind_of
 
 FILE = "media.json"
@@ -91,6 +91,9 @@ def by_path(root) -> dict:
     for sha, rel in uploads.known_files(root).items():
         n = notes.get(sha, {})
         out[rel] = {"sha": sha, "caption": n.get("caption", ""), "skipped": bool(n.get("skipped"))}
+    for rel, sha in prepare.outputs(root).items():          # an edit-ready copy carries the caption of its source
+        n = notes.get(sha, {})
+        out.setdefault(rel, {"sha": sha, "caption": n.get("caption", ""), "skipped": bool(n.get("skipped"))})
     return out
 
 

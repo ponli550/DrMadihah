@@ -249,6 +249,9 @@ def _claim(dirpath: Path, fname: str) -> Path:
             p = dirpath / f"{stem}-{n}{ext}"
 
 
+claim_name = _claim                     # the same atomic "reserve a free name" for other modules that put files in a library
+
+
 def finish(root, uid: str) -> dict:
     """Verify the file is complete, then store it once: a duplicate of known content is dropped."""
     root = Path(root)

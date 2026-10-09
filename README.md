@@ -643,6 +643,40 @@ button reopens the pass for everything still pending, and every tile has a penci
 - Tested: the real page scripts drive the real server under node (`tests/test_details_js.py`): the full pass,
   an empty caption, a failing save, Back, Stop, editing one file, the auto-open after an upload.
 
+#### Preparing videos for editing
+
+A phone clip is rarely edit-ready even when it is H.264. Variable frame rate drifts audio against
+picture in Premiere, a rotation flag is not the same as upright pixels, full-range colour (`yuvj420p`)
+shifts, and a `moov` atom at the end of the file slows opening. The **Prepare videos for editing** card
+lists the uploaded videos, says in words what each needs, and makes an edit-ready copy in `edit_ready/`
+(the only folder Premiere imports from). The original is never touched, and an existing file is never
+overwritten.
+
+Each clip is probed and gets the least work that makes it safe:
+
+| Plan | When | What |
+|---|---|---|
+| copy | already conformant | an instant APFS clone: no re-encode and no extra disk |
+| remux | picture fine, audio (not AAC 48 kHz) or layout (not faststart) is not | rewrite the container, no re-encode |
+| reencode | anything wrong with the picture | libx264 CRF 16 (the project's existing setting), constant frame rate, rotation applied, limited-range yuv420p, AAC 192k 48 kHz stereo, faststart |
+
+- **Variable frame rate** is detected from the actual frame timestamps (uneven gaps), not just the reported
+  rate, plus rates that are not standard (an Android phone's 30.32 fps). The target is the nearest standard
+  rate (24, 23.976, 25, 29.97, 30, 50, 59.94, 60). **120 and 240 are kept as they are**, so slow-motion footage
+  is not flattened. A different rate can be requested (`fps` in the request, 10-240).
+- **HDR clips are flagged** with a warning: they are converted to standard colour without tone mapping and
+  can look flat.
+- **The machine is shared with Premiere**, so jobs run **one at a time at low priority** (`nice -n 15`, 4
+  threads) and can be cancelled. Progress is read from ffmpeg and shown on the card.
+- **All or nothing**: output goes to a hidden `.part.mp4` and is moved into place only after its length is
+  checked against the original, so `edit_ready/` never holds a half-written clip. Cancel, a failing ffmpeg,
+  a wrong-length result and a full disk (it keeps 2 GB spare) all leave nothing behind.
+- Unreadable files are remembered by hash and listed as unreadable, not retried on every poll.
+- An edit-ready copy shows, and edits, the caption of the clip it was made from.
+- Only videos uploaded through the web (which have a hash) in `inbox/` or `footage/A|B` are candidates.
+  Jobs live in memory: after a service restart a half-done job is forgotten (its `.part` file is swept on the
+  next job) and you press Prepare again. Already prepared clips are skipped.
+
 #### Installing it and sharing into it
 
 Open the page in Chrome on the phone, menu, **Install app**. It opens standalone as "umcares".

@@ -37,7 +37,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from . import captions, projects, uploads, webpages
+from . import captions, prepare, projects, uploads, webpages
 from .layout import kind_of
 
 DEFAULT_PORT = 8733      # 8732 is SekerinShotto's
@@ -62,7 +62,6 @@ FOLDER_NAMES = {f for f, _ in FOLDERS}
 CHUNK = 1 << 20
 
 THUMB_W = 360                                    # px; a tile is ~20 KB instead of a video's first megabytes
-FFMPEG_AT = ("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg")   # launchd's PATH does not include brew
 _thumb_slots = threading.BoundedSemaphore(2)     # a few ffmpeg at once, not 28 when a page opens
 PUBLIC_FIELDS = ("slug", "name", "event_date", "notes", "status", "created", "external", "missing")
 
@@ -117,6 +116,14 @@ def list_library(root) -> dict:
                 f.update(sha=n["sha"], caption=n["caption"], skipped=n["skipped"])
         out.append({"folder": folder, "label": label, "exists": d.is_dir(), "files": files})
     return {"folders": out}
+
+
+PUBLIC_JOB = ("id", "sha", "name", "state", "percent", "error", "output", "action", "reasons", "warnings")
+
+
+def public_job(job: dict) -> dict:
+    """A job as the page may see it: never the absolute path of the project on the machine."""
+    return {k: job.get(k) for k in PUBLIC_JOB}
 
 
 COMMIT_DELAY = 20.0                      # seconds of quiet after the last caption before git records it
@@ -181,7 +188,7 @@ def parse_range(header, size: int):
 
 
 def find_ffmpeg():
-    return shutil.which("ffmpeg") or next((p for p in FFMPEG_AT if os.access(p, os.X_OK)), None)
+    return prepare.find_tool("ffmpeg")
 
 
 def thumb_path(cache, src: Path):
@@ -337,6 +344,7 @@ h2{font-size:15px;margin:0 0 8px;display:flex;justify-content:space-between;gap:
 .name{font-size:13px;margin-top:4px;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .edit{float:right;border:0;background:none;color:var(--acc);padding:0 4px;width:auto;margin:0;font-size:14px;cursor:pointer}
 textarea{resize:vertical}
+.item .dim{overflow-wrap:anywhere}
 a{color:var(--acc)}
 .play{position:relative;cursor:pointer}
 .badge{position:absolute;inset:0;display:grid;place-items:center;font-size:28px;color:#fff;text-shadow:0 1px 6px #000}
@@ -421,10 +429,12 @@ __PWA__
   <button id="retry" type="button" class="alt" hidden>Try the failed ones again</button>
 </section>
 <div id="details"></div>
+<div id="prepare"></div>
 <div id="lib"></div>
 </main>
 <script src="__ROOT__/uploader.js"></script>
 <script src="__ROOT__/details.js"></script>
+<script src="__ROOT__/prepare.js"></script>
 <script>
 const HOME = __HOME__;
 const BASE = __BASE__;
@@ -495,10 +505,12 @@ const uploader = createUploader({
   base: BASE,
   queue: document.getElementById("queue"), summary: document.getElementById("summary"),
   speed: document.getElementById("speed"), retry: document.getElementById("retry"),
-  onSaved: () => loadLibrary().then(fresh => { if (fresh.length) details.start({only: fresh}); }),
+  onSaved: () => { prep.refresh(); loadLibrary().then(fresh => { if (fresh.length) details.start({only: fresh}); }); },
 });
 const details = createDetails({base: BASE, mount: document.getElementById("details"), banner: document.getElementById("detailsBtn"), onChange: loadLibrary});
 details.refresh();
+const prep = createPrepare({base: BASE, mount: document.getElementById("prepare"), onChange: loadLibrary});
+prep.refresh();
 loadLibrary().then(() => { if (new URLSearchParams(location.search).get("details")) details.start({}); });
 for (const k of ["pick", "shoot", "film"]) {
   const input = document.getElementById("f_" + k);
@@ -584,6 +596,10 @@ def make_handler(home, owner: str):
             base = f"{BASE}/p/{slug}"
             if rest.startswith("/api/upload/"):
                 return self._upload(slug, rest, "GET", query)
+            if rest == "/api/prepare":
+                return self._json(200, {"candidates": prepare.candidates(root),
+                                        "jobs": [public_job(j) for j in prepare.PREPARER.snapshot(root)],
+                                        "active": prepare.PREPARER.active(root)})
             if rest == "/api/media":
                 got = captions.items(root)
                 return self._json(200, {"items": got, "pending": sum(1 for i in got if i["pending"])})
@@ -619,6 +635,8 @@ def make_handler(home, owner: str):
             path, query = unquote(parts.path), parse_qs(parts.query)
             if path == "/manifest.webmanifest":
                 return self._send(200, json.dumps(manifest()).encode(), "application/manifest+json")
+            if path == "/prepare.js":
+                return self._send(200, webpages.PREPARE_JS.encode(), "text/javascript; charset=utf-8", {"Cache-Control": "no-cache"})
             if path == "/details.js":
                 return self._send(200, webpages.DETAILS_JS.encode(), "text/javascript; charset=utf-8", {"Cache-Control": "no-cache"})
             if path == "/uploader.js":
@@ -742,6 +760,33 @@ def make_handler(home, owner: str):
             schedule_commit(root)
             return self._json(200, result)
 
+        def _prepare_write(self, slug: str, cancel: bool):
+            root = project_root(home, slug)
+            if root is None:
+                return self._text(404, "not found")
+            if not self._csrf_ok(json_body=True):
+                return self._json(403, {"error": "forbidden"})
+            body = self._json_body()
+            if body is None:
+                return
+            if cancel:
+                return self._json(200, {"cancelled": prepare.PREPARER.cancel(root)})
+            fps = body.get("fps")
+            if fps is not None and not (isinstance(fps, (int, float)) and not isinstance(fps, bool) and 10 <= fps <= 240):
+                return self._json(400, {"error": "fps must be a number between 10 and 240"})
+            shas = body.get("shas")
+            try:
+                if body.get("all") is True:
+                    shas = [c["sha"] for c in prepare.candidates(root, fps, budget=0) if c["state"] == "todo"]
+                elif not (isinstance(shas, list) and 0 < len(shas) <= 200 and all(isinstance(s, str) for s in shas)):
+                    return self._json(400, {"error": "send {\"all\": true} or a list of up to 200 file hashes"})
+                made = prepare.PREPARER.submit(root, shas, fps)
+            except prepare.PrepareError as e:
+                return self._json(400, {"error": str(e)})
+            except OSError:
+                return self._json(500, {"error": "the machine could not start the job"})
+            return self._json(200, {"queued": [public_job(j) for j in made]})
+
         def _write(self, method: str):
             if not authorized(self.headers, owner):
                 return self._text(403, "forbidden")
@@ -754,6 +799,9 @@ def make_handler(home, owner: str):
             m = re.fullmatch(r"/p/([a-z0-9-]+)(/api/upload/.*)", path)
             if m:
                 return self._upload(m.group(1), m.group(2), method, query)
+            m = re.fullmatch(r"/p/([a-z0-9-]+)/api/prepare(/cancel)?", path)
+            if m and method == "POST":
+                return self._prepare_write(m.group(1), bool(m.group(2)))
             m = re.fullmatch(r"/p/([a-z0-9-]+)/api/media/([^/]+)", path)
             if m and method == "POST":
                 return self._set_detail(m.group(1), m.group(2))

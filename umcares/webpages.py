@@ -392,3 +392,80 @@ function createDetails(opts) {
   return {start, refresh};
 }
 """
+
+
+# The prepare card: lists the videos that can be made edit-ready, says in words what each one needs, runs them
+# one at a time on the machine and follows the progress. It only appears when the project has such videos.
+PREPARE_JS = r"""
+function createPrepare(opts) {
+  const BASE = opts.base, mount = opts.mount;
+  const HEADERS = {"Content-Type": "application/json", "X-Requested-With": "umcares"};
+  let timer = null, wasActive = false;
+  const mb = n => n < 1048576 ? Math.max(1, Math.round(n / 1024)) + " KB" : (n / 1048576).toFixed(1) + " MB";
+  function el(tag, props, ...kids) {
+    const e = document.createElement(tag); Object.assign(e, props || {}); kids.forEach(k => e.append(k)); return e;
+  }
+  async function call(method, path, body) {
+    const r = await fetch(BASE + path, {method, headers: method === "GET" ? undefined : HEADERS, body});
+    let d = {}; try { d = await r.json(); } catch (e) {}
+    if (!r.ok) throw new Error(d.error || ("HTTP " + r.status));
+    return d;
+  }
+  const WORDS = {copy: "ready as it is", remux: "needs a light fix", reencode: "needs re-encoding"};
+  function describe(c) {
+    if (c.state === "unreadable") return "✗ " + c.error;
+    if (c.state === "prepared") return "✓ prepared";
+    if (!c.plan) return "checking…";
+    const why = c.plan.reasons.length ? ": " + c.plan.reasons.join(", ") : "";
+    return WORDS[c.plan.action] + why;
+  }
+  function row(c, job) {
+    let text = describe(c), bar = null;
+    if (job && (job.state === "queued" || job.state === "running")) {
+      text = job.state === "queued" ? "waiting" : "preparing " + job.percent + "%";
+      bar = el("progress", {max: 100, value: job.percent});
+    } else if (job && job.state === "failed") { text = "✗ " + job.error; }
+    else if (job && job.state === "cancelled") { text = "cancelled"; }
+    const kids = [el("div", {className: "row"}, el("span", {className: "name"}, c.name), el("span", {className: "dim"}, text))];
+    if (bar) kids.push(bar);
+    const warn = (job && job.warnings || (c.plan && c.plan.warnings) || []).filter(Boolean);
+    warn.forEach(w => kids.push(el("div", {className: "dim"}, "⚠ " + w)));
+    return el("div", {className: "urow"}, ...kids);
+  }
+  function render(d) {
+    if (!d.candidates.length) { mount.replaceChildren(); return; }
+    const latest = {};
+    d.jobs.forEach(j => { latest[j.sha] = j; });
+    const todo = d.candidates.filter(c => c.state === "todo" && !(latest[c.sha] && ["queued", "running"].includes(latest[c.sha].state)));
+    const prepared = d.candidates.filter(c => c.state === "prepared").length;
+    const rows = d.candidates.map(c => row(c, latest[c.sha]));
+    const buttons = [];
+    if (todo.length && !d.active) {
+      const go = el("button", {type: "button"}, "Prepare " + todo.length + (todo.length === 1 ? " video" : " videos"));
+      go.addEventListener("click", async () => { go.disabled = true; try { await call("POST", "/api/prepare", JSON.stringify({all: true})); } catch (e) { alert(e.message); } refresh(); });
+      buttons.push(go);
+    }
+    if (d.active) {
+      const stop = el("button", {type: "button", className: "alt"}, "Cancel");
+      stop.addEventListener("click", async () => { stop.disabled = true; try { await call("POST", "/api/prepare/cancel", "{}"); } catch (e) {} refresh(); });
+      buttons.push(stop);
+    }
+    mount.replaceChildren(el("section", {className: "card"},
+      el("h2", {}, el("span", {}, "Prepare videos for editing"), el("span", {className: "dim"}, prepared + " of " + d.candidates.length + " ready")),
+      el("div", {className: "dim"}, "Makes edit-ready copies in “Edit ready”: constant frame rate, upright, standard colour. The originals stay. One at a time, at low priority, so Premiere is not slowed much."),
+      ...rows, ...buttons));
+  }
+  function schedule(ms) { if (!timer) timer = setTimeout(() => { timer = null; refresh(); }, ms); }
+  async function refresh() {
+    try {
+      const d = await call("GET", "/api/prepare");
+      render(d);
+      const checking = d.candidates.some(c => c.state === "todo" && !c.plan);
+      if (d.active) schedule(1500); else if (checking) schedule(800);
+      if (wasActive && !d.active && opts.onChange) opts.onChange();
+      wasActive = d.active;
+    } catch (e) { if (wasActive) schedule(5000); }
+  }
+  return {refresh};
+}
+"""
