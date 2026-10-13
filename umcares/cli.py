@@ -15,6 +15,7 @@ from . import (auth, doctor, media_scan as inspect_mod, log, media, post, recipe
                recipe_mod, render as render_mod, safe, scaffold,
                script as script_mod, envsecrets, session, spinner, stack, web)
 from . import projects as projects_mod
+from . import scope
 from .example import EXAMPLE_RECIPE
 from . import __version__
 from .config import Config
@@ -920,6 +921,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--transport", choices=["auto", "ssh", "tmux"], default="auto",
                    help="how to reach the remote (default: auto = ssh, else tmux pane)")
     p.add_argument("-v", "--verbose", action="store_true")
+    p.add_argument("--project", dest="project_slug", metavar="SLUG",
+                   help="which project folder on the remote to act on (its folder name; NOT the .prproj that "
+                        "`premiere --project` takes). Required for commands that write or build once more than one project exists")
     p.add_argument("--version", action="version",
                    version=f"umcares {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -1133,7 +1137,11 @@ def main(argv=None) -> int:
     log.set_verbose(args.verbose)
     cfg = Config.load()
     try:
+        cfg = scope.apply(args, cfg, lambda: _transport(args, cfg), warn=log.warn)
         return args.func(args, cfg)
+    except scope.ScopeError as e:
+        log.err(str(e))
+        return 2
     except KeyboardInterrupt:
         log.err("interrupted")
         return 130

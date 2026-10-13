@@ -573,6 +573,29 @@ ffmpeg and librosa. A commercial song (e.g. a sad Indonesian track) in a posted
 video gets muted or blocked. Export with no music, or a quiet placeholder, and add the
 track in the platform's own app; otherwise use the royalty-free folder.
 
+#### Choosing the project: `--project` and the refuse rule
+
+The pipeline commands act on one folder on the remote (`UMC_REMOTE_ROOT`, the original DrMadihah project). With the web app
+creating more projects there, a build run against the wrong one could clear a finished edit. So:
+
+```bash
+umcares --project cyberdsa premiere build ...   # act on that project's folder on the remote
+umcares premiere build ...                      # refused (exit 2) while 2+ projects exist: "say which with --project"
+umcares premiere status                         # read-only commands never need it
+```
+
+- `--project SLUG` goes **before** the command and is the project's folder name (`cyberdsa`, `dormathon`, `drmadihah`),
+  **not** the `.prproj` that `premiere --project` takes; both can be given.
+- Commands that **write or build** are refused without it once more than one project exists: `premiere`
+  (build, import, sequence, open, export), `media` (prepare, kenburns, denoise, extract-audio), `post` (mix, export,
+  import), `render`, `init`, `ingest`. With one project (or none) nothing changes.
+- The project list is read from the remote, using the deployed web app's code, so this needs `umcares web deploy` once.
+  Without it a write command goes ahead with a warning (so the old single-project workflow keeps working), and
+  `--project` itself fails and says why.
+- A project made by the web has the web's folders, not the Premiere pipeline's tree: run `umcares --project SLUG init`
+  first. (`init` still also makes the local mirror folders under the repo, as before; use `--remote-only` to skip them.)
+- Premiere has one project open at a time, so each pipeline project gets its own `.prproj`.
+
 #### Deploying the web app
 
 ```bash
