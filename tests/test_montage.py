@@ -1020,6 +1020,35 @@ class BeatSync(Fixtures):
             self.plan([{"media": "land.jpg"}], music={"file": "b120.m4a", "sync": "tempo"})
         self.assertIn("music.sync", str(ctx.exception))
 
+    def test_a_stated_tempo_cuts_on_that_grid_from_the_first_frame_with_no_audio(self):
+        self.add("land.jpg", "port.jpg", "square.jpg", "clip.mp4")
+        p = self.plan([{"media": n} for n in ("land.jpg", "port.jpg", "square.jpg", "clip.mp4")], template="punchy",
+                      title_card={"text": "Hi"}, music={"bpm": 75})
+        self.assertIsNone(p["music"], "no audio: the song is added later in the app")
+        self.assertTrue(p["sync"]["tempo_only"])
+        self.assertEqual(p["sync"]["bpm"], 75.0)
+        self.assertAlmostEqual(p["sync"]["cut_seconds"], 1.6, delta=0.001, msg="two beats at 75 BPM")
+        self.assertEqual(p["fade"], 0.0)
+        for s in p["segments"]:
+            self.assertAlmostEqual(s["start"] % 0.8, 0, delta=1 / p["fps"] + 1e-6) if s["start"] % 0.8 < 0.4 else self.assertAlmostEqual(s["start"] % 0.8, 0.8, delta=1 / p["fps"] + 1e-6)
+        self.assertEqual(p["segments"][0]["start"], 0)
+
+    def test_a_tempo_needs_a_sane_number_and_cannot_also_name_a_song(self):
+        self.add("land.jpg", music=["b120.m4a"])
+        for bad in ({"bpm": 20}, {"bpm": 400}, {"bpm": "fast"}, {"bpm": 75, "file": "b120.m4a"}):
+            with self.subTest(bad):
+                with self.assertRaises(montage.RecipeError) as ctx:
+                    self.plan([{"media": "land.jpg"}], music=bad)
+                self.assertIn("music", str(ctx.exception))
+
+    def test_a_tempo_only_video_renders_silent_at_the_planned_length(self):
+        self.add("land.jpg", "port.jpg")
+        job, out = self.render(recipe([{"media": "land.jpg"}, {"media": "port.jpg"}], template="punchy", quality="draft", music={"bpm": 90}))
+        self.assertEqual(job["state"], "done", job["error"])
+        st = stats(out)
+        self.assertIsNone(st["audio"])
+        self.assertAlmostEqual(st["dur"], job["total"], delta=0.1)
+
     def test_a_synced_video_renders_with_its_song_at_the_planned_length(self):
         self.add("land.jpg", "port.jpg", "clip.mp4", music=["b120.m4a"])
         job, out = self.render(recipe([{"media": "land.jpg"}, {"media": "port.jpg"}, {"media": "clip.mp4"}], template="punchy",

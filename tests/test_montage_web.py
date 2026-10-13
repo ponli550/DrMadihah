@@ -115,6 +115,14 @@ class Routes(unittest.TestCase):
         self.assertGreater(p["total"], 2)
         self.assertEqual(self.get()[1]["jobs"], [], "nothing was queued")
 
+    def test_the_preview_carries_the_beat_and_speech_facts_the_page_shows(self):
+        d = self.post({"recipe": recipe([{"media": "land.jpg"}, {"media": "clip.mp4"}], music={"bpm": 75}, speech="follow"), "dry_run": True})[1]
+        p = d["plan"]
+        self.assertEqual((p["sync"]["bpm"], p["sync"]["tempo_only"], p["sync"]["beats_per_cut"]), (75.0, True, 2))
+        self.assertIn("speech", p["segments"][1], "seconds of speech in a followed video clip")
+        self.assertIsNone(p["segments"][0]["speech"], "a photo has no speech")
+        self.assertIsNone(self.post({"recipe": recipe([{"media": "land.jpg"}]), "dry_run": True})[1]["plan"]["sync"])
+
     def test_making_a_video_renders_it_and_the_file_can_be_played_with_seeking(self):
         status, d = self.post({"recipe": recipe([{"media": "land.jpg", "caption": "Opening"}, {"media": "port.jpg"}, {"media": "clip.mp4"}])})
         self.assertEqual(status, 200)

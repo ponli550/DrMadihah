@@ -90,6 +90,11 @@ class Card(unittest.TestCase):
         self.assertIn("no steady beat", out["withSync"]["plan"], "the option was sent; a plain tone has no beat to cut to")
         self.assertEqual(out["afterRemoval"], {"disabled": True, "checked": False}, "removing the song clears the option")
 
+    def test_a_typed_tempo_cuts_to_that_grid_without_audio(self):
+        plan = self.run_js("tempo")["view"]["plan"]
+        self.assertIn("75 BPM grid", plan)
+        self.assertIn("no audio", plan)
+
     def test_moving_a_picture_later_changes_the_order_of_the_plan(self):
         out = self.run_js("reorder")
         self.assertEqual(out["before"]["rows"][0]["text"], " 🖼 The dean opening the event")

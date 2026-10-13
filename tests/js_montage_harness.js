@@ -100,6 +100,11 @@ const check = (i, v) => { all(card(), n => n.tag === "input" && n.type === "chec
     music.value = "";
     if (music._l.change) await music._l.change();
     out.afterRemoval = { disabled: !!sync.disabled, checked: !!sync.checked };
+  } else if (scenario === "tempo") {
+    all(card(), n => n.tag === "input" && n.type === "number")[0].value = "75";
+    selects()[1].value = "punchy";
+    await press(button("Preview plan"));
+    out.view = view();
   } else if (scenario === "make") {
     selects()[1].value = "punchy";
     await press(button("Make video"));

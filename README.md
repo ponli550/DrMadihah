@@ -712,6 +712,13 @@ renders the same video.
   noise 1.2). Then the plan keeps the template pacing and **warns that no beat was found**, rather than cutting at a
   guessed rhythm. The grid is found to about 10 ms on synthetic kicks; real music is looser, so listen to the first
   render. Results are cached in `.umcares/beats/` (first analysis of a 3-minute song is a few seconds of Python).
+- **Cut to a stated tempo, no audio** (`"music": {"bpm": 75}`, the **BPM** box in the page when no song is chosen): for a
+  trending sound that cannot be downloaded. Pieces become whole beats from the first frame (a cut every 2 beats at 75
+  BPM = 1.6 s) and the video has **no audio**; add the song in Instagram's own picker and start it on a beat at the
+  first frame. How well it lines up depends on that start: about 50 ms off is hard to notice with cuts a second or more
+  apart, 150 ms is not, so scrub to the beat and check. BPM comes from you (or a BPM site; sites disagree by a factor of
+  two for the same song, because they count half-time or double-time, which is harmless for a cut every 2 or 4 beats but
+  makes the grid land on every other beat if you pick the wrong one). A file and a bpm together are refused.
 - **Start clips where people speak** (`"speech": "follow"`, the **Start video clips where people speak** tick, on by
   default in the page, off in a hand-written recipe): `speech.py` finds the stretches of a video clip where someone is
   talking, and a clip longer than its slot starts there (0.3 s early so the first word is not clipped) instead of at

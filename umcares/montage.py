@@ -89,7 +89,7 @@ ALLOWED_TOP = {"kind", "version", "title", "format", "template", "clips", "capti
                "max_seconds", "note", "quality", "speech"}
 ALLOWED_CLIP = {"media", "caption", "hold", "speed", "start", "zoom", "move"}
 ALLOWED_CARD = {"text", "subtitle", "hold"}
-ALLOWED_MUSIC = {"file", "start", "fade_out", "sync"}
+ALLOWED_MUSIC = {"file", "start", "fade_out", "sync", "bpm"}
 
 
 class MontageError(Exception):
@@ -274,14 +274,22 @@ def validate(recipe, root) -> dict:
     if recipe.get("speech") not in (None, "follow"):
         problems.append('speech: must be "follow" (start clips where people speak) or left out')
     music = recipe.get("music")
-    music_item = None
+    music_item, tempo = None, None
     if music is not None:
         if not isinstance(music, dict):
             problems.append("music: must be {\"file\": \"song.mp3\"} or null")
         else:
             for k in sorted(set(music) - ALLOWED_MUSIC):
                 problems.append(f"music.{k}: unknown field (allowed: {', '.join(sorted(ALLOWED_MUSIC))})")
-            music_item = _find(items, music.get("file"), {"audio"}, "music.file", problems)
+            if "bpm" in music:                                          # cut to a tempo with no audio: the song is added later, in the app
+                if music.get("file") is not None:
+                    problems.append("music: give a file or a bpm, not both")
+                elif not _num(music["bpm"], 50, 200):
+                    problems.append("music.bpm: must be a number from 50 to 200")
+                else:
+                    tempo = float(music["bpm"])
+            else:
+                music_item = _find(items, music.get("file"), {"audio"}, "music.file", problems)
             if music.get("sync") not in (None, "beat"):
                 problems.append('music.sync: must be "beat" (cut on the beat) or left out')
             for k, lo, hi in (("start", 0, 3600), ("fade_out", 0, 10)):
@@ -291,7 +299,7 @@ def validate(recipe, root) -> dict:
         raise RecipeError(problems)
     return {"kind": "montage", "version": 1, "title": title.strip(), "format": fmt, "template": tpl,
             "captions": recipe.get("captions", True), "max_seconds": max_s, "clips": clips, "cards": cards,
-            "quality": recipe.get("quality", "final"), "speech": recipe.get("speech"),
+            "quality": recipe.get("quality", "final"), "speech": recipe.get("speech"), "tempo": tempo,
             "music": None if music_item is None else {**music, "_item": music_item}, "note": recipe.get("note")}
 
 
@@ -412,17 +420,20 @@ def _beat_sync(r, root: Path, segs: list, warnings: list, fps: int):
     """If the recipe asks for music.sync "beat": find the song's beat and stretch every piece to a whole number of beats,
     so each cut lands on one. Mutates `segs` (duration, and for a video the used length and speed). Returns the sync
     facts, or None when it was not asked for or the song has no steady beat (a warning says why; pacing stays as is)."""
-    m = r["music"]
-    if not m or m.get("sync") != "beat":
-        return None
-    try:
-        grid = beats.analyse(root / m["_item"]["rel"], root / ".umcares" / "beats")
-    except beats.BeatError as e:
-        warnings.append(f"could not sync to the beat: {e}; kept the template pacing")
-        return None
-    if not beats.steady(grid):
-        warnings.append(f"no steady beat found in {m['_item']['name']} (confidence {grid['confidence']:g}, needs {beats.MIN_CONFIDENCE:g}); "
-                        "kept the template pacing")
+    m, tempo = r["music"], r.get("tempo")
+    if tempo:                                                           # a stated tempo, no song: the beat grid starts at the first frame
+        grid = {"bpm": tempo, "period": 60.0 / tempo, "phase": 0.0, "confidence": None}
+    elif m and m.get("sync") == "beat":
+        try:
+            grid = beats.analyse(root / m["_item"]["rel"], root / ".umcares" / "beats")
+        except beats.BeatError as e:
+            warnings.append(f"could not sync to the beat: {e}; kept the template pacing")
+            return None
+        if not beats.steady(grid):
+            warnings.append(f"no steady beat found in {m['_item']['name']} (confidence {grid['confidence']:g}, needs {beats.MIN_CONFIDENCE:g}); "
+                            "kept the template pacing")
+            return None
+    else:
         return None
     unit, per_cut = beats.cut_unit(grid)
     slowed, cum = 0, 0
@@ -447,7 +458,7 @@ def _beat_sync(r, root: Path, segs: list, warnings: list, fps: int):
     if slowed:
         warnings.append(f"{slowed} clip{'s' if slowed != 1 else ''} shorter than one beat-cut {'were' if slowed != 1 else 'was'} slowed down to fill it")
     return {"bpm": grid["bpm"], "beats_per_cut": per_cut, "cut_seconds": unit, "confidence": grid["confidence"],
-            "music_start": beats.first_beat(grid, float(m.get("start", 0)))}
+            "music_start": beats.first_beat(grid, float(m.get("start", 0))) if m else 0.0, "tempo_only": bool(tempo)}
 
 
 def plan_for(recipe, root) -> dict:
@@ -930,6 +941,7 @@ def brief(root, project_name: str = "") -> str:
               f"`move` (photos only: {', '.join(MOVES)}; the camera glides, eased. Left out, neighbouring photos alternate on their own).",
               "- `captions`: true draws each clip's caption on screen; `title_card` / `end_card`: `{text, subtitle?, hold?}`.",
               "- `music`: `{file, start?, fade_out?, sync?}` or null. `\"sync\": \"beat\"` finds the song's beat, makes every piece a whole number of beats long and starts the song on a beat, so every cut lands on one (hard cuts; the plan reports the BPM, or warns when the song has no steady beat). Use only royalty-free music; a commercial song gets a posted video muted or blocked.",
+              "- `music: {\"bpm\": 75}` (no file) cuts to that tempo with NO audio: every piece is a whole number of beats from the first frame, so a song added later in the app (a trending sound that cannot be downloaded) lines up if it is started on a beat. Use it when the song's BPM is known and its file is not.",
               "- `speech`: `\"follow\"` starts each video clip (that has no explicit `start`) where people speak, so a long clip's excerpt holds the words, not dead air. It finds speech-like sound, not words.",
               f"- `max_seconds`: up to {MAX_SECONDS_LIMIT} (default {DEFAULT_SECONDS}); clips beyond it are dropped from the end.",
               "", "## Example", "", "```json", json.dumps(EXAMPLE, indent=2), "```", "",
