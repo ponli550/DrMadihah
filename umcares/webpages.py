@@ -474,6 +474,17 @@ function createPrepare(opts) {
 # The Make-a-video card. It builds a montage recipe from what the person picks and sends it to the server, which
 # validates it and works out every timing. Nothing here computes a duration.
 MONTAGE_JS = r"""
+// BPM from tap times (ms, ascending): the median gap of the last 12 taps, so one clumsy tap does not move it, folded into 50-200
+function tempoFromTaps(times) {
+  if (times.length < 4) return null;
+  const recent = times.slice(-12), gaps = [];
+  for (let i = 1; i < recent.length; i++) gaps.push(recent[i] - recent[i - 1]);
+  gaps.sort((a, b) => a - b);
+  let bpm = 60000 / gaps[Math.floor(gaps.length / 2)];
+  while (bpm < 50) bpm *= 2;
+  while (bpm > 200) bpm /= 2;
+  return Math.round(bpm * 10) / 10;
+}
 function createMontage(opts) {
   const BASE = opts.base, mount = opts.mount;
   const HEADERS = {"Content-Type": "application/json", "X-Requested-With": "umcares"};
@@ -650,6 +661,7 @@ function createMontage(opts) {
       captions: el("input", {type: "checkbox", checked: form.captions}),
       music: select([["", "No music (add a track in the app when you post)"]].concat(st.catalog.filter(i => i.kind === "audio").map(i => [i.name, i.name])), form.music),
       sync: el("input", {type: "checkbox", checked: form.sync, disabled: !form.music}),
+      syncHint: el("span", {className: "dim"}, form.music ? "" : "  (pick a song in the list above first)"),
       speech: el("input", {type: "checkbox", checked: form.speech}),
       sound: el("input", {type: "checkbox", checked: form.sound}),
       bpm: el("input", {type: "text", inputMode: "decimal", maxLength: 6, autocomplete: "off", placeholder: "BPM, a number from 50 to 200", value: form.bpm}),
@@ -657,7 +669,21 @@ function createMontage(opts) {
     };
     // a plain text box that keeps only digits and a dot: a number box lets "e" in, and then refuses everything typed after it
     ctl.bpm.addEventListener("input", () => { const v = ctl.bpm.value.replace(/[^0-9.]/g, ""); if (v !== ctl.bpm.value) ctl.bpm.value = v; });
-    ctl.music.addEventListener("change", () => { ctl.sync.disabled = !ctl.music.value; if (!ctl.music.value) ctl.sync.checked = false; });
+    ctl.music.addEventListener("change", () => {
+      ctl.sync.disabled = !ctl.music.value; if (!ctl.music.value) ctl.sync.checked = false;
+      ctl.syncHint.textContent = ctl.music.value ? "" : "  (pick a song in the list above first)";
+    });
+    let taps = [];
+    ctl.tap = el("button", {type: "button", className: "alt"}, "Tap along to the song");
+    ctl.tapNote = el("div", {className: "dim"}, "");
+    ctl.tap.addEventListener("click", () => {
+      const now = performance.now();
+      if (taps.length && now - taps[taps.length - 1] > 2500) taps = [];          // a pause starts a new count
+      taps.push(now);
+      const b = tempoFromTaps(taps);
+      ctl.tapNote.textContent = b ? "Tapped " + taps.length + " times: " + b + " BPM (keep tapping to refine, pause to start over)" : "Keep tapping in time with the song (" + taps.length + " of 4)…";
+      if (b) ctl.bpm.value = String(b);
+    });
     listBox = el("div", {}); planBox = el("div", {}); noticeBox = el("div", {className: "notice ok"}); jobsBox = el("div", {});
     const go = el("button", {type: "button"}, "Make video");
     goBtn = go; runBtns = [];
@@ -683,10 +709,10 @@ function createMontage(opts) {
       el("div", {className: "dim"}, "Format"), ctl.format, el("div", {className: "dim"}, "Look"), ctl.template,
       ctl.title, el("label", {className: "row"}, el("span", {}, ctl.captions, " Show captions on screen")),
       el("div", {className: "dim"}, "Music: pick a song from this list (no typing). To add one, press “Add a song” at the top of the page."), ctl.music,
-      el("label", {className: "row"}, el("span", {}, ctl.sync, " Cut on the beat of the music (hard cuts)")),
+      el("label", {className: "row"}, el("span", {}, ctl.sync, " Cut on the beat of the music (hard cuts)", ctl.syncHint)),
       el("label", {className: "row"}, el("span", {}, ctl.speech, " Start video clips where people speak")),
       el("label", {className: "row"}, el("span", {}, ctl.sound, " Keep the sound of clips where people speak (music dips under it)")),
-      el("div", {className: "dim"}, "Or cut to a song's tempo with no audio, for a trending song you add later in Instagram: type its BPM, numbers only (e.g. 75)."), ctl.bpm,
+      el("div", {className: "dim"}, "Or cut to a song's tempo with no audio, for a trending song you add later in Instagram: type its BPM, numbers only (e.g. 75)."), ctl.bpm, ctl.tap, ctl.tapNote,
       el("div", {className: "dim"}, "Length"), ctl.max,
       el("div", {className: "dim"}, "Pictures and clips, in order (tick to include)"), listBox,
       noticeBox, planBox, go, draft, look, keep, ask,

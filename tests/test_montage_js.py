@@ -192,5 +192,45 @@ class Card(unittest.TestCase):
         self.assertIn("song.m4a", out["clip"])
 
 
+
+@unittest.skipUnless(NODE, "needs node")
+class TapTempo(unittest.TestCase):
+    """The pure tap-to-BPM function from the page's script, run under node."""
+    def run_cases(self, cases):
+        import subprocess, tempfile
+        from umcares import webpages
+        script = ("const vm = require('vm'); const ctx = vm.createContext({}); vm.runInContext(process.argv[1], ctx);"
+                  "console.log(JSON.stringify(JSON.parse(process.argv[2]).map(c => ctx.tempoFromTaps(c))));")
+        r = subprocess.run([NODE, "-e", script, webpages.MONTAGE_JS, json.dumps(cases)], capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)
+
+    def taps(self, gap, n=8, start=1000):
+        return [start + i * gap for i in range(n)]
+
+    def test_even_taps_give_the_tempo(self):
+        got = self.run_cases([self.taps(500), self.taps(800), self.taps(600)])
+        self.assertEqual(got, [120.0, 75.0, 100.0])
+
+    def test_one_clumsy_tap_does_not_move_it(self):
+        late = self.taps(500)
+        late[4] += 180
+        self.assertEqual(self.run_cases([late]), [120.0])
+
+    def test_a_missed_beat_does_not_halve_the_tempo(self):
+        missed = [1000, 1500, 2000, 2500, 3500, 4000, 4500, 5000]            # one beat not tapped: a 1000 ms gap among 500 ms ones
+        self.assertEqual(self.run_cases([missed]), [120.0], "the median ignores it; a mean would say about 105")
+
+    def test_too_few_taps_say_nothing_and_extremes_are_folded_into_50_to_200(self):
+        got = self.run_cases([self.taps(500, n=3), self.taps(250), self.taps(1500), self.taps(200)])
+        self.assertEqual(got, [None, 120.0, 80.0, 150.0], "240 is halved to 120, 40 is doubled to 80, 300 is halved to 150")
+
+    def test_only_the_recent_taps_count(self):
+        slow_then_fast = [1000 + i * 1000 for i in range(5)]
+        t = slow_then_fast[-1]
+        fast = [t + (i + 1) * 500 for i in range(12)]
+        self.assertEqual(self.run_cases([slow_then_fast + fast]), [120.0])
+
+
 if __name__ == "__main__":
     unittest.main()

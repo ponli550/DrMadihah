@@ -49,6 +49,8 @@ def serve():
     for i, n in enumerate(("a.jpg", "b.jpg")):
         subprocess.run([FF, "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360", "-frames:v", "1", str(fx / n)], check=True)
         put(root, fx / n, mtime=1_700_000_000_000 + i * 60000)
+    subprocess.run([FF, "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=330:duration=8", "-c:a", "aac", str(fx / "song.m4a")], check=True)
+    put(root, fx / "song.m4a", mtime=1_700_000_500_000)
     srv = web.make_server(home, "me@x.com", 0)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv, home, root

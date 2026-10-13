@@ -763,6 +763,11 @@ renders the same video.
   noise 1.2). Then the plan keeps the template pacing and **warns that no beat was found**, rather than cutting at a
   guessed rhythm. The grid is found to about 10 ms on synthetic kicks; real music is looser, so listen to the first
   render. Results are cached in `.umcares/beats/` (first analysis of a 3-minute song is a few seconds of Python).
+- **Tap along:** under the BPM box, **Tap along to the song** turns taps into a BPM: the median gap of the last 12 taps
+  (so one clumsy tap does not move it), folded into 50-200 (a count of 240 becomes 120). It needs 4 taps; a pause of 2.5 s starts
+  over. It fills the BPM box, which you can still edit. Tapping is more reliable than a BPM site, which can be out by a factor of two.
+- **Why "Cut on the beat" can be greyed out:** it needs a song to cut to, so it stays disabled (with "pick a song in the list above
+  first" beside it) until one is chosen in the Music list; choosing "No music" again clears and disables it.
 - **What the boxes take:** the Music box is a **pick list** (no typing; add a song with the **Add a song** button), and the
   BPM box is a **text box that keeps only digits and a dot**. It is not a number box on purpose: a browser's number box lets
   the letter `e` in (so typing a song name leaves junk) and then refuses every digit typed after it, which looks like "I can't

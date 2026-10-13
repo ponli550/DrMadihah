@@ -65,5 +65,31 @@ class RealPage(unittest.TestCase):
         self.assertEqual(self.ev("document.getElementById('f_song').accept.includes('audio/*')"), True)
 
 
+    def test_cut_on_the_beat_is_greyed_out_with_a_reason_until_a_song_is_picked_then_it_can_be_ticked(self):
+        box = "Array.from(document.querySelectorAll('#montage input[type=checkbox]'))[1]"
+        self.assertTrue(self.ev(f"{box}.disabled"), "nothing to cut to without a song")
+        self.assertIn("pick a song in the list above first", self.ev("document.querySelector('#montage').innerText"))
+        self.ev("""(() => { const s = Array.from(document.querySelectorAll('#montage select')).find(x => x.options[0].text.startsWith('No music'));
+                  s.value = 'song.m4a'; s.dispatchEvent(new Event('change')); })()""")
+        self.assertFalse(self.ev(f"{box}.disabled"), "a song is picked: the box can be ticked")
+        self.assertNotIn("pick a song in the list above first", self.ev("document.querySelector('#montage').innerText"))
+        self.ev(f"{box}.click()")
+        self.assertTrue(self.ev(f"{box}.checked"), "a real click ticks it")
+        self.ev("""(() => { const s = Array.from(document.querySelectorAll('#montage select')).find(x => x.options[0].text.startsWith('No music'));
+                  s.value = ''; s.dispatchEvent(new Event('change')); })()""")
+        self.assertTrue(self.ev(f"{box}.disabled"), "and it is greyed out again")
+        self.assertFalse(self.ev(f"{box}.checked"), "removing the song clears the tick")
+
+    def test_tapping_along_fills_the_bpm_box(self):
+        self.ev(f"{self.BPM}.value = ''")
+        tap = "Array.from(document.querySelectorAll('#montage button')).find(b => b.textContent.startsWith('Tap along'))"
+        for _ in range(6):                                                  # six taps half a second apart = 120 BPM
+            self.ev(f"{tap}.click()")
+            time.sleep(0.5)
+        bpm = float(self.ev(f"{self.BPM}.value"))
+        self.assertAlmostEqual(bpm, 120, delta=8)
+        self.assertIn("BPM", self.ev("document.querySelector('#montage').innerText"))
+
+
 if __name__ == "__main__":
     unittest.main()
