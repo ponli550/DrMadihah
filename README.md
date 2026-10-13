@@ -668,6 +668,17 @@ renders the same video.
 - **Everything is composed over a blurred copy of itself**, so a portrait photo in a 9:16 frame is never cropped
   and a landscape one never loses its sides. (ffprobe does not report an EXIF-rotated photo's true shape, so
   composing the same way every time is also simpler than detecting it.) Photos get a slow zoom; clips can be slowed.
+- **The `collage` look (Vox style, paper cut-outs)** is built in `collage.py` with ffmpeg alone. Paper is flat cream with
+  static grain (no vignette: it turns paper grey). A photo is a **cut-out card**: halftone dot screen, white border, soft
+  shadow, two strips of tape, a slight tilt that alternates between pieces. A clip gets the same card, built on every
+  frame. The card **wobbles in stop-motion** (tilt and position change 12 times a second and hold between, like
+  hand-animated paper) and **drops in from a side** on an ease-out curve: the clip's `move` picks the side (`in` right,
+  `out` left, `pan_right` from below, `pan_left` from above, `still` no slide). Captions are marker lettering
+  (MarkerFelt) on a bright paper label with its own shadow; a title is marker lettering on a tilted yellow highlighter
+  swipe with the subtitle right under it. It never crossfades (hard cuts). Everything is relative to the frame, so
+  a draft at half size is the same picture. The halftone is a per-pixel filter, so a photo's card is built once as a
+  picture and then animated; only clips pay per frame. Fonts are macOS stock; if one is missing the text module falls
+  back to the system bold font.
 - **Motion is eased and has a vocabulary.** A photo's camera move is one of `in` (dolly in), `out`, `pan_left`,
   `pan_right` or `still`, named per clip as `"move"` (a recipe declares intent, never a timing). Left out, neighbouring
   photos alternate through the template's own cycle so no two in a row move the same way. Every move follows a
@@ -713,7 +724,7 @@ not just "a zoom"; a camera vocabulary (dolly in, pan, static) is what a model c
 hook in the first seconds, one idea per shot, calm shots between busy ones, and a clear last beat (the brief for
 Claude carries this advice); and typography wants hierarchy, alignment and whitespace.
 
-Not built yet: beat-synced cuts, a paper-collage ("Vox") look, narration, mode C, and deleting an export from the page.
+Not built yet: beat-synced cuts, narration, mode C, and deleting an export from the page.
 
 #### Preparing videos for editing
 

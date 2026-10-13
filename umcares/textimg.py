@@ -38,7 +38,7 @@ function run(argv) {
   const para = $.NSMutableParagraphStyle.alloc.init;
   para.alignment = spec.align === 'left' ? 0 : 1;                  // modern AppKit (NSTextAlignment): 0 left, 1 centre, 2 right
   const rgb = spec.color;
-  const color = $.NSColor.colorWithCalibratedRedGreenBlueAlpha(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255, 1);
+  const color = $.NSColor.colorWithDeviceRedGreenBlueAlpha(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255, 1);
   const str = $(spec.text);
   const maxW = w - 2 * pad, maxH = h - 2 * pad;
   let size = spec.size, attrs, bound;
@@ -63,7 +63,7 @@ function run(argv) {
     const p = spec.platePad;
     const pw = Math.min(w, Math.min(bound.size.width, maxW) + 2 * p), ph = Math.min(h, textH + 2 * p);
     const px = spec.align === 'left' ? Math.max(0, x - p) : (w - pw) / 2, py = Math.max(0, y - p);
-    $.NSColor.colorWithCalibratedWhiteAlpha(0, spec.plateAlpha).setFill;
+    $.NSColor.colorWithDeviceRedGreenBlueAlpha(spec.plateColor[0] / 255, spec.plateColor[1] / 255, spec.plateColor[2] / 255, spec.plateAlpha).setFill;
     $.NSBezierPath.bezierPathWithRoundedRectXRadiusYRadius($.NSMakeRect(px, py, pw, ph), p, p).fill;
   } else {
     const shadow = $.NSShadow.alloc.init;
@@ -108,10 +108,11 @@ def available() -> bool:
 
 def render(text: str, out, width: int, height: int, size: int = 64, font: str = DEFAULT_FONT, color: str = "#ffffff",
            align: str = "center", valign: str = "middle", plate: bool = False, plate_alpha: float = 0.45,
-           pad: int = 40, min_size: int = MIN_SIZE, timeout: int = 30) -> dict:
+           pad: int = 40, min_size: int = MIN_SIZE, timeout: int = 30, plate_color: str = "#000000") -> dict:
     """Draw `text` onto a transparent width x height PNG at `out`. Shrinks the font until the text fits.
 
-    Returns {"size", "width", "height"} of what was drawn. Raises TextError with a readable message otherwise.
+    `plate` draws a rounded plate behind the text in `plate_color` (dark glass by default, cream paper for a collage label).
+    Returns {"size", "width", "height"} of the text drawn. Raises TextError with a readable message otherwise.
     """
     text = (text or "").strip()
     if not text:
@@ -127,7 +128,7 @@ def render(text: str, out, width: int, height: int, size: int = 64, font: str = 
     out = Path(out)
     out.parent.mkdir(parents=True, exist_ok=True)
     spec = {"text": text, "out": str(out), "width": int(width), "height": int(height), "size": int(size), "font": font,
-            "color": _hex(color), "align": align, "valign": valign, "plate": bool(plate), "plateAlpha": float(plate_alpha),
+            "color": _hex(color), "align": align, "valign": valign, "plate": bool(plate), "plateAlpha": float(plate_alpha), "plateColor": _hex(plate_color),
             "platePad": max(8, int(size) // 4), "pad": int(pad), "minSize": int(min_size)}
     try:
         r = subprocess.run(["osascript", "-l", "JavaScript", str(_script_path()), json.dumps(spec)],

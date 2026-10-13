@@ -63,6 +63,10 @@ TEMPLATES = {
                    "photo_hold": 3.4, "video_max": 4.5, "video_speed": 0.8, "fade": 0.9, "zoom": 0.12, "vignette": True, "grain": 10,
                    "grade": "eq=saturation=0.7:contrast=1.05,colorbalance=rs=-.05:bs=.07:rm=-.03:bm=.05", "bg": "#0d1117",
                    "accent": "#8fb3c9", "moves": ["in", "out"]},
+    "collage": {"label": "Paper collage (Vox style)",
+                "blurb": "Cut-out photos on paper with tape and shadows, hard cuts, a stop-motion wobble, marker lettering.",
+                "photo_hold": 2.2, "video_max": 3.5, "video_speed": 1.0, "fade": 0.0, "zoom": 0.0, "vignette": False, "grain": 0,
+                "grade": "", "bg": "#f1ead8", "accent": "#ffd23f", "moves": ["in", "out", "pan_right", "pan_left"], "style": "collage"},
 }
 
 # How the camera moves over a photo (the words a recipe can use). Every move is eased (smoothstep), because a linear
@@ -471,6 +475,9 @@ def _piece_command(ffmpeg, plan, seg, i, workdir: Path, out: Path):
     W, H, fps, d = plan["width"], plan["height"], plan["fps"], seg["duration"]
     tpl = TEMPLATES[plan["template"]]
     fmt = FORMATS[plan["format"]]
+    if tpl.get("style") == "collage":                        # a different way of drawing the whole piece
+        from . import collage
+        return collage.piece_commands(_base, ffmpeg, plan, seg, i, workdir, out, _encode_piece(plan), root_of(plan))
     look = _look(tpl, plan.get("quality") == "draft")
     steps = []
     glide = lambda start, dur: f"pow(1-min(1,max(0,(t-{start})/{dur})),3)"          # 1 -> 0 along an ease-out curve

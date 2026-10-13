@@ -764,6 +764,175 @@ class Draft(Fixtures):
         self.assertEqual(len(runs), 2, f"a title band and a subtitle band, still not overlapping: {runs}")
 
 
+def rgb_frame(path, at):
+    return subprocess.run([FF, "-v", "error", "-ss", str(at), "-i", str(path), "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                          capture_output=True, check=True).stdout
+
+
+PAPER_RGB = (241, 234, 216)
+
+
+def px(frame, w, x, y):
+    i = (y * w + x) * 3
+    return frame[i], frame[i + 1], frame[i + 2]
+
+
+def near(c, target, tol):
+    return all(abs(a - b) <= tol for a, b in zip(c, target))
+
+
+def count_near(frame, target, tol):
+    return sum(1 for i in range(0, len(frame), 3) if near((frame[i], frame[i + 1], frame[i + 2]), target, tol))
+
+
+def centroid_of_non_paper(frame, w, h, tol=45):
+    xs = ys = n = 0
+    for y in range(0, h, 2):
+        for x in range(0, w, 2):
+            if not near(px(frame, w, x, y), PAPER_RGB, tol):
+                xs, ys, n = xs + x, ys + y, n + 1
+    return (xs / n, ys / n, n) if n else (None, None, 0)
+
+
+@NEED
+class Collage(Fixtures):
+    """The paper-collage (Vox style) look, measured in pixels."""
+    W, H = 432, 768
+
+    def setUp(self):
+        super().setUp()
+        self._big = mock.patch.dict(montage.FORMATS["reels"], width=self.W, height=self.H)
+        self._big.start()
+
+    def tearDown(self):
+        self._big.stop()
+        super().tearDown()
+
+    def shot(self, name="land.jpg", caption="Selamat datang", move="in", hold=2.5, **kw):
+        if name not in {i["name"] for i in montage.catalog(self.root)}:       # a test may take several shots of the same picture
+            self.add(name)
+        clip = {"media": name, "move": move, "hold": hold}
+        if caption:
+            clip["caption"] = caption
+        _, out = self.render(recipe([clip], template="collage", **kw))
+        return out
+
+    def test_the_collage_template_is_listed_and_cuts_hard(self):
+        self.assertIn("collage", montage.TEMPLATES)
+        self.assertEqual(montage.TEMPLATES["collage"]["fade"], 0.0, "a collage never crossfades")
+        self.add("land.jpg", "port.jpg")
+        p = montage.plan_for(recipe([{"media": "land.jpg"}, {"media": "port.jpg"}], template="collage"), self.root)
+        self.assertEqual((p["fade"], p["total"]), (0, 4.4))
+        self.assertEqual([s["move"] for s in p["segments"]], ["in", "out"], "neighbours drop in from different sides")
+
+    def test_the_paper_is_bright_and_flat_not_a_vignetted_grey(self):
+        out = self.shot()
+        f = rgb_frame(out, 1.4)
+        for corner in ((4, 4), (self.W - 5, 4), (4, self.H - 5), (self.W - 5, self.H - 5)):
+            self.assertTrue(near(px(f, self.W, *corner), PAPER_RGB, 14), f"{corner}: {px(f, self.W, *corner)} is not the cream paper")
+
+    def test_the_photo_is_a_bordered_cut_out_with_a_shadow_and_tape(self):
+        out = self.shot()
+        f = rgb_frame(out, 1.4)
+        self.assertGreater(count_near(f, (255, 255, 255), 3), 800, "a white border around the photo")
+        self.assertGreater(count_near(f, (242, 224, 138), 30), 120, "strips of yellow tape")
+        darker = sum(1 for i in range(0, len(f), 3) if f[i] < 226 and abs(f[i] - f[i + 2] - 25) < 14)       # paper-toned but darker: the shadow
+        self.assertGreater(darker, 400, "a soft shadow on the paper")
+
+    def test_a_caption_is_a_cream_marker_label_and_no_caption_means_no_label(self):
+        with_label = rgb_frame(self.shot(caption="Selamat datang"), 1.4)
+        without = rgb_frame(self.shot(caption=None), 1.4)
+        label = (255, 250, 240)
+        self.assertGreater(count_near(with_label, label, 3), 3000, "a bright label, clearly lighter than the cream paper")
+        self.assertLess(count_near(without, label, 3), 300, "none without a caption")
+        self.assertGreater(count_near(with_label, (22, 19, 15), 40), 300, "with dark marker lettering on it")
+        self.assertLess(count_near(without, (22, 19, 15), 40), 60, "and no lettering without one")
+        self.assertGreater(sum(1 for c in (label,) if not near(label, PAPER_RGB, 12)), 0, "the label is not the paper colour")
+
+    def test_the_piece_drops_in_from_the_side_the_move_names(self):
+        for move, axis, sign in (("in", 0, +1), ("out", 0, -1), ("pan_right", 1, +1), ("pan_left", 1, -1)):
+            f = rgb_frame(self.shot(move=move, caption=None), 0.1)
+            cx, cy, n = centroid_of_non_paper(f, self.W, self.H)
+            centre = (self.W / 2, self.H / 2)[axis]
+            got = (cx, cy)[axis] if n else None
+            self.assertIsNotNone(got, f"{move}: nothing on screen yet?")
+            self.assertGreater((got - centre) * sign, 8, f"{move}: arrives from the {'+' if sign > 0 else '-'} side of axis {axis}")
+            settled = centroid_of_non_paper(rgb_frame(self.out_of_last(), 1.4), self.W, self.H)
+            self.assertAlmostEqual(settled[0], self.W / 2, delta=self.W * 0.08, msg=f"{move} settles in the middle")
+
+    def out_of_last(self):
+        return sorted((self.root / "exports").glob("*.mp4"))[-1]
+
+    def test_the_card_wobbles_in_steps_about_twelve_times_a_second_not_continuously(self):
+        """Stop-motion holds a pose for a few frames and then jumps. Decode a whole second of consecutive frames, follow the
+        card's white border, and count the jumps: about 12 means stop-motion, 29 would mean smooth continuous drift."""
+        out = self.shot(hold=3.0, caption=None)
+        raw = subprocess.run([FF, "-v", "error", "-ss", "1.0", "-i", str(out), "-t", "1.0", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                             capture_output=True, check=True).stdout
+        size = self.W * self.H * 3
+        frames = [raw[i:i + size] for i in range(0, len(raw) - size + 1, size)]
+        self.assertGreaterEqual(len(frames), 28)
+        centres = []
+        for f in frames[:30]:
+            xs = ys = n = 0
+            for y in range(0, self.H, 3):
+                for x in range(0, self.W, 3):
+                    i = (y * self.W + x) * 3
+                    if f[i] >= 253 and f[i + 1] >= 253 and f[i + 2] >= 253:
+                        xs, ys, n = xs + x, ys + y, n + 1
+            centres.append((xs / n, ys / n))
+        steps = [abs(b[0] - a[0]) + abs(b[1] - a[1]) for a, b in zip(centres, centres[1:])]
+        jumps = sum(1 for d in steps if d > 0.6)
+        holds = sum(1 for d in steps if d < 0.25)
+        self.assertTrue(5 <= jumps <= 15, f"about 12 jumps a second (some are small), got {jumps}: {[round(d, 1) for d in steps]}")
+        self.assertGreaterEqual(holds, 8, f"and it holds still between them ({holds} still frames of {len(steps)}); smooth drift would have almost none")
+
+    def test_a_title_card_is_marker_lettering_on_a_highlighter_with_the_subtitle_right_under_it(self):
+        self.add("land.jpg")
+        _, out = self.render(recipe([{"media": "land.jpg"}], template="collage", title_card={"text": "CyberDSA 2026", "subtitle": "Hari terbuka"}))
+        f = rgb_frame(out, 1.6)
+        self.assertGreater(count_near(f, (255, 210, 63), 12), 2500, "a yellow highlighter swipe")
+        ink = [y for y in range(self.H) if sum(1 for x in range(0, self.W, 2) if near(px(f, self.W, x, y), (22, 19, 15), 40)) > 2]
+        runs = []
+        for y in ink:
+            if runs and y - runs[-1][1] <= 3:
+                runs[-1][1] = y
+            else:
+                runs.append([y, y])
+        self.assertEqual(len(runs), 2, f"title lettering, then subtitle lettering: {runs}")
+        gap = runs[1][0] - runs[0][1]
+        self.assertLess(gap, self.H * 0.09, f"the subtitle sits right under the title ({gap}px), not far below it")
+        self.assertGreater(gap, 2)
+
+    def test_a_clip_gets_the_same_card_and_a_label(self):
+        self.add("clip.mp4")
+        _, out = self.render(recipe([{"media": "clip.mp4", "caption": "Panel perbincangan"}], template="collage"))
+        f = rgb_frame(out, 1.4)
+        self.assertGreater(count_near(f, (255, 255, 255), 3), 800, "the clip has the white border")
+        self.assertGreater(count_near(f, (242, 224, 138), 30), 120, "and tape")
+        self.assertGreater(count_near(f, (246, 239, 220), 3), 3000, "and a label")
+
+    def test_a_collage_draft_keeps_the_look_at_half_size(self):
+        out = self.shot(quality="draft")
+        s = stats(out)
+        self.assertEqual((s["w"], s["h"]), (self.W // 2, self.H // 2))
+        f = rgb_frame(out, 1.4)
+        self.assertTrue(near(px(f, s["w"], 3, 3), PAPER_RGB, 14), "still cream paper")
+        self.assertGreater(count_near(f, (255, 255, 255), 3), 200, "still a bordered photo")
+
+    def test_every_format_renders_as_a_collage(self):
+        self.add("land.jpg")
+        for fmt in ("square", "wide"):
+            with mock.patch.dict(montage.FORMATS[fmt], width={"square": 324, "wide": 576}[fmt], height={"square": 324, "wide": 324}[fmt]):
+                job, out = self.render(recipe([{"media": "land.jpg", "caption": "x"}], template="collage", format=fmt))
+            self.assertEqual(job["state"], "done", f"{fmt}: {job['error']}")
+
+
+def gray_frame(path, at):
+    return subprocess.run([FF, "-v", "error", "-ss", str(at), "-i", str(path), "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+                          capture_output=True, check=True).stdout
+
+
 class Plain(unittest.TestCase):
     def test_every_template_has_what_the_renderer_needs(self):
         need = {"label", "blurb", "photo_hold", "video_max", "video_speed", "fade", "zoom", "vignette", "grain", "grade", "bg"}

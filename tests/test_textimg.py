@@ -109,6 +109,17 @@ class Render(unittest.TestCase):
             return sum(1 for i in range(3, len(raw), 4) if 20 < raw[i] < 200)
         self.assertGreater(translucent(plated), translucent(plain) + 3000)
 
+    def test_the_plate_can_be_any_colour_such_as_cream_paper_for_a_label(self):
+        _, img = self.draw("Label", size=70, plate=True, plate_alpha=1.0, plate_color="#ece3cf", color="#16130f")
+        w, h, raw = img
+        solid = [(raw[i], raw[i + 1], raw[i + 2]) for i in range(0, len(raw), 4) if raw[i + 3] == 255]
+        cream = sum(1 for r, g, b in solid if abs(r - 236) <= 2 and abs(g - 227) <= 2 and abs(b - 207) <= 2)      # exact, not colour-managed
+        dark = sum(1 for r, g, b in solid if abs(r - 22) <= 3 and abs(g - 19) <= 3 and abs(b - 15) <= 3)
+        self.assertGreater(cream, 2000, "a cream plate")
+        self.assertGreater(dark, 200, "with dark ink on it")
+        with self.assertRaises(textimg.TextError):
+            textimg.render("x", self.d / "bad.png", 200, 100, plate=True, plate_color="cream")
+
     def test_a_caption_is_data_never_code(self):
         marker = self.d / "pwned"
         for text in ['"; touch %s #' % marker, "$(touch %s)" % marker, "`touch %s`" % marker, "it's \"quoted\" \\ back\\slash",
