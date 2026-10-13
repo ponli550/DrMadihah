@@ -58,7 +58,7 @@ const view = () => {
     saved: all(c, n => n.className === "urow" && n.parent === c).map(r => deepText(r)),
   };
 };
-const check = (i, v) => { all(card(), n => n.tag === "input" && n.type === "checkbox")[i + 1].checked = v; };   // [0] is "show captions"
+const check = (i, v) => { all(card(), n => n.tag === "input" && n.type === "checkbox")[i + 2].checked = v; };   // [0] is "show captions", [1] "cut on the beat"
 
 (async () => {
   const page = await (await realFetch(`/umcares/p/${slug}/`)).text();
@@ -85,6 +85,20 @@ const check = (i, v) => { all(card(), n => n.tag === "input" && n.type === "chec
     all(card(), n => n.tag === "input" && n.type === "text")[0].value = "Hello CyberDSA";
     await press(button("Preview plan"));
     out.view = view();
+  } else if (scenario === "sync") {
+    const sync = all(card(), n => n.tag === "input" && n.type === "checkbox")[1];
+    out.disabledAtStart = !!sync.disabled;
+    const music = selects()[2];
+    music.value = "song.m4a";
+    if (music._l.change) await music._l.change();
+    out.enabledAfterMusic = !sync.disabled;
+    sync.checked = true;
+    selects()[1].value = "punchy";
+    await press(button("Preview plan"));
+    out.withSync = view();
+    music.value = "";
+    if (music._l.change) await music._l.change();
+    out.afterRemoval = { disabled: !!sync.disabled, checked: !!sync.checked };
   } else if (scenario === "make") {
     selects()[1].value = "punchy";
     await press(button("Make video"));

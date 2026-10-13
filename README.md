@@ -700,6 +700,18 @@ renders the same video.
   It is faded and loudness-normalised to -16 LUFS. **Use royalty-free music**: a commercial song in a posted
   video gets muted or blocked. With "No music" the video is silent, so you can add a licensed track inside the
   platform's own app when you post.
+- **Cut on the beat** (`"music": {"file": "...", "sync": "beat"}`, the **Cut on the beat of the music** tick): `beats.py`
+  decodes the song with ffmpeg, builds a 100 Hz "got louder" curve (full band plus the kick), takes a rough tempo from
+  autocorrelation and refines tempo and offset against the whole song. Every piece is then stretched or trimmed to a whole
+  number of beats (the smallest count, doubling, that lasts at least 1 s: 2 beats at 120 BPM, 2 at 80) and the song starts
+  on its first beat, so every cut lands on one. Cut times are whole frames, so rounding does not drift off the beat across
+  a long video. A synced video uses **hard cuts** (a crossfade has no single cut moment), and a clip shorter than one cut
+  is slowed to fill it (the plan says so). The plan shows the BPM.
+  **Where it fails:** it assumes one steady tempo. Live or rubato playing, a song with no drums, or a very sparse
+  ambient piece gives low confidence (the grid's peak-to-mean score, needs 1.5; steady synthetic tracks score 5-13, white
+  noise 1.2). Then the plan keeps the template pacing and **warns that no beat was found**, rather than cutting at a
+  guessed rhythm. The grid is found to about 10 ms on synthetic kicks; real music is looser, so listen to the first
+  render. Results are cached in `.umcares/beats/` (first analysis of a 3-minute song is a few seconds of Python).
 - **Output** lands in `exports/` (not in git) with a `.json` sidecar holding the recipe and the resolved plan.
   It is written hidden and moved into place only after its size and length are checked. Rendering is low priority,
   cancellable, and **never runs at the same time as a prepare job** (they share one lock, because the machine is

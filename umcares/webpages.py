@@ -478,7 +478,7 @@ function createMontage(opts) {
   const BASE = opts.base, mount = opts.mount;
   const HEADERS = {"Content-Type": "application/json", "X-Requested-With": "umcares"};
   let st = null, order = [], picked = new Set(), rows = [], ctl = null, timer = null;
-  let form = {format: "reels", template: "slowmo", title: "", captions: true, music: "", max: "30"};
+  let form = {format: "reels", template: "slowmo", title: "", captions: true, music: "", sync: false, max: "30"};
   let jobsBox = null, planBox = null, noticeBox = null, listBox = null, goBtn = null, draftBtn = null, runBtns = [];
 
   const mb = n => n < 1048576 ? Math.max(1, Math.round(n / 1024)) + " KB" : (n / 1048576).toFixed(1) + " MB";
@@ -502,7 +502,7 @@ function createMontage(opts) {
   }
   function syncForm() {
     if (!ctl) return;
-    form = {format: ctl.format.value, template: ctl.template.value, title: ctl.title.value, captions: !!ctl.captions.checked, music: ctl.music.value, max: ctl.max.value};
+    form = {format: ctl.format.value, template: ctl.template.value, title: ctl.title.value, captions: !!ctl.captions.checked, music: ctl.music.value, sync: !!ctl.sync.checked, max: ctl.max.value};
     rows.forEach(r => { if (r.check.checked) picked.add(r.ref); else picked.delete(r.ref); });
   }
   function buildRecipe() {
@@ -510,7 +510,7 @@ function createMontage(opts) {
     const rec = {kind: "montage", title: form.title.trim() || opts.name || "Montage", format: form.format, template: form.template,
                  captions: form.captions, max_seconds: Number(form.max), clips: order.filter(r => picked.has(r)).map(r => ({media: r}))};
     if (form.title.trim()) rec.title_card = {text: form.title.trim()};
-    if (form.music) rec.music = {file: form.music};
+    if (form.music) rec.music = form.sync ? {file: form.music, sync: "beat"} : {file: form.music};
     return rec;
   }
   function useRecipe(rec) {
@@ -519,7 +519,7 @@ function createMontage(opts) {
     order = used.concat(order.filter(r => !used.includes(r)));
     picked = new Set(used);
     form = {format: rec.format || "reels", template: rec.template || "slowmo", title: rec.title_card ? rec.title_card.text : "",
-            captions: rec.captions !== false, music: rec.music ? rec.music.file : "", max: String(rec.max_seconds || 30)};
+            captions: rec.captions !== false, music: rec.music ? rec.music.file : "", sync: !!(rec.music && rec.music.sync === "beat"), max: String(rec.max_seconds || 30)};
     render();
     say("Recipe loaded. Change anything, then Preview or Make video.");
   }
@@ -558,6 +558,7 @@ function createMontage(opts) {
       const d = await call("POST", "/api/montage", JSON.stringify({recipe: buildRecipe(), dry_run: true}));
       const p = d.plan;
       planBox.replaceChildren(el("div", {}, p.segments.length + " pieces · " + secs(p.total) + " · " + (p.fade ? "crossfades" : "hard cuts")),
+        ...(p.sync ? [el("div", {className: "dim"}, "♪ on the beat: about " + Math.round(p.sync.bpm) + " BPM, a cut every " + p.sync.beats_per_cut + " beats")] : []),
         ...p.warnings.map(w => el("div", {className: "dim"}, "⚠ " + w)),
         ...p.segments.map(s => el("div", {className: "dim"}, secs(s.start) + "  " + (s.kind === "title" || s.kind === "end" ? s.kind + " card: " + s.text : s.name + (s.text ? " — " + s.text : "")) + "  (" + secs(s.duration) + ")")));
       say("");
@@ -628,8 +629,10 @@ function createMontage(opts) {
       title: el("input", {type: "text", maxLength: 100, placeholder: "Title card text (optional)", value: form.title}),
       captions: el("input", {type: "checkbox", checked: form.captions}),
       music: select([["", "No music (add a track in the app when you post)"]].concat(st.catalog.filter(i => i.kind === "audio").map(i => [i.name, i.name])), form.music),
+      sync: el("input", {type: "checkbox", checked: form.sync, disabled: !form.music}),
       max: select([["15", "up to 15 s"], ["30", "up to 30 s"], ["45", "up to 45 s"], ["60", "up to 60 s"], ["90", "up to 90 s"]], form.max),
     };
+    ctl.music.addEventListener("change", () => { ctl.sync.disabled = !ctl.music.value; if (!ctl.music.value) ctl.sync.checked = false; });
     listBox = el("div", {}); planBox = el("div", {}); noticeBox = el("div", {className: "notice ok"}); jobsBox = el("div", {});
     const go = el("button", {type: "button"}, "Make video");
     goBtn = go; runBtns = [];
@@ -654,7 +657,9 @@ function createMontage(opts) {
       el("div", {className: "dim"}, "Pick the look and the pictures; every timing is worked out for you."),
       el("div", {className: "dim"}, "Format"), ctl.format, el("div", {className: "dim"}, "Look"), ctl.template,
       ctl.title, el("label", {className: "row"}, el("span", {}, ctl.captions, " Show captions on screen")),
-      el("div", {className: "dim"}, "Music"), ctl.music, el("div", {className: "dim"}, "Length"), ctl.max,
+      el("div", {className: "dim"}, "Music"), ctl.music,
+      el("label", {className: "row"}, el("span", {}, ctl.sync, " Cut on the beat of the music (hard cuts)")),
+      el("div", {className: "dim"}, "Length"), ctl.max,
       el("div", {className: "dim"}, "Pictures and clips, in order (tick to include)"), listBox,
       noticeBox, planBox, go, draft, look, keep, ask,
       ...(saved.length ? [el("div", {className: "dim"}, "Saved recipes")].concat(saved) : []),

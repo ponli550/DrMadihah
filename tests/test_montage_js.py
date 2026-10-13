@@ -82,6 +82,13 @@ class Card(unittest.TestCase):
         for b in ("Make video", "Preview plan", "Save recipe…", "Copy brief for Claude"):
             self.assertIn(b, v["buttons"])
 
+    def test_cut_on_the_beat_is_only_available_with_music_and_reaches_the_server(self):
+        out = self.run_js("sync")
+        self.assertTrue(out["disabledAtStart"], "nothing to sync to without a song")
+        self.assertTrue(out["enabledAfterMusic"])
+        self.assertIn("no steady beat", out["withSync"]["plan"], "the option was sent; a plain tone has no beat to cut to")
+        self.assertEqual(out["afterRemoval"], {"disabled": True, "checked": False}, "removing the song clears the option")
+
     def test_moving_a_picture_later_changes_the_order_of_the_plan(self):
         out = self.run_js("reorder")
         self.assertEqual(out["before"]["rows"][0]["text"], " 🖼 The dean opening the event")

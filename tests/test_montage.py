@@ -928,6 +928,108 @@ class Collage(Fixtures):
             self.assertEqual(job["state"], "done", f"{fmt}: {job['error']}")
 
 
+@NEED
+class BeatSync(Fixtures):
+    """music.sync = "beat": every cut lands on a beat of the song, or the plan says plainly why it did not."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        from tests.test_beats import song
+        for name, bpm, off in (("b120.m4a", 120, 0.13), ("b80.m4a", 80, 0.2), ("b97.m4a", 97, 0.05)):
+            wav = cls.fx / (name + ".wav")
+            song(wav, bpm, seconds=40, offset=off)
+            ff("-i", str(wav), "-c:a", "aac", "-ar", "48000", str(cls.fx / name))
+
+    def plan(self, clips, **kw):
+        return montage.plan_for(recipe(clips, **kw), self.root)
+
+    def off_grid(self, p):
+        """Largest distance (seconds) of any cut from a beat of the plan's music, in video time."""
+        period = 60.0 / p["sync"]["bpm"]
+        worst = 0.0
+        for s in p["segments"]:
+            d = s["start"] % period
+            worst = max(worst, min(d, period - d))
+        return worst
+
+    def test_every_cut_lands_on_a_beat_and_the_music_starts_on_one(self):
+        self.add("land.jpg", "port.jpg", "square.jpg", "clip.mp4", music=["b120.m4a"])
+        p = self.plan([{"media": n} for n in ("land.jpg", "port.jpg", "square.jpg", "clip.mp4")], template="punchy",
+                      title_card={"text": "Hi"}, end_card={"text": "Bye"}, music={"file": "b120.m4a", "sync": "beat"})
+        self.assertAlmostEqual(p["sync"]["bpm"], 120, delta=1.5)
+        self.assertEqual(p["sync"]["beats_per_cut"], 2)
+        self.assertEqual(p["fade"], 0.0)
+        self.assertAlmostEqual(p["music"]["start"], 0.13, delta=0.015, msg="the song starts on its first beat")
+        self.assertLess(self.off_grid(p), 1 / p["fps"] + 1e-6)
+        for s in p["segments"]:
+            n = s["duration"] / p["sync"]["cut_seconds"]
+            self.assertLess(abs(n - round(n)), 1.5 / p["fps"] / p["sync"]["cut_seconds"], f"{s['kind']} lasts a whole number of cuts")
+
+    def test_a_fading_template_is_forced_to_hard_cuts_when_synced(self):
+        self.add("land.jpg", "port.jpg", music=["b120.m4a"])
+        free = self.plan([{"media": "land.jpg"}, {"media": "port.jpg"}], template="slowmo", music={"file": "b120.m4a"})
+        self.assertGreater(free["fade"], 0)
+        self.assertIsNone(free["sync"])
+        p = self.plan([{"media": "land.jpg"}, {"media": "port.jpg"}], template="slowmo", music={"file": "b120.m4a", "sync": "beat"})
+        self.assertEqual(p["fade"], 0.0)
+        self.assertLess(self.off_grid(p), 1 / p["fps"] + 1e-6)
+
+    def test_cuts_stay_on_the_beat_over_a_long_video_at_an_awkward_tempo(self):
+        names = ["land.jpg", "port.jpg", "square.jpg"] * 6
+        self.add("land.jpg", "port.jpg", "square.jpg", music=["b97.m4a"])
+        p = self.plan([{"media": n} for n in names], template="punchy", max_seconds=90, music={"file": "b97.m4a", "sync": "beat"})
+        self.assertEqual(len(p["segments"]), 18)
+        self.assertLess(self.off_grid(p), 1 / p["fps"] + 1e-6, "no drift from rounding to frames")
+        for s in p["segments"]:
+            self.assertAlmostEqual(s["start"] * p["fps"], round(s["start"] * p["fps"]), delta=0.03, msg="every cut is on a whole frame")
+
+    def test_a_clip_shorter_than_a_cut_is_slowed_to_fill_it_and_a_long_one_is_trimmed_to_whole_cuts(self):
+        self.add("short.mp4", "clip.mp4", music=["b80.m4a"])
+        p = self.plan([{"media": "short.mp4"}, {"media": "clip.mp4"}], template="punchy", music={"file": "b80.m4a", "sync": "beat"})
+        short, clip = p["segments"]
+        unit = p["sync"]["cut_seconds"]
+        self.assertAlmostEqual(unit, 1.5, delta=0.02)
+        self.assertAlmostEqual(short["duration"], unit, delta=1 / p["fps"])
+        self.assertLess(short["speed"], 1.0)
+        self.assertAlmostEqual(short["src_used"] / short["speed"], short["duration"], delta=0.05, msg="the source fits the slot exactly")
+        self.assertTrue(any("slowed" in w for w in p["warnings"]))
+        self.assertLessEqual(clip["src_used"], 4.0 + 1e-6)
+        self.assertAlmostEqual(clip["src_used"] / clip["speed"], clip["duration"], delta=0.05)
+
+    def test_no_steady_beat_keeps_the_pacing_and_says_so(self):
+        self.add("land.jpg", "port.jpg", music=["song.m4a"])                     # a plain sine tone: nothing to cut to
+        free = self.plan([{"media": "land.jpg"}, {"media": "port.jpg"}], template="punchy", music={"file": "song.m4a"})
+        p = self.plan([{"media": "land.jpg"}, {"media": "port.jpg"}], template="punchy", music={"file": "song.m4a", "sync": "beat"})
+        self.assertIsNone(p["sync"])
+        self.assertTrue(any("beat" in w for w in p["warnings"]), p["warnings"])
+        self.assertEqual([s["duration"] for s in p["segments"]], [s["duration"] for s in free["segments"]])
+        self.assertEqual(p["music"]["start"], 0)
+
+    def test_without_the_option_nothing_changes(self):
+        self.add("land.jpg", music=["b120.m4a"])
+        p = self.plan([{"media": "land.jpg"}], template="punchy", music={"file": "b120.m4a"})
+        self.assertIsNone(p["sync"])
+        self.assertEqual(p["music"]["start"], 0)
+
+    def test_sync_needs_music_and_only_knows_beat(self):
+        self.add("land.jpg", music=["b120.m4a"])
+        p = self.plan([{"media": "land.jpg"}], template="punchy", music=None)
+        self.assertIsNone(p["sync"])
+        with self.assertRaises(montage.RecipeError) as ctx:
+            self.plan([{"media": "land.jpg"}], music={"file": "b120.m4a", "sync": "tempo"})
+        self.assertIn("music.sync", str(ctx.exception))
+
+    def test_a_synced_video_renders_with_its_song_at_the_planned_length(self):
+        self.add("land.jpg", "port.jpg", "clip.mp4", music=["b120.m4a"])
+        job, out = self.render(recipe([{"media": "land.jpg"}, {"media": "port.jpg"}, {"media": "clip.mp4"}], template="punchy",
+                                      quality="draft", music={"file": "b120.m4a", "sync": "beat"}))
+        self.assertEqual(job["state"], "done", job["error"])
+        st = stats(out)
+        self.assertEqual(st["audio"], "aac")
+        self.assertAlmostEqual(st["dur"], job["total"], delta=0.1)
+
+
 def gray_frame(path, at):
     return subprocess.run([FF, "-v", "error", "-ss", str(at), "-i", str(path), "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
                           capture_output=True, check=True).stdout

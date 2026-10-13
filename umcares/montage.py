@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -35,7 +36,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import captions, prepare, textimg, uploads
+from . import beats, captions, prepare, textimg, uploads
 from .layout import kind_of
 
 FORMATS = {
@@ -88,7 +89,7 @@ ALLOWED_TOP = {"kind", "version", "title", "format", "template", "clips", "capti
                "max_seconds", "note", "quality"}
 ALLOWED_CLIP = {"media", "caption", "hold", "speed", "start", "zoom", "move"}
 ALLOWED_CARD = {"text", "subtitle", "hold"}
-ALLOWED_MUSIC = {"file", "start", "fade_out"}
+ALLOWED_MUSIC = {"file", "start", "fade_out", "sync"}
 
 
 class MontageError(Exception):
@@ -279,6 +280,8 @@ def validate(recipe, root) -> dict:
             for k in sorted(set(music) - ALLOWED_MUSIC):
                 problems.append(f"music.{k}: unknown field (allowed: {', '.join(sorted(ALLOWED_MUSIC))})")
             music_item = _find(items, music.get("file"), {"audio"}, "music.file", problems)
+            if music.get("sync") not in (None, "beat"):
+                problems.append('music.sync: must be "beat" (cut on the beat) or left out')
             for k, lo, hi in (("start", 0, 3600), ("fade_out", 0, 10)):
                 if k in music and not _num(music[k], lo, hi):
                     problems.append(f"music.{k}: must be a number from {lo} to {hi}")
@@ -331,8 +334,11 @@ def resolve(validated: dict, root) -> dict:
         segs.append({"kind": "end", "text": c["text"].strip(), "subtitle": (c.get("subtitle") or "").strip(),
                      "duration": float(c.get("hold", CARD_HOLD))})
     fade = tpl["fade"]
+    sync = _beat_sync(r, root, segs, warnings, fmt["fps"])
+    if sync:
+        fade = 0.0                                                      # on the beat means hard cuts
     for s in segs:
-        s["duration"] = max(MIN_PIECE, round(s["duration"], 3))
+        s["duration"] = max(MIN_PIECE, round(s["duration"], 5 if sync else 3))      # a synced cut keeps its frame-exact time
         if fade:
             fade = min(fade, round(0.4 * s["duration"], 3))
     # keep within the length limit by dropping clips from the end (cards stay)
@@ -363,6 +369,10 @@ def resolve(validated: dict, root) -> dict:
         mstart = float(m.get("start", 0))
         if mdur - mstart < 1:
             raise MontageError(f"music.start {mstart:g}s is past the end of {m['_item']['name']} ({mdur:.1f}s long)")
+        if sync:
+            mstart = sync["music_start"]
+            if mdur - mstart < 1:
+                raise MontageError(f"the first beat after music.start is at {mstart:g}s, past the end of {m['_item']['name']}")
         if mdur - mstart < total:
             warnings.append(f"the music ends {total - (mdur - mstart):.0f}s before the video does")
         music = {"name": m["_item"]["name"], "rel": m["_item"]["rel"], "start": mstart,
@@ -371,8 +381,51 @@ def resolve(validated: dict, root) -> dict:
     width, height = (even(fmt["width"] * DRAFT_SCALE), even(fmt["height"] * DRAFT_SCALE)) if draft else (fmt["width"], fmt["height"])
     return {"title": r["title"], "format": r["format"], "template": r["template"], "quality": "draft" if draft else "final",
             "width": width, "height": height,
-            "fps": fmt["fps"], "fade": round(fade, 3), "total": total, "segments": segs, "music": music, "warnings": warnings,
+            "fps": fmt["fps"], "fade": round(fade, 3), "total": total, "segments": segs, "music": music, "sync": None if not sync else {k: v for k, v in sync.items() if k != "music_start"},
+            "warnings": warnings,
             "recipe": {k: v for k, v in r.items() if k not in ("clips", "cards", "music")}}
+
+
+def _beat_sync(r, root: Path, segs: list, warnings: list, fps: int):
+    """If the recipe asks for music.sync "beat": find the song's beat and stretch every piece to a whole number of beats,
+    so each cut lands on one. Mutates `segs` (duration, and for a video the used length and speed). Returns the sync
+    facts, or None when it was not asked for or the song has no steady beat (a warning says why; pacing stays as is)."""
+    m = r["music"]
+    if not m or m.get("sync") != "beat":
+        return None
+    try:
+        grid = beats.analyse(root / m["_item"]["rel"], root / ".umcares" / "beats")
+    except beats.BeatError as e:
+        warnings.append(f"could not sync to the beat: {e}; kept the template pacing")
+        return None
+    if not beats.steady(grid):
+        warnings.append(f"no steady beat found in {m['_item']['name']} (confidence {grid['confidence']:g}, needs {beats.MIN_CONFIDENCE:g}); "
+                        "kept the template pacing")
+        return None
+    unit, per_cut = beats.cut_unit(grid)
+    slowed, cum = 0, 0
+    for s in segs:
+        n = max(1, math.floor(s["duration"] / unit + 0.5))
+        if s["kind"] == "video":
+            avail = quick_info(root / s["rel"])["duration"] - s["src_start"]
+            out_avail = avail / s["speed"]
+            if n * unit > out_avail + 1e-6:
+                fit = math.floor(out_avail / unit + 1e-6)
+                if fit >= 1:
+                    n = fit
+                else:
+                    n = 1
+                    s["speed"] = round(avail / unit, 4)                 # a clip shorter than one cut is stretched to fill it
+                    slowed += 1
+        # every cut time is a whole frame, so rounding never drifts away from the beat across a long video
+        s["duration"] = (round((cum + n) * unit * fps) - round(cum * unit * fps)) / fps
+        cum += n
+        if s["kind"] == "video":
+            s["src_used"] = round(min(avail, s["duration"] * s["speed"]), 3)
+    if slowed:
+        warnings.append(f"{slowed} clip{'s' if slowed != 1 else ''} shorter than one beat-cut {'were' if slowed != 1 else 'was'} slowed down to fill it")
+    return {"bpm": grid["bpm"], "beats_per_cut": per_cut, "cut_seconds": unit, "confidence": grid["confidence"],
+            "music_start": beats.first_beat(grid, float(m.get("start", 0)))}
 
 
 def plan_for(recipe, root) -> dict:
@@ -854,7 +907,7 @@ def brief(root, project_name: str = "") -> str:
               "`speed` (videos only, 0.25 to 2; below 1 is slow motion), `start` (videos only, seconds into the clip), "
               f"`move` (photos only: {', '.join(MOVES)}; the camera glides, eased. Left out, neighbouring photos alternate on their own).",
               "- `captions`: true draws each clip's caption on screen; `title_card` / `end_card`: `{text, subtitle?, hold?}`.",
-              "- `music`: `{file, start?, fade_out?}` or null. Use only royalty-free music; a commercial song gets a posted video muted or blocked.",
+              "- `music`: `{file, start?, fade_out?, sync?}` or null. `\"sync\": \"beat\"` finds the song's beat, makes every piece a whole number of beats long and starts the song on a beat, so every cut lands on one (hard cuts; the plan reports the BPM, or warns when the song has no steady beat). Use only royalty-free music; a commercial song gets a posted video muted or blocked.",
               f"- `max_seconds`: up to {MAX_SECONDS_LIMIT} (default {DEFAULT_SECONDS}); clips beyond it are dropped from the end.",
               "", "## Example", "", "```json", json.dumps(EXAMPLE, indent=2), "```", "",
               "## Rules", "", "- Use only files from the table above. Do not invent refs.",
