@@ -69,6 +69,11 @@ TEMPLATES = {
 # move reads as mechanical: the movement starts slowly, is fastest in the middle, and settles.
 MOVES = ("in", "out", "pan_left", "pan_right", "still")
 
+# A draft is the same video at half size, without the slow finishing (grain, vignette) and with a fast encode. Its timings
+# are exactly the final's, so what you preview is what you will get; only the pixels are cheaper.
+DRAFT_SCALE = 0.5
+QUALITIES = ("final", "draft")
+
 MAX_CLIPS = 60
 DEFAULT_SECONDS, MAX_SECONDS_LIMIT = 60, 90
 CARD_HOLD = 2.5
@@ -76,7 +81,7 @@ MIN_PIECE = 0.6
 NICE = prepare.NICE
 THREADS = prepare.THREADS
 ALLOWED_TOP = {"kind", "version", "title", "format", "template", "clips", "captions", "title_card", "end_card", "music",
-               "max_seconds", "note"}
+               "max_seconds", "note", "quality"}
 ALLOWED_CLIP = {"media", "caption", "hold", "speed", "start", "zoom", "move"}
 ALLOWED_CARD = {"text", "subtitle", "hold"}
 ALLOWED_MUSIC = {"file", "start", "fade_out"}
@@ -208,6 +213,8 @@ def validate(recipe, root) -> dict:
         problems.append(f"template: must be one of {', '.join(TEMPLATES)}")
     if not isinstance(recipe.get("captions", True), bool):
         problems.append("captions: must be true or false")
+    if recipe.get("quality", "final") not in QUALITIES:
+        problems.append(f"quality: must be one of {', '.join(QUALITIES)}")
     max_s = recipe.get("max_seconds", DEFAULT_SECONDS)
     if not _num(max_s, 5, MAX_SECONDS_LIMIT):
         problems.append(f"max_seconds: must be a number from 5 to {MAX_SECONDS_LIMIT}")
@@ -275,6 +282,7 @@ def validate(recipe, root) -> dict:
         raise RecipeError(problems)
     return {"kind": "montage", "version": 1, "title": title.strip(), "format": fmt, "template": tpl,
             "captions": recipe.get("captions", True), "max_seconds": max_s, "clips": clips, "cards": cards,
+            "quality": recipe.get("quality", "final"),
             "music": None if music_item is None else {**music, "_item": music_item}, "note": recipe.get("note")}
 
 
@@ -284,6 +292,7 @@ def resolve(validated: dict, root) -> dict:
     root = Path(root)
     r = validated
     tpl, fmt = TEMPLATES[r["template"]], FORMATS[r["format"]]
+    draft = r.get("quality") == "draft"
     segs, warnings = [], []
     photos_seen = 0
     if "title_card" in r["cards"]:
@@ -354,7 +363,10 @@ def resolve(validated: dict, root) -> dict:
             warnings.append(f"the music ends {total - (mdur - mstart):.0f}s before the video does")
         music = {"name": m["_item"]["name"], "rel": m["_item"]["rel"], "start": mstart,
                  "fade_out": round(min(float(m.get("fade_out", 1.5)), total / 2), 3)}
-    return {"title": r["title"], "format": r["format"], "template": r["template"], "width": fmt["width"], "height": fmt["height"],
+    even = lambda n: max(2, int(round(n)) // 2 * 2)                      # x264 needs even sizes
+    width, height = (even(fmt["width"] * DRAFT_SCALE), even(fmt["height"] * DRAFT_SCALE)) if draft else (fmt["width"], fmt["height"])
+    return {"title": r["title"], "format": r["format"], "template": r["template"], "quality": "draft" if draft else "final",
+            "width": width, "height": height,
             "fps": fmt["fps"], "fade": round(fade, 3), "total": total, "segments": segs, "music": music, "warnings": warnings,
             "recipe": {k: v for k, v in r.items() if k not in ("clips", "cards", "music")}}
 
@@ -432,9 +444,12 @@ def _compose(W, H):
             f"[b]scale={W}:{H}:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2")
 
 
-def _look(tpl) -> str:
-    parts = [p for p in (tpl["grade"], "vignette=PI/6" if tpl["vignette"] else "", f"noise=alls={tpl['grain']}:allf=t+u" if tpl["grain"] else "") if p]
-    return ",".join(parts)
+def _look(tpl, draft=False) -> str:
+    """The colour grade, plus (final only) the slow finishing: vignette and grain cost far more than the grade does."""
+    parts = [tpl["grade"]]
+    if not draft:
+        parts += ["vignette=PI/6" if tpl["vignette"] else "", f"noise=alls={tpl['grain']}:allf=t+u" if tpl["grain"] else ""]
+    return ",".join(p for p in parts if p)
 
 
 def _text_png(workdir: Path, text, name, width, height, **kw) -> Path:
@@ -444,6 +459,11 @@ def _text_png(workdir: Path, text, name, width, height, **kw) -> Path:
 
 
 ENCODE_PIECE = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "14", "-pix_fmt", "yuv420p", "-an", "-threads", THREADS]
+DRAFT_ENCODE_PIECE = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-pix_fmt", "yuv420p", "-an", "-threads", THREADS]
+
+
+def _encode_piece(plan) -> list:
+    return DRAFT_ENCODE_PIECE if plan.get("quality") == "draft" else ENCODE_PIECE
 
 
 def _piece_command(ffmpeg, plan, seg, i, workdir: Path, out: Path):
@@ -451,7 +471,7 @@ def _piece_command(ffmpeg, plan, seg, i, workdir: Path, out: Path):
     W, H, fps, d = plan["width"], plan["height"], plan["fps"], seg["duration"]
     tpl = TEMPLATES[plan["template"]]
     fmt = FORMATS[plan["format"]]
-    look = _look(tpl)
+    look = _look(tpl, plan.get("quality") == "draft")
     steps = []
     glide = lambda start, dur: f"pow(1-min(1,max(0,(t-{start})/{dur})),3)"          # 1 -> 0 along an ease-out curve
     if seg["kind"] in ("title", "end"):
@@ -478,7 +498,7 @@ def _piece_command(ffmpeg, plan, seg, i, workdir: Path, out: Path):
                       f"[3:v]format=rgba,fade=t=in:st=0.35:d=0.4:alpha=1,{out_fade}[bar];"
                       f"[b][bar]overlay={(W - bar_w) // 2}:{int(H * 0.535)}:format=auto")
         graph += ",format=yuv420p[out]"
-        return [(_base(ffmpeg) + inputs + ["-filter_complex", graph, "-map", "[out]", "-t", str(d), "-r", str(fps)] + ENCODE_PIECE + [str(out)], d)]
+        return [(_base(ffmpeg) + inputs + ["-filter_complex", graph, "-map", "[out]", "-t", str(d), "-r", str(fps)] + _encode_piece(plan) + [str(out)], d)]
     overlay_in, overlay_graph = [], ""
     if seg["text"]:
         cap_h = int(H * 0.22)
@@ -509,14 +529,14 @@ def _piece_command(ffmpeg, plan, seg, i, workdir: Path, out: Path):
         chain = ",".join(p for p in (motion, look, "scale=out_range=tv", "format=yuv420p") if p)
         graph = f"[0:v]{chain}[v]" + overlay_graph + (";[o]format=yuv420p[out]" if overlay_graph else "")
         steps.append((_base(ffmpeg) + ["-loop", "1", "-framerate", str(fps), "-t", str(d), "-i", str(comp)] + overlay_in +
-                      ["-filter_complex", graph, "-map", out_label, "-t", str(d), "-r", str(fps)] + ENCODE_PIECE + [str(out)], d))
+                      ["-filter_complex", graph, "-map", out_label, "-t", str(d), "-r", str(fps)] + _encode_piece(plan) + [str(out)], d))
         return steps
     speed = seg["speed"]
     fps_f = f"fps={fps}" if speed >= 0.999 else f"framerate=fps={fps}"
     chain = ",".join(p for p in (f"setpts=(PTS-STARTPTS)/{speed}", fps_f, look, "scale=out_range=tv", "format=yuv420p") if p)
     graph = f"[0:v]{_compose(W, H)},{chain}[v]" + overlay_graph + (";[o]format=yuv420p[out]" if overlay_graph else "")
     steps.append((_base(ffmpeg) + ["-ss", str(seg["src_start"]), "-t", str(seg["src_used"]), "-i", str(root_of(plan) / seg["rel"])] + overlay_in +
-                  ["-filter_complex", graph, "-map", out_label, "-t", str(d), "-r", str(fps)] + ENCODE_PIECE + [str(out)], d))
+                  ["-filter_complex", graph, "-map", out_label, "-t", str(d), "-r", str(fps)] + _encode_piece(plan) + [str(out)], d))
     return steps
 
 
@@ -555,7 +575,9 @@ def render(plan: dict, root, out: Path, ctl: Control, on_pct=lambda p: None) -> 
                 chain.append(f"{label}[{k}:v]xfade=transition=fade:duration={fade}:offset={round(acc, 3)}{out_l}")
                 label = out_l
             vgraph = ";".join(chain)
-            vmap, venc = label, ["-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p", "-r", str(fps), "-threads", THREADS,
+            quick = plan.get("quality") == "draft"
+            vmap, venc = label, ["-c:v", "libx264", "-preset", "ultrafast" if quick else "medium", "-crf", "26" if quick else "18",
+                                 "-pix_fmt", "yuv420p", "-r", str(fps), "-threads", THREADS,
                                  "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv"]
             n_in = len(pieces)
         else:
@@ -609,7 +631,7 @@ def _verify(out: Path, plan: dict) -> dict:
 # ------------------------------------------------------------------ jobs
 def export_name(plan: dict) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", (plan["title"] or "montage").lower()).strip("-")[:40] or "montage"
-    return f"{slug}-{plan['format']}-{time.strftime('%Y%m%d-%H%M%S')}.mp4"
+    return f"{slug}-{plan['format']}{'-draft' if plan.get('quality') == 'draft' else ''}-{time.strftime('%Y%m%d-%H%M%S')}.mp4"
 
 
 class Renderer:
@@ -630,7 +652,7 @@ class Renderer:
                 return self.public(same)
             job = {"id": f"{int(time.time() * 1000):x}{len(self.jobs)}", "root": str(root), "state": "queued", "percent": 0,
                    "error": None, "output": None, "title": plan["title"] or "Montage", "format": plan["format"],
-                   "template": plan["template"], "total": plan["total"], "pieces": len(plan["segments"]),
+                   "template": plan["template"], "quality": plan["quality"], "total": plan["total"], "pieces": len(plan["segments"]),
                    "warnings": plan["warnings"], "_plan": plan, "_recipe": recipe, "_key": key}
             self.jobs.append(job)
             self.jobs = self.jobs[-100:]
@@ -747,7 +769,8 @@ def exports(root) -> list:
             try:
                 d = json.loads(side.read_text(encoding="utf-8"))
                 meta = {"template": d["plan"]["template"], "format": d["plan"]["format"], "duration": d["result"]["duration"],
-                        "title": d["plan"]["title"], "audio": d["result"].get("audio", False)}
+                        "title": d["plan"]["title"], "audio": d["result"].get("audio", False),
+                        "quality": d["plan"].get("quality", "final")}
             except (ValueError, KeyError):
                 pass
         out.append({"name": p.name, "size": p.stat().st_size, "mtime": int(p.stat().st_mtime), **meta})

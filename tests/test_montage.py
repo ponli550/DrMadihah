@@ -681,6 +681,89 @@ class Motion(Fixtures):
         self.assertGreater(early_runs[0][0], runs[0][0], "the title arrives from slightly below")
 
 
+@NEED
+class Draft(Fixtures):
+    """A quick draft: half the pixels and none of the slow finishing, but exactly the final's timings."""
+
+    def rec(self, **kw):
+        return recipe([{"media": "land.jpg", "caption": "Selamat datang"}, {"media": "port.jpg"}, {"media": "clip.mp4"}],
+                      template="slowmo", title_card={"text": "CyberDSA", "subtitle": "Hari terbuka"}, **kw)
+
+    def test_quality_is_final_or_draft_and_nothing_else(self):
+        self.add("land.jpg")
+        self.assertEqual(montage.validate({"clips": [{"media": "land.jpg"}]}, self.root)["quality"], "final")
+        self.assertEqual(montage.validate({"clips": [{"media": "land.jpg"}], "quality": "draft"}, self.root)["quality"], "draft")
+        with self.assertRaises(montage.RecipeError) as cm:
+            montage.validate({"clips": [{"media": "land.jpg"}], "quality": "ultra"}, self.root)
+        self.assertIn("quality: must be one of final, draft", cm.exception.problems[0])
+
+    def test_a_draft_has_exactly_the_same_timings_as_the_final_at_half_the_size(self):
+        self.add("land.jpg", "port.jpg", "clip.mp4")
+        final = montage.plan_for(self.rec(), self.root)
+        draft = montage.plan_for(self.rec(quality="draft"), self.root)
+        strip = lambda p: [(s["kind"], s["start"], s["duration"], s.get("move")) for s in p["segments"]]
+        self.assertEqual(strip(draft), strip(final), "what you preview is what you get")
+        self.assertEqual((draft["total"], draft["fade"]), (final["total"], final["fade"]))
+        self.assertEqual((final["width"], final["height"]), (216, 384))
+        self.assertEqual((draft["width"], draft["height"]), (108, 192))
+        self.assertEqual((final["quality"], draft["quality"]), ("final", "draft"))
+
+    def test_a_draft_leaves_out_the_slow_finishing_and_encodes_fast(self):
+        self.add("land.jpg", "port.jpg", "clip.mp4")
+        def commands(rec):
+            plan = montage.plan_for(rec, self.root)
+            plan["_root"] = str(self.root)
+            work = Path(tempfile.mkdtemp())
+            out = []
+            for i, seg in enumerate(plan["segments"]):
+                for cmd, _ in montage._piece_command("/usr/bin/ffmpeg", plan, seg, i, work, work / f"p{i}.mp4"):
+                    out.append(" ".join(map(str, cmd)))
+            shutil.rmtree(work, ignore_errors=True)
+            return "\n".join(out)
+        final, draft = commands(self.rec()), commands(self.rec(quality="draft"))
+        self.assertIn("noise=alls=6", final)
+        self.assertIn("vignette=PI/6", final)
+        self.assertIn("-preset veryfast", final)
+        self.assertNotIn("noise=", draft)
+        self.assertNotIn("vignette", draft)
+        self.assertIn("colorbalance", draft, "the colour grade is kept, so the look is still the look")
+        self.assertIn("-preset ultrafast", draft)
+
+    def test_a_draft_renders_at_half_size_is_named_and_listed_as_a_draft_and_is_smaller(self):
+        self.add("land.jpg", "port.jpg", "clip.mp4", music=["song.m4a"])
+        base = self.rec(music={"file": "song.m4a"})
+        job_f, out_f = self.render(base)
+        job_d, out_d = self.render({**base, "quality": "draft"})
+        self.assertEqual((job_d["state"], job_d["quality"], job_f["quality"]), ("done", "draft", "final"), job_d["error"])
+        self.assertNotIn("-draft-", out_f.name)
+        self.assertIn("-reels-draft-", out_d.name)
+        s_f, s_d = stats(out_f), stats(out_d)
+        self.assertEqual((s_f["w"], s_f["h"]), (216, 384))
+        self.assertEqual((s_d["w"], s_d["h"]), (108, 192))
+        self.assertAlmostEqual(s_d["dur"], s_f["dur"], delta=0.1, msg="the same length")
+        self.assertEqual(s_d["audio"], "aac", "the music is in the draft too")
+        self.assertLess(out_d.stat().st_size, out_f.stat().st_size)
+        listed = {e["name"]: e["quality"] for e in montage.exports(self.root)}
+        self.assertEqual(listed, {out_f.name: "final", out_d.name: "draft"})
+
+    def test_a_draft_and_a_final_of_the_same_recipe_are_two_jobs_not_one(self):
+        self.add("land.jpg")
+        base = recipe([{"media": "land.jpg"}], template="punchy")
+        with prepare.HEAVY:
+            a = montage.RENDERER.submit(self.root, base)
+            b = montage.RENDERER.submit(self.root, {**base, "quality": "draft"})
+        self.assertNotEqual(a["id"], b["id"])
+        montage.RENDERER.wait_idle(120)
+
+    def test_the_title_card_layout_holds_at_draft_size(self):
+        self.add("land.jpg")
+        with mock.patch.dict(montage.FORMATS["reels"], width=432, height=768):
+            _, out = self.render(recipe([{"media": "land.jpg"}], template="punchy", quality="draft",
+                                        title_card={"text": "CyberDSA 2026", "subtitle": "Hari terbuka"}))
+        runs, _ = Rendering.bands(self, out, 1.2)
+        self.assertEqual(len(runs), 2, f"a title band and a subtitle band, still not overlapping: {runs}")
+
+
 class Plain(unittest.TestCase):
     def test_every_template_has_what_the_renderer_needs(self):
         need = {"label", "blurb", "photo_hold", "video_max", "video_speed", "fade", "zoom", "vignette", "grain", "grade", "bg"}

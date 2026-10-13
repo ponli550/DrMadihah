@@ -94,6 +94,12 @@ const check = (i, v) => { all(card(), n => n.tag === "input" && n.type === "chec
     while (Date.now() - t0 < 120000) { const v = view(); if (v.video) break; await sleep(150); }
     await sleep(400);
     out.view = view();
+  } else if (scenario === "draft") {
+    await press(button("Quick draft (half size, fast)"));
+    const t0 = Date.now();
+    while (Date.now() - t0 < 120000) { const v = view(); if (v.video) break; await sleep(150); }
+    await sleep(400);
+    out.view = view();
   } else if (scenario === "bad") {
     [0, 1, 2].forEach(i => check(i, false));
     await press(button("Make video"));

@@ -676,6 +676,11 @@ renders the same video.
   between the title and the subtitle. (ffmpeg's `drawbox` evaluates a time-based size once, so the line fades in
   instead of growing.) These behaviours are pinned by pixel tests: the zoom's first and last quarter move less than its
   middle, a pan goes the right way, a caption starts lower and settles, the accent line sits between the two texts.
+- **Quick draft** (`"quality": "draft"`, the **Quick draft** button): the same video at half size, without the grain and
+  vignette (the slow finishing filters; the colour grade stays) and with a fast encode. **A draft has exactly the
+  final's timings** (same pieces, same cuts, same length), so what you preview is what you will get; only the pixels
+  are cheaper. Measured on a 6-clip, 18.5 s reel: 5.0 s against 45.7 s, and 1.8 MB against 10.8 MB. Drafts are named
+  `...-draft-...` and labelled in the list. Use drafts to try looks and orderings, then press Make video.
 - **On-screen text** is drawn by macOS (AppKit, via `osascript -l JavaScript`) into a transparent PNG and laid
   over with ffmpeg, because **this ffmpeg has no `drawtext` and no libass**. It supports Malay, Indonesian and
   emoji, fits the text to its box, and puts captions on a soft plate so they read over any picture. Captions sit

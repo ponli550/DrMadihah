@@ -118,6 +118,13 @@ class Card(unittest.TestCase):
         self.assertEqual(len(files), 1)
         self.assertIn(files[0], v["video"])
 
+    def test_quick_draft_makes_a_half_size_video_labelled_as_a_draft(self):
+        v = self.run_js("draft")["view"]
+        self.assertIn("Quick draft (half size, fast)", v["buttons"])
+        self.assertRegex(v["video"] or "", r"-reels-draft-\d{8}-\d{6}\.mp4$")
+        self.assertIn("· draft", v["jobs"], "the job line says it is a draft")
+        self.assertIn("draft ·", v["jobs"], "and so does the finished-videos list")
+
     def test_a_recipe_that_cannot_be_made_says_why_in_the_card(self):
         v = self.run_js("bad")["view"]
         self.assertIn("err", v["noticeClass"].split(), "a failure is red")
