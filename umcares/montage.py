@@ -945,6 +945,36 @@ def exports(root) -> list:
     return out
 
 
+EXPORT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.mp4")
+
+
+def delete_export(root, name) -> dict:
+    """Delete one finished video and its small .json sidecar from the project's exports folder, nothing else.
+
+    A video is cheap to make again (its recipe is in the sidecar and in saved recipes), so this is a real delete, not a
+    trash folder: the point is to give the disk back. Only a plain file name matching an export is accepted, so no path
+    can be built from the name, and a video still being written (.part) is never touched.
+    Returns {"deleted": [names], "freed": bytes}.
+    """
+    if not isinstance(name, str) or not EXPORT_NAME.fullmatch(name) or ".part" in name:
+        raise MontageError("that is not the name of a finished video")
+    folder = Path(root) / "exports"
+    video = folder / name
+    if not video.is_file() or video.is_symlink():
+        raise MontageError(f"{name} is not in this project's exports")
+    gone, freed = [], 0
+    for f in (video, video.with_suffix(".json")):
+        if f.is_file() and not f.is_symlink():
+            try:
+                size = f.stat().st_size
+                f.unlink()
+            except OSError as e:
+                raise MontageError(f"could not delete {f.name}: {e.strerror or e}") from None
+            gone.append(f.name)
+            freed += size
+    return {"deleted": gone, "freed": freed}
+
+
 # ------------------------------------------------------------------ saved recipes and the brief for an AI
 RECIPE_SUFFIX = ".montage.json"
 

@@ -804,6 +804,11 @@ Each clip is probed and gets the least work that makes it safe:
 | remux | picture fine, audio (not AAC 48 kHz) or layout (not faststart) is not | rewrite the container, no re-encode |
 | reencode | anything wrong with the picture | libx264 CRF 16 (the project's existing setting), constant frame rate, rotation applied, limited-range yuv420p, AAC 192k 48 kHz stereo, faststart |
 
+- **Deleting a finished video:** each video in the list has a **Delete** button (with a confirm box naming the file and its
+  size). It removes that `.mp4` and its `.json` sidecar from `exports/` and nothing else, and is a real delete, not a
+  trash folder, because a video is cheap to make again and the point is to give the disk back. The name must be a plain
+  export file name (no path can be built from it), a video still being written (`.part`) and symlinks are refused, and
+  it needs the same guard header and owner login as every other write. Saved recipes are separate and stay.
 - **Variable frame rate** is detected from the actual frame timestamps (uneven gaps), not just the reported
   rate, plus rates that are not standard (an Android phone's 30.32 fps). The target is the nearest standard
   rate (24, 23.976, 25, 29.97, 30, 50, 59.94, 60). **120 and 240 are kept as they are**, so slow-motion footage

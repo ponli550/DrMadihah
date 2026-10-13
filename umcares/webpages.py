@@ -593,6 +593,13 @@ function createMontage(opts) {
       catch (e) { say("Select and copy this brief:"); noticeBox.append(el("textarea", {rows: 8, value: text, readOnly: true})); }
     } catch (e) { say("Could not load the brief (" + e.message + ")", [], true); }
   }
+  async function removeExport(x) {
+    if (!confirm("Delete " + x.name + " (" + mb(x.size) + ")? This cannot be undone; you can make it again from its recipe.")) return;
+    try {
+      const d = await call("POST", "/api/montage/delete-export", JSON.stringify({name: x.name}));
+      await load(); renderJobs(); say("Deleted " + x.name + " and freed " + mb(d.freed) + ".");
+    } catch (e) { say("Could not delete: " + e.message, e.problems, true); }
+  }
   async function cancel() { try { await call("POST", "/api/montage/cancel", "{}"); } catch (e) {} poll(); }
   function renderJobs() {
     if (!jobsBox || !st) return;
@@ -606,14 +613,18 @@ function createMontage(opts) {
       kids.push(el("div", {className: "urow"}, line, (j.state === "running" || j.state === "queued") ? el("progress", {max: 100, value: j.percent}) : ""));
       if (n === 0) (j.warnings || []).forEach(w => kids.push(el("div", {className: "dim"}, "⚠ " + w)));     // only the newest job's
     });
-    const latest = st.jobs.filter(j => j.state === "done").slice(-1)[0];
+    const latest = st.jobs.filter(j => j.state === "done" && st.exports.some(x => x.name === j.output)).slice(-1)[0];     // not a video that was deleted
     if (latest) kids.push(el("video", {className: "thumb", controls: true, playsInline: true, src: BASE + "/exports/" + encodeURIComponent(latest.output)}));
     if (st.active) { const stop = el("button", {type: "button", className: "alt"}, "Cancel"); stop.addEventListener("click", cancel); kids.push(stop); }
     if (st.exports.length) {
       kids.push(el("div", {className: "dim"}, "Finished videos"));
-      st.exports.slice(0, 6).forEach(x => kids.push(el("div", {className: "row"},
-        el("a", {href: BASE + "/exports/" + encodeURIComponent(x.name), target: "_blank"}, x.name),
-        el("span", {className: "dim"}, (x.quality === "draft" ? "draft · " : "") + (x.duration ? secs(x.duration) + " · " : "") + mb(x.size)))));
+      st.exports.slice(0, 12).forEach(x => {
+        const del = el("button", {type: "button", className: "mv", title: "Delete this video"}, "Delete");
+        del.addEventListener("click", () => removeExport(x));
+        kids.push(el("div", {className: "row"},
+          el("a", {href: BASE + "/exports/" + encodeURIComponent(x.name), target: "_blank"}, x.name),
+          el("span", {}, el("span", {className: "dim"}, (x.quality === "draft" ? "draft · " : "") + (x.duration ? secs(x.duration) + " · " : "") + mb(x.size) + " "), del)));
+      });
     }
     jobsBox.replaceChildren(...kids);
   }

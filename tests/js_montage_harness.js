@@ -24,10 +24,13 @@ ids.retry.hidden = true; ids.detailsBtn.hidden = true;
 const document = { title: "", getElementById: id => ids[id], createElement: mk };
 
 const calls = [];
+const confirms = [];
+let answer = true;
 let clip = null;
 const ctx = vm.createContext({
   document, console, performance, Date, Math, JSON, Object, Array, Promise, Error, Blob, File, URLSearchParams, Set,
   prompt: () => "My reel",
+  confirm: m => { confirms.push(m); return answer; },
   navigator: { clipboard: { writeText: async t => { clip = t; } } }, window: { addEventListener() {} }, location: { search: "" },
   fetch: async (path, init = {}) => { calls.push((init.method || "GET").toUpperCase() + " " + path.replace(/^\/umcares\/p\/[^/]+/, "")); return realFetch(path, init); },
   setTimeout: (f, ms) => setTimeout(f, Math.min(ms, 50)), setInterval, clearInterval, encodeURIComponent,
@@ -115,6 +118,21 @@ const check = (i, v) => { all(card(), n => n.tag === "input" && n.type === "chec
     while (Date.now() - t0 < 120000) { const v = view(); if (v.video) break; await sleep(150); }
     await sleep(400);
     out.view = view();
+  } else if (scenario === "delete") {
+    selects()[1].value = "punchy";
+    await press(button("Make video"));
+    const t0 = Date.now();
+    while (Date.now() - t0 < 120000) { const v = view(); if (v.video) break; await sleep(150); }
+    await sleep(400);
+    out.before = view();
+    answer = false;                                                   // "Cancel" in the confirm box: nothing may happen
+    await press(button("Delete"));
+    out.declined = view();
+    answer = true;
+    await press(button("Delete"));
+    await sleep(400);
+    out.after = view();
+    out.confirms = confirms;
   } else if (scenario === "draft") {
     await press(button("Quick draft (half size, fast)"));
     const t0 = Date.now();

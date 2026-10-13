@@ -833,6 +833,8 @@ def make_handler(home, owner: str):
             try:
                 if action == "cancel":
                     return self._json(200, {"cancelled": montage.RENDERER.cancel(root)})
+                if action == "delete-export":
+                    return self._json(200, montage.delete_export(root, body.get("name")))
                 if action == "recipes":
                     name = montage.save_recipe(root, body.get("name"), body.get("recipe"))
                     projects.commit_files(root, [f"recipes/{name}"], f"recipes: save {name}")
@@ -863,7 +865,7 @@ def make_handler(home, owner: str):
             m = re.fullmatch(r"/p/([a-z0-9-]+)(/api/upload/.*)", path)
             if m:
                 return self._upload(m.group(1), m.group(2), method, query)
-            m = re.fullmatch(r"/p/([a-z0-9-]+)/api/montage(?:/(cancel|recipes))?", path)
+            m = re.fullmatch(r"/p/([a-z0-9-]+)/api/montage(?:/(cancel|recipes|delete-export))?", path)
             if m and method == "POST":
                 return self._montage_write(m.group(1), m.group(2) or "make")
             m = re.fullmatch(r"/p/([a-z0-9-]+)/api/prepare(/cancel)?", path)

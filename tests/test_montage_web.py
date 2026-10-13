@@ -124,6 +124,69 @@ class Routes(unittest.TestCase):
         self.assertIn("sound", p["segments"][1], "whether a clip keeps its sound reaches the page")
         self.assertIsNone(self.post({"recipe": recipe([{"media": "land.jpg"}]), "dry_run": True})[1]["plan"]["sync"])
 
+    # ------------------------------------------------------------ deleting a finished video
+    def exports_dir(self):
+        d = self.root / "exports"
+        d.mkdir(exist_ok=True)
+        return d
+
+    def fake_export(self, name="reel-20261013-101010.mp4", size=2000):
+        d = self.exports_dir()
+        (d / name).write_bytes(b"v" * size)
+        (d / name).with_suffix(".json").write_text("{}")
+        return name
+
+    def test_deleting_removes_the_video_and_its_sidecar_and_nothing_else(self):
+        name, other = self.fake_export(), self.fake_export("other-20261013-101011.mp4")
+        (self.root / "recipes").mkdir(exist_ok=True)
+        (self.root / "recipes" / "keep.montage.json").write_text("{}")
+        status, d = self.post({"name": name}, "/p/demo/api/montage/delete-export")
+        self.assertEqual(status, 200)
+        self.assertEqual(sorted(d["deleted"]), sorted([name, name.replace(".mp4", ".json")]))
+        self.assertEqual(d["freed"], 2000 + 2)
+        self.assertEqual(self.req("GET", f"/p/demo/exports/{name}")[0], 404)
+        self.assertTrue((self.exports_dir() / other).is_file(), "another video is untouched")
+        self.assertTrue((self.root / "recipes" / "keep.montage.json").is_file())
+        self.assertEqual([x["name"] for x in self.get()[1]["exports"]], [other])
+
+    def test_deleting_needs_the_guard_header_and_json(self):
+        name = self.fake_export()
+        self.assertEqual(self.post({"name": name}, "/p/demo/api/montage/delete-export", {"Content-Type": "application/json"})[0], 403)
+        self.assertEqual(self.post({"name": name}, "/p/demo/api/montage/delete-export", {"X-Requested-With": "umcares", "Content-Type": "text/plain"})[0], 403)
+        self.assertEqual(self.req("GET", "/p/demo/exports/" + name)[0], 200, "a refused request deletes nothing")
+
+    def test_no_name_can_reach_outside_the_exports_folder_or_a_half_written_video(self):
+        self.fake_export()
+        (self.root / "assets" / "photos" / "keep.mp4").parent.mkdir(parents=True, exist_ok=True)
+        (self.root / "assets" / "photos" / "keep.mp4").write_bytes(b"x")
+        (self.exports_dir() / ".hidden-20261013.part.mp4").write_bytes(b"x")
+        (self.exports_dir() / "notes.txt").write_text("x")
+        (self.exports_dir() / "reel-20261013-999999.part.mp4").write_bytes(b"x")      # a video still being written
+        for bad in ("../assets/photos/keep.mp4", "..%2Fassets%2Fphotos%2Fkeep.mp4", "/etc/passwd", "a/b.mp4", "..", "", None, 7, ["x.mp4"],
+                    ".hidden-20261013.part.mp4", "reel-20261013-999999.part.mp4", "notes.txt", "reel-20261013-101010.json", "missing-20261013.mp4", "x" * 200 + ".mp4"):
+            with self.subTest(bad=bad):
+                status, d = self.post({"name": bad}, "/p/demo/api/montage/delete-export")
+                self.assertEqual(status, 400, d)
+        self.assertTrue((self.root / "assets" / "photos" / "keep.mp4").is_file())
+        self.assertTrue((self.exports_dir() / ".hidden-20261013.part.mp4").is_file())
+        self.assertTrue((self.exports_dir() / "reel-20261013-999999.part.mp4").is_file())
+        self.assertTrue((self.exports_dir() / "notes.txt").is_file())
+        self.assertTrue((self.exports_dir() / "reel-20261013-101010.mp4").is_file())
+
+    def test_a_symlink_in_exports_is_never_followed(self):
+        target = self.root / "assets" / "photos" / "precious.mp4"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"precious")
+        os.symlink(target, self.exports_dir() / "link-20261013.mp4")
+        self.assertEqual(self.post({"name": "link-20261013.mp4"}, "/p/demo/api/montage/delete-export")[0], 400)
+        self.assertTrue(target.is_file())
+
+    def test_a_visitor_who_is_not_the_owner_cannot_delete(self):
+        name = self.fake_export()
+        status, _, _ = self.req("POST", "/p/demo/api/montage/delete-export", {**JSON, "Tailscale-User-Login": "stranger@x.com"}, json.dumps({"name": name}).encode())
+        self.assertEqual(status, 403)
+        self.assertTrue((self.exports_dir() / name).is_file())
+
     def test_making_a_video_renders_it_and_the_file_can_be_played_with_seeking(self):
         status, d = self.post({"recipe": recipe([{"media": "land.jpg", "caption": "Opening"}, {"media": "port.jpg"}, {"media": "clip.mp4"}])})
         self.assertEqual(status, 200)

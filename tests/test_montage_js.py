@@ -96,6 +96,22 @@ class Card(unittest.TestCase):
         self.assertIn("75 BPM grid", plan)
         self.assertIn("no audio", plan)
 
+    def test_deleting_a_finished_video_asks_first_and_then_removes_it_from_the_page_and_the_disk(self):
+        out = self.run_js("delete")
+        name = out["before"]["links"][0].rsplit("/", 1)[-1]
+        self.assertTrue(name.endswith(".mp4"))
+        self.assertIn("Delete", out["before"]["buttons"])
+        self.assertEqual(len(out["confirms"]), 2)
+        self.assertIn(name, out["confirms"][0], "the box says which video")
+        self.assertIn("cannot be undone", out["confirms"][0])
+        self.assertEqual(out["declined"]["links"], out["before"]["links"], "answering Cancel deletes nothing")
+        self.assertTrue(out["declined"]["video"])
+        self.assertEqual(out["after"]["links"], [], "the video is gone from the list")
+        self.assertIsNone(out["after"]["video"], "and its player is not left pointing at a missing file")
+        self.assertFalse((self.root / "exports" / name).exists())
+        self.assertFalse((self.root / "exports" / name).with_suffix(".json").exists())
+        self.assertIn("Deleted " + name, out["after"]["notice"])
+
     def test_moving_a_picture_later_changes_the_order_of_the_plan(self):
         out = self.run_js("reorder")
         self.assertEqual(out["before"]["rows"][0]["text"], " 🖼 The dean opening the event")
