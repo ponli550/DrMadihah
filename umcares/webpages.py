@@ -652,9 +652,11 @@ function createMontage(opts) {
       sync: el("input", {type: "checkbox", checked: form.sync, disabled: !form.music}),
       speech: el("input", {type: "checkbox", checked: form.speech}),
       sound: el("input", {type: "checkbox", checked: form.sound}),
-      bpm: el("input", {type: "number", min: 50, max: 200, step: "any", placeholder: "or a song's BPM, no audio (e.g. 75)", value: form.bpm}),
+      bpm: el("input", {type: "text", inputMode: "decimal", maxLength: 6, autocomplete: "off", placeholder: "BPM, a number from 50 to 200", value: form.bpm}),
       max: select([["15", "up to 15 s"], ["30", "up to 30 s"], ["45", "up to 45 s"], ["60", "up to 60 s"], ["90", "up to 90 s"]], form.max),
     };
+    // a plain text box that keeps only digits and a dot: a number box lets "e" in, and then refuses everything typed after it
+    ctl.bpm.addEventListener("input", () => { const v = ctl.bpm.value.replace(/[^0-9.]/g, ""); if (v !== ctl.bpm.value) ctl.bpm.value = v; });
     ctl.music.addEventListener("change", () => { ctl.sync.disabled = !ctl.music.value; if (!ctl.music.value) ctl.sync.checked = false; });
     listBox = el("div", {}); planBox = el("div", {}); noticeBox = el("div", {className: "notice ok"}); jobsBox = el("div", {});
     const go = el("button", {type: "button"}, "Make video");
@@ -680,11 +682,11 @@ function createMontage(opts) {
       el("div", {className: "dim"}, "Pick the look and the pictures; every timing is worked out for you."),
       el("div", {className: "dim"}, "Format"), ctl.format, el("div", {className: "dim"}, "Look"), ctl.template,
       ctl.title, el("label", {className: "row"}, el("span", {}, ctl.captions, " Show captions on screen")),
-      el("div", {className: "dim"}, "Music"), ctl.music,
+      el("div", {className: "dim"}, "Music: pick a song from this list (no typing). To add one, press “Add a song” at the top of the page."), ctl.music,
       el("label", {className: "row"}, el("span", {}, ctl.sync, " Cut on the beat of the music (hard cuts)")),
       el("label", {className: "row"}, el("span", {}, ctl.speech, " Start video clips where people speak")),
       el("label", {className: "row"}, el("span", {}, ctl.sound, " Keep the sound of clips where people speak (music dips under it)")),
-      ctl.bpm,
+      el("div", {className: "dim"}, "Or cut to a song's tempo with no audio, for a trending song you add later in Instagram: type its BPM, numbers only (e.g. 75)."), ctl.bpm,
       el("div", {className: "dim"}, "Length"), ctl.max,
       el("div", {className: "dim"}, "Pictures and clips, in order (tick to include)"), listBox,
       noticeBox, planBox, go, draft, look, keep, ask,

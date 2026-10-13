@@ -54,7 +54,7 @@ const view = () => {
     formats: labels(fmt), templates: labels(tpl), music: labels(music), lengths: labels(max),
     values: { format: fmt.value, template: tpl.value, music: music.value, max: max.value },
     rows: rowsBox.children.map(r => ({ text: r.children[0].children[0].textContent, checked: r.children[0].children[0].children[0].checked, sub: r.children[1] && r.children[1].textContent || "" })),
-    notice: deepText(err), noticeClass: err.className, plan: deepText(c.children[at + 1]), jobs: deepText(c.children[c.children.length - 1]),
+    card: deepText(c), notice: deepText(err), noticeClass: err.className, plan: deepText(c.children[at + 1]), jobs: deepText(c.children[c.children.length - 1]),
     video: (all(c, n => n.tag === "video")[0] || {}).src || null,
     poster: (all(c, n => n.tag === "video")[0] || {}).poster || null, preload: (all(c, n => n.tag === "video")[0] || {}).preload || null,
     links: all(c, n => n.tag === "a").map(a => a.href),
@@ -106,7 +106,7 @@ const check = (i, v) => { all(card(), n => n.tag === "input" && n.type === "chec
     if (music._l.change) await music._l.change();
     out.afterRemoval = { disabled: !!sync.disabled, checked: !!sync.checked };
   } else if (scenario === "tempo") {
-    all(card(), n => n.tag === "input" && n.type === "number")[0].value = "75";
+    all(card(), n => n.tag === "input" && n.type === "text")[1].value = "75";          // [0] is the title card, [1] the BPM box
     selects()[1].value = "punchy";
     await press(button("Preview plan"));
     out.view = view();

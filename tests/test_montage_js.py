@@ -91,6 +91,12 @@ class Card(unittest.TestCase):
         self.assertIn("no steady beat", out["withSync"]["plan"], "the option was sent; a plain tone has no beat to cut to")
         self.assertEqual(out["afterRemoval"], {"disabled": True, "checked": False}, "removing the song clears the option")
 
+    def test_the_card_says_which_boxes_take_text_and_which_take_a_number_or_a_pick(self):
+        card = self.run_js("card")["view"]["card"]
+        self.assertIn("pick a song from this list", card)
+        self.assertIn("Add a song", card, "and says where a song comes from")
+        self.assertIn("numbers only", card, "the BPM box says it takes a number, because a browser silently drops letters typed into it")
+
     def test_a_typed_tempo_cuts_to_that_grid_without_audio(self):
         plan = self.run_js("tempo")["view"]["plan"]
         self.assertIn("75 BPM grid", plan)

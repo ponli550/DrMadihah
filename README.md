@@ -763,6 +763,11 @@ renders the same video.
   noise 1.2). Then the plan keeps the template pacing and **warns that no beat was found**, rather than cutting at a
   guessed rhythm. The grid is found to about 10 ms on synthetic kicks; real music is looser, so listen to the first
   render. Results are cached in `.umcares/beats/` (first analysis of a 3-minute song is a few seconds of Python).
+- **What the boxes take:** the Music box is a **pick list** (no typing; add a song with the **Add a song** button), and the
+  BPM box is a **text box that keeps only digits and a dot**. It is not a number box on purpose: a browser's number box lets
+  the letter `e` in (so typing a song name leaves junk) and then refuses every digit typed after it, which looks like "I can't
+  type". `tests/test_browser.py` checks this in real headless Chrome (`tests/browser.py`, standard library only; skipped
+  when Chrome is not installed), the first test here that sees what a browser really does with a form.
 - **Cut to a stated tempo, no audio** (`"music": {"bpm": 75}`, the **BPM** box in the page when no song is chosen): for a
   trending sound that cannot be downloaded. Pieces become whole beats from the first frame (a cut every 2 beats at 75
   BPM = 1.6 s) and the video has **no audio**; add the song in Instagram's own picker and start it on a beat at the
