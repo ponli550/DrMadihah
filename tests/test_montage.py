@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from umcares import captions, montage, prepare, projects, textimg, uploads
+from umcares import captions, kinetic, montage, prepare, projects, textimg, uploads
 from tests.test_prepare import make_conformant, put
 
 FF, FP = prepare.find_tool("ffmpeg"), prepare.find_tool("ffprobe")
@@ -1184,6 +1184,94 @@ class SpeechFollow(Fixtures):
         job, out = self.render(recipe([{"media": "speaker.mp4"}, {"media": "land.jpg"}], template="punchy", quality="draft", speech="follow"))
         self.assertEqual(job["state"], "done", job["error"])
         self.assertAlmostEqual(stats(out)["dur"], job["total"], delta=0.1)
+
+
+@NEED
+class Kinetic(Fixtures):
+    """The kinetic-type look: words pop in one after another, the last in the accent colour, all inside the frame."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        ff("-f", "lavfi", "-i", "color=c=0x202020:s=640x360", "-frames:v", "1", str(cls.fx / "dark.jpg"))   # so any bright pixel is text
+
+    def counts(self, path, at, w=216, h=384):
+        """(white-ish pixels, accent-yellow pixels, white-ish pixels in the outer 3% of the width) in the frame at `at` seconds."""
+        d = frame(path, at, w, h)
+        white = accent = edge = 0
+        margin = max(2, int(w * 0.03))
+        for i in range(0, len(d), 3):
+            r, g, b = d[i], d[i + 1], d[i + 2]
+            x = (i // 3) % w
+            if r > 200 and g > 200 and b > 200:
+                white += 1
+                if x < margin or x >= w - margin:
+                    edge += 1
+            elif r > 200 and g > 170 and b < 130:
+                accent += 1
+        return white, accent, edge
+
+    def make(self, caption, hold=3.0, **kw):
+        self.add("dark.jpg")
+        captions.set_detail(self.root, self.sha("dark.jpg"), caption)
+        job, out = self.render(recipe([{"media": "dark.jpg", "hold": hold}], template="kinetic", **kw))
+        self.assertEqual(job["state"], "done", job["error"])
+        return job, out
+
+    def test_the_words_arrive_one_after_another_and_the_last_is_in_the_accent_colour(self):
+        job, out = self.make("Dua hari satu")
+        before, mid, later, end = (self.counts(out, t) for t in (0.02, 0.45, 0.95, 2.0))
+        self.assertEqual(before[0], 0, "nothing is on screen before the first word")
+        self.assertGreater(mid[0], 0, "the first word has arrived")
+        self.assertGreater(later[0], mid[0], "a second word has arrived")
+        self.assertEqual((before[1], mid[1], later[1]), (0, 0, 0), "the accent colour is only for the last word, which has not arrived yet")
+        self.assertGreater(end[1], 50, "the third and last word arrives in the accent colour")
+        self.assertEqual(end[0], later[0], "so it adds accent pixels, not white ones")
+
+    def test_no_word_touches_the_edge_even_for_a_long_caption(self):
+        job, out = self.make("Hackathon dibuka oleh Dekan hari ini dengan penuh semangat", hold=4.0)
+        white, accent, edge = self.counts(out, 3.6)
+        self.assertGreater(white + accent, 100)
+        self.assertEqual(edge, 0, "text is kept off the outer 3% of the frame")
+
+    def test_captions_off_means_no_words(self):
+        job, out = self.make("Dua hari satu", captions=False)
+        self.assertEqual(self.counts(out, 2.0)[:2], (0, 0))
+
+    def test_a_title_card_has_words_and_a_subtitle_and_a_draft_has_the_same_timings(self):
+        self.add("dark.jpg")
+        rec = recipe([{"media": "dark.jpg", "hold": 2}], template="kinetic", title_card={"text": "Hari Terbuka", "subtitle": "Universiti Malaya"},
+                     end_card={"text": "Jumpa lagi"})
+        job, out = self.render(rec)
+        self.assertEqual(job["state"], "done", job["error"])
+        white, accent, _ = self.counts(out, 2.2)
+        self.assertGreater(white, 100, "the title's words and its subtitle are on screen by the end of the title card")
+        self.assertGreater(accent, 50)
+        final = montage.plan_for(rec, self.root)
+        draft = montage.plan_for({**rec, "quality": "draft"}, self.root)
+        self.assertEqual([(s["start"], s["duration"]) for s in final["segments"]], [(s["start"], s["duration"]) for s in draft["segments"]])
+
+    def test_it_renders_in_every_format_and_cuts_hard(self):
+        self.add("dark.jpg")
+        captions.set_detail(self.root, self.sha("dark.jpg"), "Dua hari satu cabaran")
+        self.assertEqual(montage.plan_for(recipe([{"media": "dark.jpg"}, {"media": "dark.jpg"}], template="kinetic"), self.root)["fade"], 0.0)
+        for fmt, size in (("square", 324), ("wide", 576)):
+            with mock.patch.dict(montage.FORMATS[fmt], width=size, height=324):
+                job, out = self.render(recipe([{"media": "dark.jpg"}], template="kinetic", format=fmt))
+            self.assertEqual(job["state"], "done", f"{fmt}: {job['error']}")
+
+    def test_on_a_tempo_the_words_land_on_the_beat_grid(self):
+        self.add("dark.jpg")
+        captions.set_detail(self.root, self.sha("dark.jpg"), "Satu dua tiga")
+        job, out = self.render(recipe([{"media": "dark.jpg"}], template="kinetic", music={"bpm": 75}))
+        self.assertEqual(job["state"], "done", job["error"])
+        p = montage.plan_for(recipe([{"media": "dark.jpg"}], template="kinetic", music={"bpm": 75}), self.root)
+        self.assertEqual(p["sync"]["bpm"], 75.0)
+        half = 60 / 75 / 2                                                  # three words in a 1.6 s piece: half-beats, still on the grid
+        times = kinetic.schedule(3, p["segments"][0]["duration"], 60 / 75)
+        self.assertEqual(times[0], 0.0)
+        self.assertTrue(all(abs(round(t / half) * half - t) < 0.01 for t in times), times)
+        self.assertGreater(self.counts(out, p["segments"][0]["duration"] - 0.1)[0], 100, "all three words are up by the end")
 
 
 def gray_frame(path, at):

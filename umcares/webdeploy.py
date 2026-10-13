@@ -20,7 +20,7 @@ from . import log, projects
 from .web import BASE, DEFAULT_PORT
 
 LABEL = "com.umcares.web"
-PACKAGE_FILES = ["__init__.py", "layout.py", "projects.py", "uploads.py", "prepare.py", "textimg.py", "beats.py", "speech.py", "collage.py", "montage.py", "captions.py", "webpages.py", "web.py"]
+PACKAGE_FILES = ["__init__.py", "layout.py", "projects.py", "uploads.py", "prepare.py", "textimg.py", "beats.py", "speech.py", "kinetic.py", "collage.py", "montage.py", "captions.py", "webpages.py", "web.py"]
 PACKAGE_DIR = Path(__file__).resolve().parent
 
 

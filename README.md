@@ -719,6 +719,18 @@ renders the same video.
 - **Everything is composed over a blurred copy of itself**, so a portrait photo in a 9:16 frame is never cropped
   and a landscape one never loses its sides. (ffprobe does not report an EXIF-rotated photo's true shape, so
   composing the same way every time is also simpler than detecting it.) Photos get a slow zoom; clips can be slowed.
+- **The `kinetic` look (kinetic type)** is built in `kinetic.py` and reuses the normal picture composition: only the text is
+  different. A caption or title becomes big bold words (upper case, `HelveticaNeue-CondensedBlack`, on both Macs) that pop in
+  one line after another, stacked and centred, the **last line in the accent colour** (`#ffe14d`), over a darkened picture
+  with a slow punch-in and hard cuts. At most 10 words (a longer caption is cut), grouped two or three to a line so the block
+  never exceeds 5 lines. **On the beat:** when the video is cut to a song or a stated tempo, the first line lands on the
+  piece's first frame and the lines follow on beats, dropping to half-beats if the caption is long; off the beat they are
+  spread evenly. Title and end cards use the same words on a dark card, with the subtitle fading in after the last line.
+  Tests render real frames and count pixels: nothing is on screen before the first word, words arrive one at a time, the
+  accent colour appears only with the last word, and nothing touches the outer 3% of the frame. **A bug the frames showed:**
+  the text renderer keeps its padding free on every side, so a one-line-high canvas shrank the type to a third of the size
+  asked for; the canvas is now taller by the padding and shifted back (a test fails if that is undone). The look is meant for
+  short, punchy captions: a paragraph is not readable this way.
 - **The `collage` look (Vox style, paper cut-outs)** is built in `collage.py` with ffmpeg alone. Paper is flat cream with
   static grain (no vignette: it turns paper grey). A photo is a **cut-out card**: halftone dot screen, white border, soft
   shadow, two strips of tape, a slight tilt that alternates between pieces. A clip gets the same card, built on every

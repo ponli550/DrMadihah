@@ -36,7 +36,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import beats, captions, prepare, speech, textimg, uploads
+from . import beats, captions, kinetic, prepare, speech, textimg, uploads
 from .layout import kind_of
 
 FORMATS = {
@@ -64,6 +64,11 @@ TEMPLATES = {
                    "photo_hold": 3.4, "video_max": 4.5, "video_speed": 0.8, "fade": 0.9, "zoom": 0.12, "vignette": True, "grain": 10,
                    "grade": "eq=saturation=0.7:contrast=1.05,colorbalance=rs=-.05:bs=.07:rm=-.03:bm=.05", "bg": "#0d1117",
                    "accent": "#8fb3c9", "moves": ["in", "out"]},
+    "kinetic": {"label": "Kinetic type",
+                "blurb": "Big bold words pop in one by one (on the beat when you cut to one) over darkened pictures, hard cuts, slow punch-in.",
+                "photo_hold": 2.0, "video_max": 3.0, "video_speed": 1.0, "fade": 0.0, "zoom": 0.10, "vignette": False, "grain": 0,
+                "grade": "eq=brightness=-0.2:contrast=1.15:saturation=0.85", "bg": "#0a0a0c", "accent": "#ffe14d",
+                "moves": ["in", "out"], "style": "kinetic"},
     "collage": {"label": "Paper collage (Vox style)",
                 "blurb": "Cut-out photos on paper with tape and shadows, hard cuts, a stop-motion wobble, marker lettering.",
                 "photo_hold": 2.2, "video_max": 3.5, "video_speed": 1.0, "fade": 0.0, "zoom": 0.0, "vignette": False, "grain": 0,
@@ -596,9 +601,26 @@ def _piece_command(ffmpeg, plan, seg, i, workdir: Path, out: Path):
     if tpl.get("style") == "collage":                        # a different way of drawing the whole piece
         from . import collage
         return collage.piece_commands(_base, ffmpeg, plan, seg, i, workdir, out, _encode_piece(plan), root_of(plan))
+    kin = tpl.get("style") == "kinetic"                      # same pictures, the words drawn as popping lines (kinetic.py)
+    period = 60.0 / plan["sync"]["bpm"] if plan.get("sync") else None
     look = _look(tpl, plan.get("quality") == "draft")
     steps = []
     glide = lambda start, dur: f"pow(1-min(1,max(0,(t-{start})/{dur})),3)"          # 1 -> 0 along an ease-out curve
+    if seg["kind"] in ("title", "end") and kin:
+        inputs = ["-f", "lavfi", "-i", f"color=c={tpl['bg']}:s={W}x{H}:r={fps}:d={d}"]
+        more, graph, lines, times, y_end = kinetic.overlay(workdir, f"seg{i}", seg["text"], W, H, fps, d, tpl["accent"], period, 1, "[0:v]", "[o]",
+                                                           centre=0.44 if seg["subtitle"] else 0.5)
+        inputs += more
+        last = "[o]"
+        if seg["subtitle"]:
+            sub = _text_png(workdir, seg["subtitle"], f"seg{i}-s", W, int(H * 0.12), size=int(H * 0.03), valign="top", color="#d0d4da", pad=max(4, int(W * 0.05)))
+            inputs += ["-loop", "1", "-framerate", str(fps), "-t", str(d), "-i", str(sub)]
+            at = round(times[-1] + 0.25, 3)
+            graph += (f";[{1 + len(lines)}:v]format=rgba,fade=t=in:st={at}:d=0.3:alpha=1[sb];"
+                      f"[o][sb]overlay=0:{min(int(H * 0.88), y_end + int(H * 0.02))}:format=auto[o2]")
+            last = "[o2]"
+        graph += f";{last}format=yuv420p[out]"
+        return [(_base(ffmpeg) + inputs + ["-filter_complex", graph, "-map", "[out]", "-t", str(d), "-r", str(fps)] + _encode_piece(plan) + [str(out)], d)]
     if seg["kind"] in ("title", "end"):
         # Title above, subtitle below, as two boxes that cannot overlap: the title text is bottom-aligned in a box that ends
         # at 52% of the height, the subtitle top-aligned in a box that starts at 55%. With no subtitle the title is centred.
@@ -625,7 +647,10 @@ def _piece_command(ffmpeg, plan, seg, i, workdir: Path, out: Path):
         graph += ",format=yuv420p[out]"
         return [(_base(ffmpeg) + inputs + ["-filter_complex", graph, "-map", "[out]", "-t", str(d), "-r", str(fps)] + _encode_piece(plan) + [str(out)], d)]
     overlay_in, overlay_graph = [], ""
-    if seg["text"]:
+    if seg["text"] and kin:
+        overlay_in, frag, _, _, _ = kinetic.overlay(workdir, f"seg{i}", seg["text"], W, H, fps, d, tpl["accent"], period, 1, "[v]", "[o]")
+        overlay_graph = ";" + frag
+    elif seg["text"]:
         cap_h = int(H * 0.22)
         png = _text_png(workdir, seg["text"], f"seg{i}-c", W, cap_h, size=int(H * 0.036), plate=True, valign="bottom", pad=int(W * 0.06))
         overlay_in = ["-loop", "1", "-framerate", str(fps), "-t", str(d), "-i", str(png)]
