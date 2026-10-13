@@ -136,6 +136,35 @@ class Routes(unittest.TestCase):
         (d / name).with_suffix(".json").write_text("{}")
         return name
 
+    # ------------------------------------------------------------ the poster shown while a video loads
+    def test_a_finished_video_has_a_small_poster_picture_beside_it(self):
+        self.post({"recipe": recipe([{"media": "land.jpg"}, {"media": "port.jpg"}])})
+        done = self.wait()
+        name = done["jobs"][-1]["output"]
+        self.assertTrue((self.root / "exports" / name.replace(".mp4", ".jpg")).is_file())
+        status, body, hdrs = self.req("GET", "/p/demo/exports/" + name.replace(".mp4", ".jpg"))
+        self.assertEqual((status, hdrs["Content-Type"]), (200, "image/jpeg"))
+        self.assertEqual(body[:2], b"\xff\xd8")
+        self.assertLess(len(body), 60_000, "small enough to arrive in seconds on a slow link")
+        self.assertEqual([x["name"] for x in done["exports"]], [name], "a poster is not listed as a video")
+
+    def test_an_older_export_gets_its_poster_the_first_time_it_is_asked_for(self):
+        self.post({"recipe": recipe([{"media": "land.jpg"}])})
+        name = self.wait()["jobs"][-1]["output"]
+        poster = self.root / "exports" / name.replace(".mp4", ".jpg")
+        poster.unlink()
+        self.assertEqual(self.req("GET", "/p/demo/exports/" + poster.name)[0], 200)
+        self.assertTrue(poster.is_file())
+
+    def test_a_poster_for_nothing_is_not_found_and_a_deleted_video_takes_its_poster_with_it(self):
+        self.assertEqual(self.req("GET", "/p/demo/exports/ghost-20261013.jpg")[0], 404)
+        self.assertEqual(self.req("GET", "/p/demo/exports/..%2Fx.jpg")[0], 404)
+        self.post({"recipe": recipe([{"media": "land.jpg"}])})
+        name = self.wait()["jobs"][-1]["output"]
+        d = self.post({"name": name}, "/p/demo/api/montage/delete-export")[1]
+        self.assertIn(name.replace(".mp4", ".jpg"), d["deleted"])
+        self.assertEqual(sorted(p.name for p in (self.root / "exports").iterdir() if not p.name.startswith(".")), [])
+
     def test_deleting_removes_the_video_and_its_sidecar_and_nothing_else(self):
         name, other = self.fake_export(), self.fake_export("other-20261013-101011.mp4")
         (self.root / "recipes").mkdir(exist_ok=True)

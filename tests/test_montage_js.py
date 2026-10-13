@@ -96,6 +96,12 @@ class Card(unittest.TestCase):
         self.assertIn("75 BPM grid", plan)
         self.assertIn("no audio", plan)
 
+    def test_the_player_shows_a_poster_at_once_and_loads_only_the_metadata(self):
+        v = self.run_js("make")["view"]
+        self.assertTrue(v["video"].endswith(".mp4"))
+        self.assertEqual(v["poster"], v["video"].replace(".mp4", ".jpg"))
+        self.assertEqual(v["preload"], "metadata")
+
     def test_deleting_a_finished_video_asks_first_and_then_removes_it_from_the_page_and_the_disk(self):
         out = self.run_js("delete")
         name = out["before"]["links"][0].rsplit("/", 1)[-1]

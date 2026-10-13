@@ -918,6 +918,7 @@ class Renderer:
         public_plan = {k: v for k, v in plan.items() if k != "_root"}
         sidecar.write_text(json.dumps({"recipe": job["_recipe"], "plan": public_plan, "result": info,
                                        "made": time.strftime("%Y-%m-%dT%H:%M:%S")}, indent=2, ensure_ascii=False), encoding="utf-8")
+        poster_for(final)                                   # best effort: a small first-frame picture to show while the video loads
         self._end(job, "done", output=final.name)
 
 
@@ -945,11 +946,38 @@ def exports(root) -> list:
     return out
 
 
+def poster_for(video: Path):
+    """A small JPEG of a finished video (beside it, same name), made if missing; None if it cannot be made.
+
+    Why: over a slow link a video element is a black box until enough of the file has arrived. A ~15 KB picture
+    arrives in seconds, so the page shows the video's first frame at once and plays when it can.
+    """
+    video = Path(video)
+    poster = video.with_suffix(".jpg")
+    if poster.is_file():
+        return poster
+    ffmpeg = prepare.find_tool("ffmpeg")
+    if not ffmpeg or not video.is_file() or ".part" in video.name:
+        return None
+    tmp = poster.with_name(poster.stem + ".part.jpg")
+    try:
+        subprocess.run([ffmpeg, "-v", "error", "-y", "-ss", "0.8", "-i", str(video), "-frames:v", "1", "-vf", "scale=360:-2", "-q:v", "6", str(tmp)],
+                       capture_output=True, timeout=30, check=True)
+        if not tmp.is_file() or tmp.stat().st_size == 0:                # a clip shorter than the seek point gives no frame
+            subprocess.run([ffmpeg, "-v", "error", "-y", "-i", str(video), "-frames:v", "1", "-vf", "scale=360:-2", "-q:v", "6", str(tmp)],
+                           capture_output=True, timeout=30, check=True)
+        os.replace(tmp, poster)
+    except (subprocess.SubprocessError, OSError):
+        tmp.unlink(missing_ok=True)
+        return None
+    return poster
+
+
 EXPORT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.mp4")
 
 
 def delete_export(root, name) -> dict:
-    """Delete one finished video and its small .json sidecar from the project's exports folder, nothing else.
+    """Delete one finished video, its small .json sidecar and its .jpg poster from the project's exports folder, nothing else.
 
     A video is cheap to make again (its recipe is in the sidecar and in saved recipes), so this is a real delete, not a
     trash folder: the point is to give the disk back. Only a plain file name matching an export is accepted, so no path
@@ -963,7 +991,7 @@ def delete_export(root, name) -> dict:
     if not video.is_file() or video.is_symlink():
         raise MontageError(f"{name} is not in this project's exports")
     gone, freed = [], 0
-    for f in (video, video.with_suffix(".json")):
+    for f in (video, video.with_suffix(".json"), video.with_suffix(".jpg")):
         if f.is_file() and not f.is_symlink():
             try:
                 size = f.stat().st_size

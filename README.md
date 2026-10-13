@@ -832,6 +832,10 @@ Each clip is probed and gets the least work that makes it safe:
 | remux | picture fine, audio (not AAC 48 kHz) or layout (not faststart) is not | rewrite the container, no re-encode |
 | reencode | anything wrong with the picture | libx264 CRF 16 (the project's existing setting), constant frame rate, rotation applied, limited-range yuv420p, AAC 192k 48 kHz stereo, faststart |
 
+- **A poster for each video:** next to every export is a small first-frame JPEG (`<name>.jpg`, about 15 KB), made when the
+  render finishes (and on first request for an older export). The page's player shows it at once and loads only the video's
+  metadata, because over a slow link (measured 7-10 kB/s) a 12 MB video is a black box for many minutes. Above 4 MB the page
+  also says to download the file instead of streaming it. The poster is deleted with its video and is not listed as a video.
 - **Deleting a finished video:** each video in the list has a **Delete** button (with a confirm box naming the file and its
   size). It removes that `.mp4` and its `.json` sidecar from `exports/` and nothing else, and is a real delete, not a
   trash folder, because a video is cheap to make again and the point is to give the disk back. The name must be a plain

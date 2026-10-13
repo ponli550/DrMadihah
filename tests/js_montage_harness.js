@@ -56,6 +56,7 @@ const view = () => {
     rows: rowsBox.children.map(r => ({ text: r.children[0].children[0].textContent, checked: r.children[0].children[0].children[0].checked, sub: r.children[1] && r.children[1].textContent || "" })),
     notice: deepText(err), noticeClass: err.className, plan: deepText(c.children[at + 1]), jobs: deepText(c.children[c.children.length - 1]),
     video: (all(c, n => n.tag === "video")[0] || {}).src || null,
+    poster: (all(c, n => n.tag === "video")[0] || {}).poster || null, preload: (all(c, n => n.tag === "video")[0] || {}).preload || null,
     links: all(c, n => n.tag === "a").map(a => a.href),
     buttons: all(c, n => n.tag === "button").map(b => b.textContent).filter(t => !["↑", "↓"].includes(t)),
     saved: all(c, n => n.className === "urow" && n.parent === c).map(r => deepText(r)),

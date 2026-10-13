@@ -626,7 +626,9 @@ def make_handler(home, owner: str):
             if rest.startswith("/exports/"):
                 name = rest[len("/exports/"):]
                 p = root / "exports" / name
-                ok = re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.(mp4|json)", name) and p.is_file() and ".part" not in name
+                if name.endswith(".jpg") and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.jpg", name) and ".part" not in name and not p.is_file():
+                    montage.poster_for(p.with_suffix(".mp4"))        # an older export has no poster yet: make it now (one fast ffmpeg)
+                ok = re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.(mp4|json|jpg)", name) and p.is_file() and ".part" not in name
                 return self._media(p) if ok else self._text(404, "not found")
             if rest == "/api/prepare":
                 return self._json(200, {"candidates": prepare.candidates(root),

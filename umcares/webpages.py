@@ -614,7 +614,13 @@ function createMontage(opts) {
       if (n === 0) (j.warnings || []).forEach(w => kids.push(el("div", {className: "dim"}, "⚠ " + w)));     // only the newest job's
     });
     const latest = st.jobs.filter(j => j.state === "done" && st.exports.some(x => x.name === j.output)).slice(-1)[0];     // not a video that was deleted
-    if (latest) kids.push(el("video", {className: "thumb", controls: true, playsInline: true, src: BASE + "/exports/" + encodeURIComponent(latest.output)}));
+    if (latest) {
+      const big = st.exports.find(x => x.name === latest.output);
+      kids.push(el("video", {className: "thumb", controls: true, playsInline: true, preload: "metadata",
+                             poster: BASE + "/exports/" + encodeURIComponent(latest.output.replace(/\.mp4$/, ".jpg")),
+                             src: BASE + "/exports/" + encodeURIComponent(latest.output)}));
+      if (big && big.size > 4 * 1048576) kids.push(el("div", {className: "dim"}, mb(big.size) + ": on a slow connection it plays only as it loads. Tap the file name below to download it instead."));
+    }
     if (st.active) { const stop = el("button", {type: "button", className: "alt"}, "Cancel"); stop.addEventListener("click", cancel); kids.push(stop); }
     if (st.exports.length) {
       kids.push(el("div", {className: "dim"}, "Finished videos"));
