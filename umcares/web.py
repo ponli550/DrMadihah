@@ -841,7 +841,7 @@ def make_handler(home, owner: str):
                 if body.get("dry_run") is True:
                     plan = montage.plan_for(recipe, root)
                     return self._json(200, {"plan": {k: plan[k] for k in ("title", "format", "template", "total", "fade", "warnings", "sync")}
-                                                    | {"segments": [{k: s.get(k) for k in ("kind", "name", "text", "duration", "start", "speech")} for s in plan["segments"]],
+                                                    | {"segments": [{k: s.get(k) for k in ("kind", "name", "text", "duration", "start", "speech", "sound")} for s in plan["segments"]],
                                                        "music": plan["music"] and plan["music"]["name"]}})
                 return self._json(200, {"job": montage.RENDERER.submit(root, recipe)})
             except montage.RecipeError as e:

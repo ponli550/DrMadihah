@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -1117,6 +1118,63 @@ class SpeechFollow(Fixtures):
         with self.assertRaises(montage.RecipeError) as ctx:
             self.plan([{"media": "speaker.mp4"}], speech="loud")
         self.assertIn("speech", str(ctx.exception))
+
+    # ---------------------------------------------------------------- keeping the clips' own sound
+    def test_only_a_clip_with_speech_in_its_excerpt_keeps_its_sound_and_the_music_dips_under_it(self):
+        self.add("speaker.mp4", "silent.mp4", "clip.mp4", music=["song.m4a"])
+        p = self.plan([{"media": "speaker.mp4"}, {"media": "silent.mp4"}, {"media": "clip.mp4"}], speech="follow", clip_sound="speech",
+                      music={"file": "song.m4a"})
+        talker, quiet, mute = p["segments"]
+        self.assertTrue(talker["sound"])
+        self.assertNotIn("sound", quiet, "a quiet clip stays muted")
+        self.assertNotIn("sound", mute, "a clip with no sound track stays muted")
+        self.assertTrue(p["duck"])
+        for a, b in p["duck"]:
+            self.assertGreaterEqual(a, talker["start"] - 1e-6)
+            self.assertLessEqual(b, talker["start"] + talker["duration"] + 1e-6)
+        self.assertEqual(p["recipe"]["clip_sound"], "speech")
+
+    def test_without_the_option_no_clip_sound_is_kept(self):
+        self.add("speaker.mp4")
+        p = self.plan([{"media": "speaker.mp4"}], speech="follow")
+        self.assertNotIn("sound", p["segments"][0])
+        self.assertEqual(p["duck"], [])
+
+    def test_clip_sound_works_without_following_and_an_unknown_value_is_refused(self):
+        self.add("speaker.mp4")
+        p = self.plan([{"media": "speaker.mp4", "start": 5.0, "hold": 4}], clip_sound="speech")
+        self.assertTrue(p["segments"][0]["sound"], "the excerpt from 5 s holds the talk that starts at 6 s")
+        with self.assertRaises(montage.RecipeError) as ctx:
+            self.plan([{"media": "speaker.mp4"}], clip_sound="all")
+        self.assertIn("clip_sound", str(ctx.exception))
+
+    def test_the_music_really_is_about_14_db_quieter_inside_the_dip_and_comes_back(self):
+        self.add("silent.mp4", music=["song.m4a"])
+        p = self.plan([{"media": "silent.mp4", "hold": 8}], music={"file": "song.m4a"}, clip_sound="speech")
+        p["segments"][0]["sound"] = True                                           # a silent clip stands in for the voice
+        p["duck"] = [[3.0, 4.0]]
+        work = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(work, ignore_errors=True))
+        out = montage._audio_mix(FF, p, self.root, work, montage.Control())
+
+        def level(a, b):
+            r = subprocess.run([FF, "-hide_banner", "-ss", str(a), "-t", str(b - a), "-i", str(out), "-af", "volumedetect", "-f", "null", "-"],
+                               capture_output=True, text=True).stderr
+            return float(re.search(r"mean_volume: (-?[\d.]+)", r).group(1))
+        before, inside, after = level(0.8, 1.8), level(3.2, 3.8), level(5.5, 6.5)
+        self.assertAlmostEqual(before - inside, 14, delta=3, msg=f"{before} vs {inside}")
+        self.assertAlmostEqual(before, after, delta=1.0, msg="the music comes back at full level")
+
+    def test_a_video_with_kept_sound_renders_with_audio_even_without_music(self):
+        self.add("speaker.mp4", "land.jpg")
+        job, out = self.render(recipe([{"media": "speaker.mp4"}, {"media": "land.jpg"}], template="punchy", quality="draft",
+                                      speech="follow", clip_sound="speech"))
+        self.assertEqual(job["state"], "done", job["error"])
+        st = stats(out)
+        self.assertEqual(st["audio"], "aac")
+        self.assertAlmostEqual(st["dur"], job["total"], delta=0.15)
+        r = subprocess.run([FF, "-hide_banner", "-ss", "0.2", "-t", "1.5", "-i", str(out), "-af", "volumedetect", "-f", "null", "-"], capture_output=True, text=True).stderr
+        self.assertGreater(float(re.search(r"mean_volume: (-?[\d.]+)", r).group(1)), -45, "the speech is audible in the first seconds")
 
     def test_a_followed_clip_renders(self):
         self.add("speaker.mp4", "land.jpg")

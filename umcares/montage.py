@@ -83,10 +83,13 @@ MAX_CLIPS = 60
 DEFAULT_SECONDS, MAX_SECONDS_LIMIT = 60, 90
 CARD_HOLD = 2.5
 MIN_PIECE = 0.6
+MIN_SOUND = 0.5                # seconds of speech a clip needs in its excerpt for its own sound to be kept
+DUCK_GAIN = 0.2                # the music under speech: about -14 dB
+DUCK_IN, DUCK_OUT = 0.25, 0.4  # seconds the music takes to dip before a phrase and to come back after it
 NICE = prepare.NICE
 THREADS = prepare.THREADS
 ALLOWED_TOP = {"kind", "version", "title", "format", "template", "clips", "captions", "title_card", "end_card", "music",
-               "max_seconds", "note", "quality", "speech"}
+               "max_seconds", "note", "quality", "speech", "clip_sound"}
 ALLOWED_CLIP = {"media", "caption", "hold", "speed", "start", "zoom", "move"}
 ALLOWED_CARD = {"text", "subtitle", "hold"}
 ALLOWED_MUSIC = {"file", "start", "fade_out", "sync", "bpm"}
@@ -273,6 +276,8 @@ def validate(recipe, root) -> dict:
         cards[key] = card
     if recipe.get("speech") not in (None, "follow"):
         problems.append('speech: must be "follow" (start clips where people speak) or left out')
+    if recipe.get("clip_sound") not in (None, "speech"):
+        problems.append('clip_sound: must be "speech" (keep the sound of clips where people speak) or left out')
     music = recipe.get("music")
     music_item, tempo = None, None
     if music is not None:
@@ -299,7 +304,7 @@ def validate(recipe, root) -> dict:
         raise RecipeError(problems)
     return {"kind": "montage", "version": 1, "title": title.strip(), "format": fmt, "template": tpl,
             "captions": recipe.get("captions", True), "max_seconds": max_s, "clips": clips, "cards": cards,
-            "quality": recipe.get("quality", "final"), "speech": recipe.get("speech"), "tempo": tempo,
+            "quality": recipe.get("quality", "final"), "speech": recipe.get("speech"), "clip_sound": recipe.get("clip_sound"), "tempo": tempo,
             "music": None if music_item is None else {**music, "_item": music_item}, "note": recipe.get("note")}
 
 
@@ -332,9 +337,9 @@ def resolve(validated: dict, root) -> dict:
         dur = quick_info(path)["duration"]
         start = float(c.get("start", 0))
         spans = None
-        if r.get("speech") == "follow":
+        if r.get("speech") == "follow" or r.get("clip_sound") == "speech":
             spans = _speech_spans(path, root, item["name"], warnings)
-            if spans and "start" not in c:                              # an explicit start is the author's call
+            if spans and r.get("speech") == "follow" and "start" not in c:                              # an explicit start is the author's call
                 want = float(c.get("hold", tpl["video_max"])) * float(c.get("speed", tpl["video_speed"]))
                 pick = speech.best_start(spans, dur, want)
                 if pick:
@@ -349,6 +354,7 @@ def resolve(validated: dict, root) -> dict:
                "duration": round(used / speed, 3)}
         if spans is not None:
             seg["speech"] = round(speech.covered(spans, start, start + used), 1)     # seconds of speech in the part used
+            seg["_spans"] = spans                                                    # settled after cuts are placed (see _settle_sound)
         segs.append(seg)
     if "end_card" in r["cards"]:
         c = r["cards"]["end_card"]
@@ -383,6 +389,7 @@ def resolve(validated: dict, root) -> dict:
         s["start"] = round(t, 3)
         t += s["duration"] - fade
     total = round(sum(s["duration"] for s in segs) - fade * max(0, len(segs) - 1), 3)
+    duck = _settle_sound(r, segs)
     music = None
     if r["music"]:
         m = r["music"]
@@ -402,9 +409,34 @@ def resolve(validated: dict, root) -> dict:
     width, height = (even(fmt["width"] * DRAFT_SCALE), even(fmt["height"] * DRAFT_SCALE)) if draft else (fmt["width"], fmt["height"])
     return {"title": r["title"], "format": r["format"], "template": r["template"], "quality": "draft" if draft else "final",
             "width": width, "height": height,
-            "fps": fmt["fps"], "fade": round(fade, 3), "total": total, "segments": segs, "music": music, "sync": None if not sync else {k: v for k, v in sync.items() if k != "music_start"},
+            "fps": fmt["fps"], "fade": round(fade, 3), "total": total, "segments": segs, "duck": duck, "music": music, "sync": None if not sync else {k: v for k, v in sync.items() if k != "music_start"},
             "warnings": warnings,
             "recipe": {k: v for k, v in r.items() if k not in ("clips", "cards", "music")}}
+
+
+def _settle_sound(r, segs: list) -> list:
+    """With the cuts placed: re-measure the speech in each video excerpt, decide which clips keep their own sound
+    (clip_sound "speech" and enough speech in the excerpt) and return the video-time windows the music must dip under."""
+    windows = []
+    for s in segs:
+        spans = s.pop("_spans", None)
+        if spans is None:
+            continue
+        lo, hi = s["src_start"], s["src_start"] + s["src_used"]
+        s["speech"] = round(speech.covered(spans, lo, hi), 1)
+        if r.get("clip_sound") == "speech" and speech.covered(spans, lo, hi) >= MIN_SOUND:
+            s["sound"] = True
+            for a, b, _ in spans:
+                a, b = max(a, lo), min(b, hi)
+                if b > a:
+                    windows.append([round(s["start"] + (a - lo) / s["speed"], 3), round(min(s["start"] + (b - lo) / s["speed"], s["start"] + s["duration"]), 3)])
+    merged = []
+    for w in windows:                                                   # phrases a breath apart are one dip
+        if merged and w[0] - merged[-1][1] < DUCK_IN + DUCK_OUT:
+            merged[-1][1] = max(merged[-1][1], w[1])
+        else:
+            merged.append(w)
+    return merged
 
 
 def _speech_spans(path: Path, root: Path, name: str, warnings: list):
@@ -680,7 +712,10 @@ def render(plan: dict, root, out: Path, ctl: Control, on_pct=lambda p: None) -> 
             vgraph, vmap, venc, n_in = "", "0:v", ["-c:v", "copy"], 1
         m = plan["music"]
         aenc = ["-an"]
-        if m:
+        if any(s.get("sound") for s in segs):
+            cmd += ["-i", str(_audio_mix(ffmpeg, plan, root, work, ctl))]
+            aenc = ["-map", f"{n_in}:a:0", "-c:a", "aac", "-b:a", "192k", "-ar", "48000"]
+        elif m:
             fo = m["fade_out"]
             cmd += ["-ss", str(m["start"]), "-t", str(plan["total"]), "-i", str(root / m["rel"])]
             aenc = ["-map", f"{n_in}:a:0", "-af", f"afade=t=in:st=0:d=0.6,afade=t=out:st={max(0, plan['total'] - fo):g}:d={fo:g},loudnorm=I=-16:LRA=11:TP=-1.5",
@@ -694,6 +729,46 @@ def render(plan: dict, root, out: Path, ctl: Control, on_pct=lambda p: None) -> 
         return info
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+def _duck_gain(windows: list) -> str:
+    """An ffmpeg volume expression: 1 normally, DUCK_GAIN inside each window, with short ramps either side."""
+    envs = [f"min(1,max(0,(t-({a}-{DUCK_IN}))/{DUCK_IN}))*min(1,max(0,({b}+{DUCK_OUT}-t)/{DUCK_OUT}))" for a, b in windows]
+    env = envs[0]
+    for e in envs[1:]:
+        env = f"max({e},{env})"
+    return f"1-{1 - DUCK_GAIN:g}*({env})"
+
+
+def _audio_mix(ffmpeg, plan: dict, root: Path, work: Path, ctl: Control) -> Path:
+    """The soundtrack when some clips keep their own sound: those clips' audio placed on the timeline, the music (if any)
+    dipping under their speech, then loudness-normalised. Written as a WAV beside the pieces."""
+    kept = [s for s in plan["segments"] if s.get("sound")]
+    cmd, chains, labels = _base(ffmpeg), [], []
+    for n, s in enumerate(kept):
+        cmd += ["-ss", str(s["src_start"]), "-t", str(s["src_used"]), "-i", str(root / s["rel"])]
+        ms, d = int(round(s["start"] * 1000)), s["duration"]
+        f = f"[{n}:a:0]aresample=48000,aformat=channel_layouts=stereo"
+        if abs(s["speed"] - 1) > 1e-3:
+            f += f",atempo={s['speed']}"
+        chains.append(f + f",atrim=0:{d:g},afade=t=in:d=0.03,afade=t=out:st={max(0, d - 0.03):g}:d=0.03,adelay={ms}|{ms}[v{n}]")
+        labels.append(f"[v{n}]")
+    chains.append("".join(labels) + f"amix=inputs={len(kept)}:normalize=0:duration=longest[voice]")
+    m, total = plan["music"], plan["total"]
+    tail = f"loudnorm=I=-16:LRA=11:TP=-1.5,atrim=0:{total:g}[mix]"
+    if m:
+        cmd += ["-ss", str(m["start"]), "-t", str(total), "-i", str(root / m["rel"])]
+        fo = m["fade_out"]
+        dip = f",volume='{_duck_gain(plan['duck'])}':eval=frame" if plan.get("duck") else ""
+        chains.append(f"[{len(kept)}:a:0]aresample=48000,aformat=channel_layouts=stereo,afade=t=in:st=0:d=0.6,"
+                      f"afade=t=out:st={max(0, total - fo):g}:d={fo:g}{dip}[music]")
+        chains.append("[voice][music]amix=inputs=2:normalize=0:duration=longest," + tail)
+    else:
+        chains.append("[voice]" + tail)
+    out = work / "mix.wav"
+    cmd += ["-filter_complex", ";".join(chains), "-map", "[mix]", "-c:a", "pcm_s16le", "-ar", "48000", str(out)]
+    _run(cmd, total, ctl, lambda f: None)
+    return out
 
 
 def _workroot(root: Path) -> Path:
@@ -942,6 +1017,7 @@ def brief(root, project_name: str = "") -> str:
               "- `captions`: true draws each clip's caption on screen; `title_card` / `end_card`: `{text, subtitle?, hold?}`.",
               "- `music`: `{file, start?, fade_out?, sync?}` or null. `\"sync\": \"beat\"` finds the song's beat, makes every piece a whole number of beats long and starts the song on a beat, so every cut lands on one (hard cuts; the plan reports the BPM, or warns when the song has no steady beat). Use only royalty-free music; a commercial song gets a posted video muted or blocked.",
               "- `music: {\"bpm\": 75}` (no file) cuts to that tempo with NO audio: every piece is a whole number of beats from the first frame, so a song added later in the app (a trending sound that cannot be downloaded) lines up if it is started on a beat. Use it when the song's BPM is known and its file is not.",
+              "- `clip_sound`: `\"speech\"` keeps the own sound of a video clip whose excerpt has speech (others stay muted, so crowd noise does not leak in) and dips the music about 14 dB under the speech.",
               "- `speech`: `\"follow\"` starts each video clip (that has no explicit `start`) where people speak, so a long clip's excerpt holds the words, not dead air. It finds speech-like sound, not words.",
               f"- `max_seconds`: up to {MAX_SECONDS_LIMIT} (default {DEFAULT_SECONDS}); clips beyond it are dropped from the end.",
               "", "## Example", "", "```json", json.dumps(EXAMPLE, indent=2), "```", "",

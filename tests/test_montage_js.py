@@ -86,6 +86,7 @@ class Card(unittest.TestCase):
         out = self.run_js("sync")
         self.assertTrue(out["disabledAtStart"], "nothing to sync to without a song")
         self.assertTrue(out["speechDefault"], "starting clips where people speak is on by default")
+        self.assertTrue(out["soundDefault"], "keeping a speaking clip's sound is on by default")
         self.assertTrue(out["enabledAfterMusic"])
         self.assertIn("no steady beat", out["withSync"]["plan"], "the option was sent; a plain tone has no beat to cut to")
         self.assertEqual(out["afterRemoval"], {"disabled": True, "checked": False}, "removing the song clears the option")

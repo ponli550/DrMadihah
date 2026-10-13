@@ -121,6 +121,7 @@ class Routes(unittest.TestCase):
         self.assertEqual((p["sync"]["bpm"], p["sync"]["tempo_only"], p["sync"]["beats_per_cut"]), (75.0, True, 2))
         self.assertIn("speech", p["segments"][1], "seconds of speech in a followed video clip")
         self.assertIsNone(p["segments"][0]["speech"], "a photo has no speech")
+        self.assertIn("sound", p["segments"][1], "whether a clip keeps its sound reaches the page")
         self.assertIsNone(self.post({"recipe": recipe([{"media": "land.jpg"}]), "dry_run": True})[1]["plan"]["sync"])
 
     def test_making_a_video_renders_it_and_the_file_can_be_played_with_seeking(self):

@@ -728,8 +728,16 @@ renders the same video.
   not spiky percussion). No model, no cloud. **It finds speech-like sound, not words or speakers**: applause, a very
   lively crowd or busy music with vocals can pass for speech, and a quiet voice far from the microphone can be missed.
   Measured on synthesised speech: phrase edges within about 0.1-0.3 s, steady noise and a noise bed ignored, drums and
-  hi-hats ignored. **Not built yet:** keeping the clip's own sound in the video and ducking the music under it. Until
-  then a video is music-only, so this only chooses *which part* of a clip you see, not what you hear.
+  hi-hats ignored.
+- **Keep the sound of clips where people speak** (`"clip_sound": "speech"`, a tick in the page, on by default there): a
+  video clip whose excerpt holds at least 0.5 s of speech keeps its own sound; every other clip stays muted, so crowd
+  noise and wind do not leak in. The music (if any) dips about 14 dB under each phrase, ramping down 0.25 s before it and
+  back up 0.4 s after, so there is no click. Phrases a breath apart share one dip. The soundtrack is built in a separate
+  step (the kept clips' audio placed on the timeline, slowed with `atempo` if the clip is slowed, a 30 ms fade at each
+  cut, mixed with the music, loudness-normalised to -16 LUFS) and the final encode takes it as-is. Tests measure the dip
+  on a constant tone: about 14 dB down inside the window, back to full level after. **Limits:** it keeps what the
+  detector calls speech (see above), so a clip it mislabels will have its crowd noise kept and the music ducked for
+  nothing; and there is no per-clip override yet.
 - **Output** lands in `exports/` (not in git) with a `.json` sidecar holding the recipe and the resolved plan.
   It is written hidden and moved into place only after its size and length are checked. Rendering is low priority,
   cancellable, and **never runs at the same time as a prepare job** (they share one lock, because the machine is
