@@ -52,6 +52,13 @@ class Render(unittest.TestCase):
         res = textimg.render(text, out, **kw)
         return res, rgba(out)
 
+    def test_the_shadow_can_be_turned_off_for_dark_text_on_a_light_background(self):
+        with_shadow = self.draw("Hello", "a.png", size=60, color="#101010")[1]
+        without = self.draw("Hello", "b.png", size=60, color="#101010", shadow=False)[1]
+        soft = lambda img: sum(1 for i in range(3, len(img[2]), 4) if 0 < img[2][i] < 200)       # partly transparent pixels: the soft shadow and the antialiasing
+        self.assertGreater(soft(with_shadow), soft(without) * 1.5, "the shadow adds a lot of soft pixels")
+        self.assertGreater(sum(1 for i in range(3, len(without[2]), 4) if without[2][i] >= 200), 200, "the letters are still drawn")
+
     def test_draws_real_text_on_a_transparent_background(self):
         res, img = self.draw("Hello CyberDSA", size=80)
         self.assertEqual((img[0], img[1]), (800, 300))

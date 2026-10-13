@@ -62,7 +62,7 @@ def schedule(n: int, duration: float, period=None) -> list:
 
 
 def overlay(workdir, name: str, text: str, W: int, H: int, fps: int, duration: float, accent: str, period, first_input: int,
-            base: str, out: str, centre=0.52):
+            base: str, out: str, centre=0.52, ink: str = WHITE, shadow: bool = True):
     """The words as ffmpeg inputs and a filter fragment from label `base` to label `out`.
 
     Returns (extra input args, graph fragment without a leading ';', the lines drawn, their arrival times, y where the block ends)."""
@@ -81,7 +81,7 @@ def overlay(workdir, name: str, text: str, W: int, H: int, fps: int, duration: f
         # textimg keeps `pad` free on every side, so the canvas is taller by the padding and shifted back up: otherwise the
         # padding eats the line's height and the font shrinks to a third of the size asked for
         textimg.render(line, png, W, line_h + 2 * pad, size=int(line_h * 0.92), font=FONT, valign="middle", pad=pad,
-                       color=accent if k == len(lines) - 1 else WHITE)
+                       color=accent if k == len(lines) - 1 else ink, shadow=shadow)
         inputs += ["-loop", "1", "-framerate", str(fps), "-t", str(duration), "-i", str(png)]
         idx = first_input + k
         parts.append(f"[{idx}:v]format=rgba,fade=t=in:st={ts}:d={POP}:alpha=1[w{k}]")

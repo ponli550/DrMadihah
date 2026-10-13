@@ -574,7 +574,7 @@ function createMontage(opts) {
       planBox.replaceChildren(el("div", {}, p.segments.length + " pieces · " + secs(p.total) + " · " + (p.fade ? "crossfades" : "hard cuts")),
         ...(p.sync ? [el("div", {className: "dim"}, (p.sync.tempo_only ? "♪ cuts on a " + p.sync.bpm + " BPM grid, no audio: add the song in the app and start it on a beat at the first frame, " : "♪ on the beat: about " + Math.round(p.sync.bpm) + " BPM, ") + "a cut every " + p.sync.beats_per_cut + " beats")] : []),
         ...p.warnings.map(w => el("div", {className: "dim"}, "⚠ " + w)),
-        ...p.segments.map(s => el("div", {className: "dim"}, secs(s.start) + "  " + (s.kind === "title" || s.kind === "end" ? s.kind + " card: " + s.text : s.name + (s.text ? " — " + s.text : "")) + "  (" + secs(s.duration) + ")" + (s.speech ? "  🗣 " + secs(s.speech) + " of speech" : "") + (s.sound ? "  🔊 sound kept" : ""))));
+        ...p.segments.map(s => el("div", {className: "dim"}, secs(s.start) + "  " + (["title", "end", "quote", "announce", "countdown"].includes(s.kind) ? s.kind + " card: " + s.text : s.name + (s.text ? " — " + s.text : "")) + "  (" + secs(s.duration) + ")" + (s.speech ? "  🗣 " + secs(s.speech) + " of speech" : "") + (s.sound ? "  🔊 sound kept" : ""))));
       say("");
     } catch (e) { planBox.replaceChildren(); say("Cannot make this yet: " + e.message, e.problems, true); }
   }

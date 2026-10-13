@@ -154,7 +154,7 @@ class Validation(Fixtures):
         text = "\n".join(cm.exception.problems)
         for needle in ("kind:", "title:", "format:", "template:", "captions:", "max_seconds:", "colour: unknown field",
                        "clips[0].media: no image/video file matches 'nope.jpg'", "clips[1].hold", "clips[2]: speed and start apply to videos",
-                       "clips[3].speed", "clips[4].caption", "clips[5].wobble: unknown field", "clips[6]: must be an object", "clips[7].media",
+                       "clips[3].speed", "clips[4].caption", "clips[5].wobble: unknown field", "clips[6]: must be an object", "clips[7]: give exactly one of media",
                        "title_card:", "end_card.hold", "music.file: no audio file matches 'missing.mp3'"):
             self.assertIn(needle, text, needle)
 
@@ -1289,6 +1289,151 @@ class Kinetic(Fixtures):
         self.assertEqual(times[0], 0.0)
         self.assertTrue(all(abs(round(t / half) * half - t) < 0.01 for t in times), times)
         self.assertGreater(self.counts(out, p["segments"][0]["duration"] - 0.1)[0], 100, "all three words are up by the end")
+
+
+@NEED
+class TextCards(Fixtures):
+    """Quote, announcement and countdown pieces: no picture, every look."""
+
+    def plan(self, clips, **kw):
+        return montage.plan_for(recipe(clips, **kw), self.root)
+
+    def problems(self, clips, **kw):
+        with self.assertRaises(montage.RecipeError) as ctx:
+            self.plan(clips, **kw)
+        return " | ".join(ctx.exception.problems)
+
+    # ---------------------------------------------------------------- validation
+    def test_a_clip_is_exactly_one_of_a_picture_a_quote_an_announcement_or_a_countdown(self):
+        self.add("land.jpg")
+        self.assertIn("exactly one", self.problems([{"hold": 2}]))
+        self.assertIn("exactly one", self.problems([{"media": "land.jpg", "quote": "Hi"}]))
+        self.assertIn("exactly one", self.problems([{"quote": "Hi", "countdown": 3}]))
+
+    def test_a_quote_is_checked(self):
+        for bad, why in (({"quote": ""}, "quote"), ({"quote": "x" * 161}, "quote"), ({"quote": 5}, "quote"), ({"quote": "Hi", "by": "y" * 61}, "by"),
+                         ({"quote": "Hi", "caption": "no"}, "caption"), ({"quote": "Hi", "move": "in"}, "move"), ({"quote": "Hi", "hold": 99}, "hold")):
+            with self.subTest(bad=bad):
+                self.assertIn(why, self.problems([bad]))
+        self.assertEqual(self.plan([{"quote": "x" * 160, "by": "y" * 60}])["segments"][0]["kind"], "quote")
+
+    def test_an_announcement_is_checked(self):
+        self.assertIn("title", self.problems([{"announce": {"date": "12 Oct"}}]))
+        self.assertIn("unknown field", self.problems([{"announce": {"title": "T", "venue": "Hall"}}]))
+        self.assertIn("announce", self.problems([{"announce": "Hackathon"}]))
+        self.assertIn("place", self.problems([{"announce": {"title": "T", "place": "p" * 61}}]))
+        self.assertIn("title", self.problems([{"announce": {"title": "t" * 81}}]))
+
+    def test_a_countdown_is_a_whole_number_from_2_to_5(self):
+        for bad in (1, 6, "3", True, 2.5, None):
+            with self.subTest(bad=bad):
+                self.assertIn("countdown", self.problems([{"countdown": bad}]))
+        for ok in (2, 3, 5):
+            self.assertEqual(self.plan([{"countdown": ok}])["segments"][0]["count"], ok)
+
+    def test_by_belongs_to_a_quote_only(self):
+        self.add("land.jpg")
+        self.assertIn("by", self.problems([{"announce": {"title": "T"}, "by": "x"}]))
+        self.assertIn("by", self.problems([{"media": "land.jpg", "by": "x"}]))
+
+    # ---------------------------------------------------------------- the plan
+    def test_how_long_each_card_lasts_and_what_it_says(self):
+        p = self.plan([{"quote": "Satu dua tiga empat"}, {"quote": " ".join(["kata"] * 20)}, {"quote": "Pendek", "hold": 5, "by": " Dr M "},
+                       {"announce": {"title": " Hari Terbuka ", "date": "12 Okt", "time": "9 pagi", "place": "Dewan A", "note": ""}}, {"countdown": 3}],
+                      max_seconds=90)
+        quote, long_quote, held, announce, count = p["segments"]
+        self.assertEqual((quote["kind"], quote["text"], quote["duration"]), ("quote", "Satu dua tiga empat", 3.0))
+        self.assertEqual(long_quote["duration"], 8.0, "capped")
+        self.assertEqual((held["duration"], held["by"]), (5.0, "Dr M"))
+        self.assertEqual((announce["text"], announce["duration"]), ("Hari Terbuka", 4.5), "3 lines: 3 s + half a second each")
+        self.assertEqual(announce["lines"], ["\U0001F4C5 12 Okt", "\U0001F558 9 pagi", "\U0001F4CD Dewan A"], "empty fields are left out")
+        self.assertEqual((count["kind"], count["text"], count["duration"]), ("countdown", "3-2-1", 2.4))
+        self.assertEqual(p["fade"], 0.0 if p["template"] != "slowmo" else p["fade"])
+
+    def test_cards_mix_with_pictures_in_the_order_given(self):
+        self.add("land.jpg", "port.jpg")
+        p = self.plan([{"countdown": 3}, {"media": "land.jpg"}, {"quote": "Hi", "by": "Me"}, {"media": "port.jpg"}], title_card={"text": "T"}, end_card={"text": "E"})
+        self.assertEqual([s["kind"] for s in p["segments"]], ["title", "countdown", "photo", "quote", "photo", "end"])
+        self.assertTrue(all(s["start"] >= 0 for s in p["segments"]))
+
+    def test_a_card_can_be_dropped_to_fit_the_limit_and_the_warning_names_it(self):
+        p = self.plan([{"quote": "Pertama " + "x " * 20}, {"quote": "Kedua " + "x " * 20}, {"quote": "Ketiga " + "x " * 20}], max_seconds=10)
+        self.assertGreaterEqual(len(p["segments"]), 1)
+        self.assertLess(len(p["segments"]), 3)
+        self.assertTrue(any("left out" in w and "Ketiga" in w for w in p["warnings"]), p["warnings"])
+        self.assertLessEqual(p["total"], 10 + 1e-6)
+
+    def test_a_countdown_cut_to_a_tempo_lasts_a_whole_number_of_beat_cuts(self):
+        p = self.plan([{"countdown": 3}, {"quote": "Hi"}], template="punchy", music={"bpm": 75})
+        unit = p["sync"]["cut_seconds"]
+        for s in p["segments"]:
+            self.assertAlmostEqual(s["duration"] / unit, round(s["duration"] / unit), delta=0.02, msg=s["kind"])
+
+    def test_the_preview_shows_cards_by_kind(self):
+        from umcares import web
+        p = self.plan([{"quote": "Hi"}, {"countdown": 3}])
+        shown = [{k: s.get(k) for k in ("kind", "name", "text", "duration", "start", "speech", "sound")} for s in p["segments"]]
+        self.assertEqual([x["kind"] for x in shown], ["quote", "countdown"])
+        self.assertEqual([x["text"] for x in shown], ["Hi", "3-2-1"])
+
+    # ---------------------------------------------------------------- the pictures they make
+    def count(self, path, at, test, w=216, h=384):
+        d = frame(path, at, w, h)
+        return sum(1 for i in range(0, len(d), 3) if test(d[i], d[i + 1], d[i + 2]))
+
+    WHITE = staticmethod(lambda r, g, b: r > 245 and g > 245 and b > 245)
+    DARK = staticmethod(lambda r, g, b: r < 90 and g < 90 and b < 90)
+    YELLOW = staticmethod(lambda r, g, b: r > 230 and g > 200 and b < 120)
+    MUSTARD = staticmethod(lambda r, g, b: 110 < r < 200 and 90 < g < 170 and b < 90)
+
+    def render_cards(self, clips, template, **kw):
+        job, out = self.render(recipe(clips, template=template, **kw))
+        self.assertEqual(job["state"], "done", job["error"])
+        return out
+
+    def test_a_quote_on_a_dark_look_is_white_with_its_attribution_in_the_accent_arriving_last(self):
+        out = self.render_cards([{"quote": "Keselamatan siber bermula hari ini", "by": "Dr Madihah"}], "kinetic")
+        self.assertEqual(self.count(out, 0.02, self.WHITE), 0, "nothing before it fades in")
+        body = self.count(out, 1.2, self.WHITE)
+        self.assertGreater(body, 150, "the quote is up")
+        self.assertGreater(self.count(out, 2.8, self.YELLOW), 20, "the attribution and the opening mark are in the accent")
+
+    def test_a_quote_on_the_light_collage_look_is_dark_type_never_white_type(self):
+        out = self.render_cards([{"quote": "Keselamatan siber bermula hari ini", "by": "Dr Madihah"}], "collage")
+        self.assertGreater(self.count(out, 2.8, self.DARK), 150, "dark type on the cream paper")
+        self.assertEqual(self.count(out, 2.8, self.WHITE), 0, "no white type on a light background")
+        self.assertGreater(self.count(out, 2.8, self.MUSTARD), 20, "the accent is darkened to stay readable on cream")
+        self.assertEqual(self.count(out, 2.8, self.YELLOW), 0, "the raw highlighter yellow is not used as text on cream")
+
+    def test_an_announcement_shows_its_title_then_its_chips_one_after_another(self):
+        out = self.render_cards([{"announce": {"title": "Hackathon CyberDSA", "date": "12 Okt", "time": "9 pagi", "place": "Dewan A"}, "hold": 5}], "kinetic")
+        early, middle, late = (self.count(out, t, self.YELLOW) for t in (0.5, 1.4, 2.4))        # the chips arrive at about 1.0, 1.3 and 1.6 s
+        self.assertGreater(self.count(out, 4.6, self.WHITE), 150, "the title words are up")
+        self.assertLess(early, middle, "chips arrive after the title")
+        self.assertLess(middle, late, "and one after another")
+
+    def test_a_countdown_shows_each_number_in_turn_and_the_last_in_the_accent(self):
+        out = self.render_cards([{"countdown": 3}], "kinetic")
+        first, second, third = (self.count(out, t, self.WHITE) for t in (0.3, 1.2, 1.9))
+        self.assertGreater(first, 100)
+        self.assertGreater(second, 100)
+        self.assertEqual(self.count(out, 0.3, self.YELLOW), 0)
+        self.assertGreater(self.count(out, 1.95, self.YELLOW), 100, "the 1 is in the accent")
+        self.assertEqual(self.count(out, 1.95, self.WHITE), 0, "and only one number is on screen at a time")
+
+    def test_every_look_and_format_draws_all_three_cards_and_a_draft_has_the_same_timings(self):
+        clips = [{"quote": "Hi", "by": "Me"}, {"announce": {"title": "T", "date": "d"}}, {"countdown": 2}]
+        for tpl in montage.TEMPLATES:
+            with self.subTest(template=tpl):
+                job, out = self.render(recipe(clips, template=tpl, quality="draft"))
+                self.assertEqual(job["state"], "done", f"{tpl}: {job['error']}")
+        for fmt, size in (("square", 324), ("wide", 576)):
+            with mock.patch.dict(montage.FORMATS[fmt], width=size, height=324):
+                job, out = self.render(recipe(clips, format=fmt, quality="draft"))
+            self.assertEqual(job["state"], "done", f"{fmt}: {job['error']}")
+        final = montage.plan_for(recipe(clips, template="kinetic"), self.root)
+        draft = montage.plan_for(recipe(clips, template="kinetic", quality="draft"), self.root)
+        self.assertEqual([(s["start"], s["duration"]) for s in final["segments"]], [(s["start"], s["duration"]) for s in draft["segments"]])
 
 
 def gray_frame(path, at):

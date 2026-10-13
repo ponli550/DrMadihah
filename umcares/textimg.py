@@ -65,7 +65,7 @@ function run(argv) {
     const px = spec.align === 'left' ? Math.max(0, x - p) : (w - pw) / 2, py = Math.max(0, y - p);
     $.NSColor.colorWithDeviceRedGreenBlueAlpha(spec.plateColor[0] / 255, spec.plateColor[1] / 255, spec.plateColor[2] / 255, spec.plateAlpha).setFill;
     $.NSBezierPath.bezierPathWithRoundedRectXRadiusYRadius($.NSMakeRect(px, py, pw, ph), p, p).fill;
-  } else {
+  } else if (spec.shadow) {                                         // a soft shadow so light text reads over any picture
     const shadow = $.NSShadow.alloc.init;
     shadow.shadowColor = $.NSColor.colorWithCalibratedWhiteAlpha(0, 0.75);
     shadow.shadowOffset = $.NSMakeSize(0, -Math.max(2, size / 20));
@@ -108,10 +108,11 @@ def available() -> bool:
 
 def render(text: str, out, width: int, height: int, size: int = 64, font: str = DEFAULT_FONT, color: str = "#ffffff",
            align: str = "center", valign: str = "middle", plate: bool = False, plate_alpha: float = 0.45,
-           pad: int = 40, min_size: int = MIN_SIZE, timeout: int = 30, plate_color: str = "#000000") -> dict:
+           pad: int = 40, min_size: int = MIN_SIZE, timeout: int = 30, plate_color: str = "#000000", shadow: bool = True) -> dict:
     """Draw `text` onto a transparent width x height PNG at `out`. Shrinks the font until the text fits.
 
     `plate` draws a rounded plate behind the text in `plate_color` (dark glass by default, cream paper for a collage label).
+    `shadow` (default on, ignored with a plate) adds a soft dark shadow; turn it off for dark text on a light background.
     Returns {"size", "width", "height"} of the text drawn. Raises TextError with a readable message otherwise.
     """
     text = (text or "").strip()
@@ -129,7 +130,7 @@ def render(text: str, out, width: int, height: int, size: int = 64, font: str = 
     out.parent.mkdir(parents=True, exist_ok=True)
     spec = {"text": text, "out": str(out), "width": int(width), "height": int(height), "size": int(size), "font": font,
             "color": _hex(color), "align": align, "valign": valign, "plate": bool(plate), "plateAlpha": float(plate_alpha), "plateColor": _hex(plate_color),
-            "platePad": max(8, int(size) // 4), "pad": int(pad), "minSize": int(min_size)}
+            "platePad": max(8, int(size) // 4), "pad": int(pad), "minSize": int(min_size), "shadow": bool(shadow)}
     try:
         r = subprocess.run(["osascript", "-l", "JavaScript", str(_script_path()), json.dumps(spec)],
                            capture_output=True, text=True, timeout=timeout)

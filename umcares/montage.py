@@ -36,7 +36,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import beats, captions, kinetic, prepare, speech, textimg, uploads
+from . import beats, captions, kinetic, prepare, speech, textcards, textimg, uploads
 from .layout import kind_of
 
 FORMATS = {
@@ -95,7 +95,9 @@ NICE = prepare.NICE
 THREADS = prepare.THREADS
 ALLOWED_TOP = {"kind", "version", "title", "format", "template", "clips", "captions", "title_card", "end_card", "music",
                "max_seconds", "note", "quality", "speech", "clip_sound"}
-ALLOWED_CLIP = {"media", "caption", "hold", "speed", "start", "zoom", "move"}
+ALLOWED_CLIP = {"media", "caption", "hold", "speed", "start", "zoom", "move", "quote", "by", "announce", "countdown"}
+ALLOWED_ANNOUNCE = {"title", "date", "time", "place", "note"}
+CONTENT_KINDS = ("photo", "video", "quote", "announce", "countdown")      # what counts as a clip of the video (cards at the ends do not)
 ALLOWED_CARD = {"text", "subtitle", "hold"}
 ALLOWED_MUSIC = {"file", "start", "fade_out", "sync", "bpm"}
 
@@ -247,6 +249,18 @@ def validate(recipe, root) -> dict:
             continue
         for k in sorted(set(c) - ALLOWED_CLIP):
             problems.append(f"{w}.{k}: unknown field (allowed: {', '.join(sorted(ALLOWED_CLIP))})")
+        given = [k for k in ("media", *textcards.KINDS) if k in c]
+        if len(given) != 1:
+            problems.append(f"{w}: give exactly one of media, quote, announce or countdown")
+            continue
+        if given[0] != "media":
+            before = len(problems)
+            _check_text_clip(c, given[0], w, problems)
+            if len(problems) == before:
+                clips.append({**c, "_card": given[0], "_item": None})
+            continue
+        if "by" in c:
+            problems.append(f"{w}.by: only a quote card has a 'by'")
         item = _find(items, c.get("media"), {"image", "video"}, f"{w}.media", problems)
         for k, lo, hi in (("hold", 0.5, 15), ("speed", 0.25, 2.0), ("start", 0, 3600)):
             if k in c and not _num(c[k], lo, hi):
@@ -313,6 +327,51 @@ def validate(recipe, root) -> dict:
             "music": None if music_item is None else {**music, "_item": music_item}, "note": recipe.get("note")}
 
 
+def _check_text_clip(c: dict, kind: str, w: str, problems: list) -> None:
+    """A clip with no picture: a quote, an announcement or a countdown."""
+    for k in ("caption", "speed", "start", "zoom", "move"):
+        if k in c:
+            problems.append(f"{w}.{k}: applies to pictures and clips, not to a {kind} card")
+    if "hold" in c and not _num(c["hold"], 0.5, 15):
+        problems.append(f"{w}.hold: must be a number from 0.5 to 15")
+    if "by" in c and kind != "quote":
+        problems.append(f"{w}.by: only a quote card has a 'by'")
+    v = c[kind]
+    if kind == "quote":
+        if not isinstance(v, str) or not v.strip() or len(v) > 160:
+            problems.append(f"{w}.quote: text of 1 to 160 characters")
+        if "by" in c and (not isinstance(c["by"], str) or len(c["by"]) > 60):
+            problems.append(f"{w}.by: text of at most 60 characters")
+    elif kind == "announce":
+        if not isinstance(v, dict):
+            problems.append(f"{w}.announce: an object like {{\"title\": \"Hackathon\", \"date\": \"12 Oct\", \"place\": \"Hall A\"}}")
+            return
+        for k in sorted(set(v) - ALLOWED_ANNOUNCE):
+            problems.append(f"{w}.announce.{k}: unknown field (allowed: {', '.join(sorted(ALLOWED_ANNOUNCE))})")
+        if not isinstance(v.get("title"), str) or not v["title"].strip() or len(v["title"]) > 80:
+            problems.append(f"{w}.announce.title: text of 1 to 80 characters")
+        for k in ("date", "time", "place", "note"):
+            if k in v and (not isinstance(v[k], str) or len(v[k]) > 60):
+                problems.append(f"{w}.announce.{k}: text of at most 60 characters")
+    elif kind == "countdown":
+        if isinstance(v, bool) or not isinstance(v, int) or not 2 <= v <= 5:
+            problems.append(f"{w}.countdown: a whole number from 2 to 5 (it counts down to 1)")
+
+
+def _text_segment(c: dict) -> dict:
+    kind = c["_card"]
+    if kind == "quote":
+        text = c["quote"].strip()
+        return {"kind": "quote", "text": text, "by": (c.get("by") or "").strip(),
+                "duration": float(c.get("hold", min(8.0, max(3.0, 1.2 + 0.4 * len(text.split())))))}
+    if kind == "announce":
+        a = c["announce"]
+        lines = [prefix + a[k].strip() for k, prefix in (("date", "\U0001F4C5 "), ("time", "\U0001F558 "), ("place", "\U0001F4CD "), ("note", "")) if a.get(k, "").strip()]
+        return {"kind": "announce", "text": a["title"].strip(), "lines": lines, "duration": float(c.get("hold", 3.0 + 0.5 * len(lines)))}
+    n = int(c["countdown"])
+    return {"kind": "countdown", "count": n, "text": "-".join(str(x) for x in range(n, 0, -1)), "duration": float(c.get("hold", n * 0.8))}
+
+
 def resolve(validated: dict, root) -> dict:
     """Turn a validated recipe (the result of validate()) into an exact timeline. Deterministic: the same recipe and
     files give the same plan."""
@@ -327,6 +386,9 @@ def resolve(validated: dict, root) -> dict:
         segs.append({"kind": "title", "text": c["text"].strip(), "subtitle": (c.get("subtitle") or "").strip(),
                      "duration": float(c.get("hold", CARD_HOLD))})
     for i, c in enumerate(r["clips"]):
+        if c.get("_card"):
+            segs.append(_text_segment(c))
+            continue
         item = c["_item"]
         path = root / item["rel"]
         if not path.is_file():
@@ -378,11 +440,11 @@ def resolve(validated: dict, root) -> dict:
     def total_of(ss):
         return sum(s["duration"] for s in ss) - fade * max(0, len(ss) - 1)
     while total_of(segs) > limit + 1e-6:
-        idx = next((j for j in range(len(segs) - 1, -1, -1) if segs[j]["kind"] in ("photo", "video")), None)
-        if idx is None or sum(1 for s in segs if s["kind"] in ("photo", "video")) <= 1:
+        idx = next((j for j in range(len(segs) - 1, -1, -1) if segs[j]["kind"] in CONTENT_KINDS), None)
+        if idx is None or sum(1 for s in segs if s["kind"] in CONTENT_KINDS) <= 1:
             break
         gone = segs.pop(idx)
-        left_out.insert(0, gone["text"] or gone["name"])
+        left_out.insert(0, gone["text"] or gone.get("name", gone["kind"]))
         dropped += 1
     if dropped:
         names = ", ".join(left_out[:4]) + (f" and {dropped - 4} more" if dropped > 4 else "")
@@ -598,6 +660,8 @@ def _piece_command(ffmpeg, plan, seg, i, workdir: Path, out: Path):
     W, H, fps, d = plan["width"], plan["height"], plan["fps"], seg["duration"]
     tpl = TEMPLATES[plan["template"]]
     fmt = FORMATS[plan["format"]]
+    if seg["kind"] in textcards.KINDS:                        # no picture: drawn the same way in every look
+        return textcards.piece_commands(_base, ffmpeg, plan, seg, i, workdir, out, _encode_piece(plan), tpl)
     if tpl.get("style") == "collage":                        # a different way of drawing the whole piece
         from . import collage
         return collage.piece_commands(_base, ffmpeg, plan, seg, i, workdir, out, _encode_piece(plan), root_of(plan))
@@ -1098,6 +1162,11 @@ def brief(root, project_name: str = "") -> str:
               "- `clips[]` (required, in order): `media`; optional `caption` (overrides the file's caption), `hold` (seconds on screen), "
               "`speed` (videos only, 0.25 to 2; below 1 is slow motion), `start` (videos only, seconds into the clip), "
               f"`move` (photos only: {', '.join(MOVES)}; the camera glides, eased. Left out, neighbouring photos alternate on their own).",
+              "- A clip with no picture is a text card; give exactly one of `media`, `quote`, `announce` or `countdown`:",
+              "  `{\"quote\": \"text up to 160 characters\", \"by\": \"who said it\", \"hold\": 4}`; "
+              "`{\"announce\": {\"title\": \"Hackathon CyberDSA\", \"date\": \"12 Okt 2026\", \"time\": \"9 pagi\", \"place\": \"Dewan A\", \"note\": \"Percuma\"}}` "
+              "(title plus chips; every field but the title is optional); `{\"countdown\": 3}` (a whole number from 2 to 5, counts down to 1, one number per equal share, so on the beat when cut to one). "
+              "They work in every look, take only `hold`, and can be dropped to fit `max_seconds` like any clip.",
               "- `captions`: true draws each clip's caption on screen; `title_card` / `end_card`: `{text, subtitle?, hold?}`.",
               "- `music`: `{file, start?, fade_out?, sync?}` or null. `\"sync\": \"beat\"` finds the song's beat, makes every piece a whole number of beats long and starts the song on a beat, so every cut lands on one (hard cuts; the plan reports the BPM, or warns when the song has no steady beat). Use only royalty-free music; a commercial song gets a posted video muted or blocked.",
               "- `music: {\"bpm\": 75}` (no file) cuts to that tempo with NO audio: every piece is a whole number of beats from the first frame, so a song added later in the app (a trending sound that cannot be downloaded) lines up if it is started on a beat. Use it when the song's BPM is known and its file is not.",

@@ -719,6 +719,18 @@ renders the same video.
 - **Everything is composed over a blurred copy of itself**, so a portrait photo in a 9:16 frame is never cropped
   and a landscape one never loses its sides. (ffprobe does not report an EXIF-rotated photo's true shape, so
   composing the same way every time is also simpler than detecting it.) Photos get a slow zoom; clips can be slowed.
+- **Text cards: quote, announcement, countdown** (`textcards.py`; not `cards.py`, which is the json2video title/stat/logo module
+  of the Premiere pipeline). A clip with no picture: give exactly one of `quote`, `announce` or `countdown` instead of `media`.
+  `{"quote": "...", "by": "Dr Madihah"}` is a big opening mark, the quote wrapped and centred, then the attribution in the accent;
+  `{"announce": {"title": "Hackathon CyberDSA", "date": "12 Okt 2026", "time": "9 pagi", "place": "Dewan A", "note": "Percuma"}}`
+  is the title as kinetic lines then a rounded accent chip per field (with 📅 🕘 📍), arriving one after another;
+  `{"countdown": 3}` is 3, 2, 1 in equal shares of the piece (so on the beat when cut to one), the 1 in the accent. They work in
+  **every look**: the background is the look's colour, and the text colour follows it (white on dark, near-black on the cream
+  collage; the accent is darkened to mustard as text on a light background, and the shadow is turned off there, because a
+  highlighter yellow vanishes on cream and a shadow smears dark type, both seen in real frames). They take only `hold`
+  (defaults: a quote 3-8 s by length, an announcement 3 s + 0.5 s per chip, a countdown 0.8 s a number), count as clips for
+  `max_seconds` (so a long list drops cards from the end with a warning), and show in the plan as `quote card: ...`. They are
+  not in the page's Make-a-video card yet: write them in a recipe, or let `umcares draft` or Copy-brief-for-Claude use them.
 - **The `kinetic` look (kinetic type)** is built in `kinetic.py` and reuses the normal picture composition: only the text is
   different. A caption or title becomes big bold words (upper case, `HelveticaNeue-CondensedBlack`, on both Macs) that pop in
   one line after another, stacked and centred, the **last line in the accent colour** (`#ffe14d`), over a darkened picture

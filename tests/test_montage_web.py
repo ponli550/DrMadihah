@@ -115,6 +115,16 @@ class Routes(unittest.TestCase):
         self.assertGreater(p["total"], 2)
         self.assertEqual(self.get()[1]["jobs"], [], "nothing was queued")
 
+    def test_the_preview_lists_text_cards_by_kind_and_a_bad_card_is_refused_with_its_problem(self):
+        status, d = self.post({"recipe": recipe([{"quote": "Selamat datang", "by": "Dekan"}, {"countdown": 3}, {"media": "land.jpg"}]), "dry_run": True})
+        self.assertEqual(status, 200)
+        segs = d["plan"]["segments"]
+        self.assertEqual([s["kind"] for s in segs], ["quote", "countdown", "photo"])
+        self.assertEqual([s["text"] for s in segs[:2]], ["Selamat datang", "3-2-1"])
+        status, d = self.post({"recipe": recipe([{"countdown": 9}]), "dry_run": True})
+        self.assertEqual(status, 400)
+        self.assertIn("countdown", " ".join(d["problems"]))
+
     def test_the_preview_carries_the_beat_and_speech_facts_the_page_shows(self):
         d = self.post({"recipe": recipe([{"media": "land.jpg"}, {"media": "clip.mp4"}], music={"bpm": 75}, speech="follow"), "dry_run": True})[1]
         p = d["plan"]
