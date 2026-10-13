@@ -1234,6 +1234,23 @@ class Kinetic(Fixtures):
         self.assertGreater(white + accent, 100)
         self.assertEqual(edge, 0, "text is kept off the outer 3% of the frame")
 
+    def vertical_centre(self, path, at, w=216, h=384):
+        """Mean height (0 top, 1 bottom) of the white-ish pixels, and the lowest such row, as fractions of the frame."""
+        d = frame(path, at, w, h)
+        rows = [(i // 3) // w for i in range(0, len(d), 3) if d[i] > 200 and d[i + 1] > 200 and d[i + 2] > 200]
+        return sum(rows) / len(rows) / h, max(rows) / h
+
+    def test_picture_captions_sit_low_so_they_do_not_cover_faces_and_never_leave_the_frame(self):
+        job, out = self.make("Dua hari satu cabaran lagi", hold=3.5)
+        mean, lowest = self.vertical_centre(out, 3.2)
+        self.assertGreater(mean, 0.55, "over the lower part of the picture")
+        self.assertLessEqual(lowest, kinetic.LOWEST + 0.02, "and not off the bottom")
+
+    def test_a_tall_block_is_pushed_up_not_clipped_at_the_bottom(self):
+        job, out = self.make("Hackathon dibuka oleh Dekan hari ini dengan penuh semangat", hold=4.0)
+        mean, lowest = self.vertical_centre(out, 3.7)
+        self.assertLessEqual(lowest, kinetic.LOWEST + 0.02)
+
     def test_captions_off_means_no_words(self):
         job, out = self.make("Dua hari satu", captions=False)
         self.assertEqual(self.counts(out, 2.0)[:2], (0, 0))

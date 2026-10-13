@@ -731,6 +731,8 @@ renders the same video.
   the text renderer keeps its padding free on every side, so a one-line-high canvas shrank the type to a third of the size
   asked for; the canvas is now taller by the padding and shifted back (a test fails if that is undone). The look is meant for
   short, punchy captions: a paragraph is not readable this way.
+  Captions over a picture sit in the lower third of the frame (centre 68%, never below 92%), because on the real CyberDSA photos
+  centred words covered people's faces; title and end cards stay centred.
 - **The `collage` look (Vox style, paper cut-outs)** is built in `collage.py` with ffmpeg alone. Paper is flat cream with
   static grain (no vignette: it turns paper grey). A photo is a **cut-out card**: halftone dot screen, white border, soft
   shadow, two strips of tape, a slight tilt that alternates between pieces. A clip gets the same card, built on every

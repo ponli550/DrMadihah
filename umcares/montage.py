@@ -648,7 +648,8 @@ def _piece_command(ffmpeg, plan, seg, i, workdir: Path, out: Path):
         return [(_base(ffmpeg) + inputs + ["-filter_complex", graph, "-map", "[out]", "-t", str(d), "-r", str(fps)] + _encode_piece(plan) + [str(out)], d)]
     overlay_in, overlay_graph = [], ""
     if seg["text"] and kin:
-        overlay_in, frag, _, _, _ = kinetic.overlay(workdir, f"seg{i}", seg["text"], W, H, fps, d, tpl["accent"], period, 1, "[v]", "[o]")
+        overlay_in, frag, _, _, _ = kinetic.overlay(workdir, f"seg{i}", seg["text"], W, H, fps, d, tpl["accent"], period, 1, "[v]", "[o]",
+                                                    centre=kinetic.PHOTO_CENTRE)
         overlay_graph = ";" + frag
     elif seg["text"]:
         cap_h = int(H * 0.22)

@@ -26,6 +26,8 @@ MAX_WORDS = 10
 MAX_LINES = 5
 POP = 0.18                                     # seconds a line takes to arrive
 LEAD = 0.08                                    # the first line's delay when not on the beat
+LOWEST = 0.92                                  # no line goes below this fraction of the frame height
+PHOTO_CENTRE = 0.68                            # captions over a picture sit low, where people have clothes, not faces
 END_MARGIN = 0.3                               # the last line has landed this long before the piece ends, at least
 
 
@@ -70,7 +72,7 @@ def overlay(workdir, name: str, text: str, W: int, H: int, fps: int, duration: f
     times = schedule(len(lines), duration, period)
     line_h = int(min(H * 0.105, W * 0.2))
     block = len(lines) * line_h
-    y0 = int(H * centre) - block // 2
+    y0 = min(int(H * centre) - block // 2, int(H * LOWEST) - block)         # a tall block is pushed up, never off the bottom
     lift = max(6, int(line_h * 0.35))
     pad = max(4, int(W * 0.05))
     inputs, parts, cur = [], [], base

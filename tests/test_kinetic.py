@@ -58,5 +58,24 @@ class Timing(unittest.TestCase):
         self.assertEqual(kinetic.schedule(0, 2.0), [])
 
 
+
+class Place(unittest.TestCase):
+    def test_the_lowest_line_never_goes_below_the_limit(self):
+        import tempfile
+        from pathlib import Path
+        from unittest import mock
+        seen = {}
+
+        def fake_render(text, out, w, h, **kw):
+            Path(out).write_bytes(b"png")
+        with mock.patch.object(kinetic.textimg, "render", fake_render):
+            for centre in (0.5, 0.68, 0.9):
+                for n_lines in (1, 3, 5):
+                    _, graph, lines, _, y_end = kinetic.overlay(Path(tempfile.mkdtemp()), "s", " ".join(["w"] * n_lines), 1080, 1920, 30, 3.0,
+                                                               "#fff", None, 1, "[v]", "[o]", centre=centre)
+                    self.assertEqual(len(lines), n_lines)
+                    self.assertLessEqual(y_end, int(1920 * kinetic.LOWEST) + 1, (centre, n_lines))
+
+
 if __name__ == "__main__":
     unittest.main()
