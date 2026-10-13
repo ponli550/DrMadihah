@@ -11,9 +11,9 @@ import json
 import sys
 from pathlib import Path
 
-from . import (auth, doctor, inspect as inspect_mod, log, media, post, recipe as
+from . import (auth, doctor, media_scan as inspect_mod, log, media, post, recipe as
                recipe_mod, render as render_mod, safe, scaffold,
-               script as script_mod, secrets, session, spinner, stack, web)
+               script as script_mod, envsecrets, session, spinner, stack, web)
 from . import projects as projects_mod
 from .example import EXAMPLE_RECIPE
 from . import __version__
@@ -115,7 +115,7 @@ def cmd_config(args, cfg):
         if not args.key or args.value is None:
             log.err("usage: umcares config set KEY VALUE")
             return 2
-        res = secrets.set_value(env_path, args.key, args.value,
+        res = envsecrets.set_value(env_path, args.key, args.value,
                                 encrypt_secrets=args.encrypt)
         (log.ok if res["stored"] == "encrypted" else log.warn)(
             f"{args.key} stored ({res['stored']})")
@@ -127,7 +127,7 @@ def cmd_config(args, cfg):
         if not val:
             log.err(f"{args.key} is not set")
             return 1
-        log.out(val if args.reveal else secrets.mask(args.key, val))
+        log.out(val if args.reveal else envsecrets.mask(args.key, val))
         return 0
 
     if args.action == "show":
@@ -142,8 +142,8 @@ def cmd_config(args, cfg):
         return 0
 
     # list
-    rows = {k: secrets.mask(k, v) for k, v in sorted(cfg.env.items())}
-    info = secrets.status(env_path)
+    rows = {k: envsecrets.mask(k, v) for k, v in sorted(cfg.env.items())}
+    info = envsecrets.status(env_path)
     (log.ok if info["encrypted"] else log.warn)(
         ".env is encrypted" if info["encrypted"] else ".env is plaintext")
     log.out(rows)
@@ -153,7 +153,7 @@ def cmd_config(args, cfg):
 def cmd_secrets(args, cfg):
     env_path = cfg.root / ".env"
     if args.action == "status":
-        info = secrets.status(env_path)
+        info = envsecrets.status(env_path)
         if info["encrypted"]:
             log.ok(".env is encrypted (dotenvx) — safe to commit")
             if not info["keys_file_exists"] and not info["private_key_in_env"]:
@@ -166,16 +166,16 @@ def cmd_secrets(args, cfg):
         log.out(info)
         return 0
     if args.action == "init":
-        log.out(secrets.init(env_path))
+        log.out(envsecrets.init(env_path))
         return 0
     if args.action == "rotate":
-        log.out(secrets.rotate(env_path))
+        log.out(envsecrets.rotate(env_path))
         return 0
     if args.action == "encrypt":
-        log.out(secrets.encrypt(env_path))
+        log.out(envsecrets.encrypt(env_path))
         return 0
     if args.action == "decrypt":
-        log.out(secrets.decrypt(env_path))
+        log.out(envsecrets.decrypt(env_path))
         return 0
     return 2
 

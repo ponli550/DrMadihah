@@ -24,7 +24,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import log, secrets
+from . import log, envsecrets
 
 # --------------------------------------------------------------- the fields --
 @dataclass
@@ -186,7 +186,7 @@ def _prompt_field(field: Field, current: str, options: list | None) -> str:
         label += f" ({field.unit})"
 
     while True:
-        shown = secrets.mask(field.key, current) if field.kind == "secret" else current
+        shown = envsecrets.mask(field.key, current) if field.kind == "secret" else current
         raw = _ask(label, shown)
         # the masked value came back untouched -> the real one is unchanged
         if field.kind == "secret" and raw == shown:
@@ -273,7 +273,7 @@ def run(cfg, only: list | None = None, encrypt: bool = False) -> int:
     log.info(f"{len(answers)} change(s)")
     for k, v in answers.items():
         old = current.get(k, "")
-        show = (lambda x: secrets.mask(k, x) if x else "(unset)")
+        show = (lambda x: envsecrets.mask(k, x) if x else "(unset)")
         log.step(f"  {k}: {show(old)} -> {show(v)}")
 
     try:
@@ -287,7 +287,7 @@ def run(cfg, only: list | None = None, encrypt: bool = False) -> int:
 
     env_path = cfg.root / ".env"
     for k, v in answers.items():
-        secrets.set_value(env_path, k, v, encrypt_secrets=encrypt)
+        envsecrets.set_value(env_path, k, v, encrypt_secrets=encrypt)
     log.ok(f"wrote {len(answers)} setting(s) to {env_path}")
     log.out({"written": sorted(answers), "file": str(env_path)})
     return 0
