@@ -1030,6 +1030,72 @@ class BeatSync(Fixtures):
         self.assertAlmostEqual(st["dur"], job["total"], delta=0.1)
 
 
+NEED_SAY = unittest.skipUnless(shutil.which("say"), "needs macOS `say` for real speech")
+
+
+@NEED
+@NEED_SAY
+class SpeechFollow(Fixtures):
+    """speech = "follow": a long clip's excerpt starts where people speak, not at second 0."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        subprocess.run(["say", "-o", str(cls.fx / "talk.aiff"), "Selamat datang ke hari terbuka CyberDSA dua ribu dua puluh enam. Terima kasih kerana hadir."], check=True)
+        ff("-i", str(cls.fx / "talk.aiff"), "-ar", "48000", "-ac", "1", str(cls.fx / "talk.wav"))
+        ff("-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono", "-t", "6", str(cls.fx / "quiet6.wav"))
+        ff("-i", str(cls.fx / "quiet6.wav"), "-i", str(cls.fx / "talk.wav"), "-filter_complex", "concat=n=2:v=0:a=1", str(cls.fx / "late.wav"))
+        ff("-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:d=12.2", "-i", str(cls.fx / "late.wav"), "-c:v", "libx264", "-pix_fmt", "yuv420p",
+           "-c:a", "aac", "-shortest", str(cls.fx / "speaker.mp4"))                       # 6 s of silence, then the talk
+        ff("-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:d=12", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono", "-c:v", "libx264",
+           "-pix_fmt", "yuv420p", "-c:a", "aac", "-t", "12", str(cls.fx / "silent.mp4"))
+
+    def plan(self, clips, **kw):
+        return montage.plan_for(recipe(clips, template="punchy", **kw), self.root)
+
+    def test_the_excerpt_starts_where_the_talking_does(self):
+        self.add("speaker.mp4")
+        p = self.plan([{"media": "speaker.mp4"}], speech="follow")
+        seg = p["segments"][0]
+        self.assertAlmostEqual(seg["src_start"], 6.0 - 0.3, delta=0.5)
+        self.assertGreater(seg["speech"], 1.5, "almost all of the 2 s excerpt is speech")
+        self.assertEqual(p["recipe"]["speech"], "follow")
+
+    def test_without_the_option_the_clip_starts_at_the_beginning_as_before(self):
+        self.add("speaker.mp4")
+        seg = self.plan([{"media": "speaker.mp4"}])["segments"][0]
+        self.assertEqual(seg["src_start"], 0)
+        self.assertNotIn("speech", seg)
+
+    def test_an_explicit_start_is_the_authors_call(self):
+        self.add("speaker.mp4")
+        seg = self.plan([{"media": "speaker.mp4", "start": 1.0}], speech="follow")["segments"][0]
+        self.assertEqual(seg["src_start"], 1.0)
+        self.assertEqual(seg["speech"], 0.0, "the plan still says there is no speech in the part used")
+
+    def test_a_clip_with_nothing_to_follow_is_left_alone(self):
+        self.add("silent.mp4", "clip.mp4")                                   # silence, and a clip with no audio track at all
+        for name in ("silent.mp4", "clip.mp4"):
+            with self.subTest(name):
+                seg = self.plan([{"media": name}], speech="follow")["segments"][0]
+                self.assertEqual(seg["src_start"], 0)
+                self.assertEqual(seg["speech"], 0.0)
+
+    def test_photos_are_not_affected_and_other_values_are_refused(self):
+        self.add("land.jpg", "speaker.mp4")
+        p = self.plan([{"media": "land.jpg"}, {"media": "speaker.mp4"}], speech="follow")
+        self.assertNotIn("speech", p["segments"][0])
+        with self.assertRaises(montage.RecipeError) as ctx:
+            self.plan([{"media": "speaker.mp4"}], speech="loud")
+        self.assertIn("speech", str(ctx.exception))
+
+    def test_a_followed_clip_renders(self):
+        self.add("speaker.mp4", "land.jpg")
+        job, out = self.render(recipe([{"media": "speaker.mp4"}, {"media": "land.jpg"}], template="punchy", quality="draft", speech="follow"))
+        self.assertEqual(job["state"], "done", job["error"])
+        self.assertAlmostEqual(stats(out)["dur"], job["total"], delta=0.1)
+
+
 def gray_frame(path, at):
     return subprocess.run([FF, "-v", "error", "-ss", str(at), "-i", str(path), "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
                           capture_output=True, check=True).stdout

@@ -58,7 +58,7 @@ const view = () => {
     saved: all(c, n => n.className === "urow" && n.parent === c).map(r => deepText(r)),
   };
 };
-const check = (i, v) => { all(card(), n => n.tag === "input" && n.type === "checkbox")[i + 2].checked = v; };   // [0] is "show captions", [1] "cut on the beat"
+const check = (i, v) => { all(card(), n => n.tag === "input" && n.type === "checkbox")[i + 3].checked = v; };   // [0] is "show captions", [1] "cut on the beat", [2] "start where people speak"
 
 (async () => {
   const page = await (await realFetch(`/umcares/p/${slug}/`)).text();
@@ -88,6 +88,7 @@ const check = (i, v) => { all(card(), n => n.tag === "input" && n.type === "chec
   } else if (scenario === "sync") {
     const sync = all(card(), n => n.tag === "input" && n.type === "checkbox")[1];
     out.disabledAtStart = !!sync.disabled;
+    out.speechDefault = all(card(), n => n.tag === "input" && n.type === "checkbox")[2].checked;
     const music = selects()[2];
     music.value = "song.m4a";
     if (music._l.change) await music._l.change();

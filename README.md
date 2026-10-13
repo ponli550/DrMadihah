@@ -712,6 +712,17 @@ renders the same video.
   noise 1.2). Then the plan keeps the template pacing and **warns that no beat was found**, rather than cutting at a
   guessed rhythm. The grid is found to about 10 ms on synthetic kicks; real music is looser, so listen to the first
   render. Results are cached in `.umcares/beats/` (first analysis of a 3-minute song is a few seconds of Python).
+- **Start clips where people speak** (`"speech": "follow"`, the **Start video clips where people speak** tick, on by
+  default in the page, off in a hand-written recipe): `speech.py` finds the stretches of a video clip where someone is
+  talking, and a clip longer than its slot starts there (0.3 s early so the first word is not clipped) instead of at
+  second 0. A clip with an explicit `start` is left alone; the plan shows `🗣 n s of speech` per clip. It works from the
+  clip's own sound: ffmpeg decodes the speech band, loudness is judged against that clip's own quiet floor and loud
+  peaks, runs are joined across breaths, and a run counts only if its loudness pulses like syllables (not a steady hum,
+  not spiky percussion). No model, no cloud. **It finds speech-like sound, not words or speakers**: applause, a very
+  lively crowd or busy music with vocals can pass for speech, and a quiet voice far from the microphone can be missed.
+  Measured on synthesised speech: phrase edges within about 0.1-0.3 s, steady noise and a noise bed ignored, drums and
+  hi-hats ignored. **Not built yet:** keeping the clip's own sound in the video and ducking the music under it. Until
+  then a video is music-only, so this only chooses *which part* of a clip you see, not what you hear.
 - **Output** lands in `exports/` (not in git) with a `.json` sidecar holding the recipe and the resolved plan.
   It is written hidden and moved into place only after its size and length are checked. Rendering is low priority,
   cancellable, and **never runs at the same time as a prepare job** (they share one lock, because the machine is

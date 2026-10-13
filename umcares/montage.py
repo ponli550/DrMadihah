@@ -36,7 +36,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import beats, captions, prepare, textimg, uploads
+from . import beats, captions, prepare, speech, textimg, uploads
 from .layout import kind_of
 
 FORMATS = {
@@ -86,7 +86,7 @@ MIN_PIECE = 0.6
 NICE = prepare.NICE
 THREADS = prepare.THREADS
 ALLOWED_TOP = {"kind", "version", "title", "format", "template", "clips", "captions", "title_card", "end_card", "music",
-               "max_seconds", "note", "quality"}
+               "max_seconds", "note", "quality", "speech"}
 ALLOWED_CLIP = {"media", "caption", "hold", "speed", "start", "zoom", "move"}
 ALLOWED_CARD = {"text", "subtitle", "hold"}
 ALLOWED_MUSIC = {"file", "start", "fade_out", "sync"}
@@ -271,6 +271,8 @@ def validate(recipe, root) -> dict:
         if "hold" in card and not _num(card["hold"], 0.8, 8):
             problems.append(f"{key}.hold: must be a number from 0.8 to 8")
         cards[key] = card
+    if recipe.get("speech") not in (None, "follow"):
+        problems.append('speech: must be "follow" (start clips where people speak) or left out')
     music = recipe.get("music")
     music_item = None
     if music is not None:
@@ -289,7 +291,7 @@ def validate(recipe, root) -> dict:
         raise RecipeError(problems)
     return {"kind": "montage", "version": 1, "title": title.strip(), "format": fmt, "template": tpl,
             "captions": recipe.get("captions", True), "max_seconds": max_s, "clips": clips, "cards": cards,
-            "quality": recipe.get("quality", "final"),
+            "quality": recipe.get("quality", "final"), "speech": recipe.get("speech"),
             "music": None if music_item is None else {**music, "_item": music_item}, "note": recipe.get("note")}
 
 
@@ -321,14 +323,25 @@ def resolve(validated: dict, root) -> dict:
             continue
         dur = quick_info(path)["duration"]
         start = float(c.get("start", 0))
+        spans = None
+        if r.get("speech") == "follow":
+            spans = _speech_spans(path, root, item["name"], warnings)
+            if spans and "start" not in c:                              # an explicit start is the author's call
+                want = float(c.get("hold", tpl["video_max"])) * float(c.get("speed", tpl["video_speed"]))
+                pick = speech.best_start(spans, dur, want)
+                if pick:
+                    start = pick[0]
         avail = dur - start
         if avail < 0.4:
             raise MontageError(f"clips[{i}]: start {start:g}s is past the end of {item['name']} ({dur:.1f}s long)")
         speed = float(c.get("speed", tpl["video_speed"]))
         want_out = float(c.get("hold", tpl["video_max"]))
         used = min(avail, want_out * speed)
-        segs.append({**base, "kind": "video", "src_start": start, "src_used": round(used, 3), "speed": speed,
-                     "duration": round(used / speed, 3)})
+        seg = {**base, "kind": "video", "src_start": start, "src_used": round(used, 3), "speed": speed,
+               "duration": round(used / speed, 3)}
+        if spans is not None:
+            seg["speech"] = round(speech.covered(spans, start, start + used), 1)     # seconds of speech in the part used
+        segs.append(seg)
     if "end_card" in r["cards"]:
         c = r["cards"]["end_card"]
         segs.append({"kind": "end", "text": c["text"].strip(), "subtitle": (c.get("subtitle") or "").strip(),
@@ -384,6 +397,15 @@ def resolve(validated: dict, root) -> dict:
             "fps": fmt["fps"], "fade": round(fade, 3), "total": total, "segments": segs, "music": music, "sync": None if not sync else {k: v for k, v in sync.items() if k != "music_start"},
             "warnings": warnings,
             "recipe": {k: v for k, v in r.items() if k not in ("clips", "cards", "music")}}
+
+
+def _speech_spans(path: Path, root: Path, name: str, warnings: list):
+    """The speech spans of a clip ([] when it has none), or None when it could not be checked (a warning says so)."""
+    try:
+        return speech.analyse(path, root / ".umcares" / "speech")["spans"]
+    except speech.SpeechError as e:
+        warnings.append(f"could not check {name} for speech: {e}")
+        return None
 
 
 def _beat_sync(r, root: Path, segs: list, warnings: list, fps: int):
@@ -908,6 +930,7 @@ def brief(root, project_name: str = "") -> str:
               f"`move` (photos only: {', '.join(MOVES)}; the camera glides, eased. Left out, neighbouring photos alternate on their own).",
               "- `captions`: true draws each clip's caption on screen; `title_card` / `end_card`: `{text, subtitle?, hold?}`.",
               "- `music`: `{file, start?, fade_out?, sync?}` or null. `\"sync\": \"beat\"` finds the song's beat, makes every piece a whole number of beats long and starts the song on a beat, so every cut lands on one (hard cuts; the plan reports the BPM, or warns when the song has no steady beat). Use only royalty-free music; a commercial song gets a posted video muted or blocked.",
+              "- `speech`: `\"follow\"` starts each video clip (that has no explicit `start`) where people speak, so a long clip's excerpt holds the words, not dead air. It finds speech-like sound, not words.",
               f"- `max_seconds`: up to {MAX_SECONDS_LIMIT} (default {DEFAULT_SECONDS}); clips beyond it are dropped from the end.",
               "", "## Example", "", "```json", json.dumps(EXAMPLE, indent=2), "```", "",
               "## Rules", "", "- Use only files from the table above. Do not invent refs.",
