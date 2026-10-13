@@ -551,7 +551,7 @@ It is the capture, library and approval surface; it never computes a timing.
 |---|---|---|
 | **A** | Claude Code, run by hand on the Mac | most polished; the web shows the result and approves |
 | **B** | templates, no model | fast draft: slow-mo montage, speed ramps, LUT grade, beat-synced cuts, text overlay |
-| **C** | the web triggers `claude -p` on the Mac (subscription) | limits and terms **not verified**; restrict allowed tools, validate, require approval before render |
+| **C** | `umcares draft` runs `claude -p` on **your** Mac (built; see below) | no tools, server-validated, saved for approval, never rendered; the Premiere machine has no `claude` and gets none |
 
 Rules the web must keep:
 
@@ -572,6 +572,34 @@ Social output: 9:16 (1080x1920), 30 fps, burned-in captions, 15-60 s. Reframing
 ffmpeg and librosa. A commercial song (e.g. a sad Indonesian track) in a posted
 video gets muted or blocked. Export with no music, or a quiet placeholder, and add the
 track in the platform's own app; otherwise use the royalty-free folder.
+
+#### Mode C: `umcares draft`
+
+```bash
+export UMC_WEB_URL=https://<machine>.<tailnet>.ts.net/umcares      # or --url, or UMC_WEB_URL in .env
+umcares draft cyberdsa "a 20 second upbeat reel for Instagram, hook first, keep the captions short"
+umcares draft cyberdsa "..." --dry-run          # check and print it, save nothing
+umcares draft cyberdsa "..." --no-images        # names and captions only: no pictures leave this machine
+```
+
+It runs `claude -p` **on the machine you type it on** (where Claude Code is logged in), not on the Premiere machine, which has
+no `claude` and no Node and gets neither. It reads the project's catalog, captions and the recipe brief from the web app,
+fetches up to 12 thumbnails (one request per folder, small JPEGs), and calls Claude **once with every tool switched off**
+(`--tools ""`, no session saved, a spending cap): it can only answer. The answer is checked by the web app's own dry run, the
+same validation a hand-written recipe gets; if it has problems, Claude is shown them **once** and corrects. The result is
+saved as `claude-draft-<time>` under *Saved recipes* and is **never rendered**: open the page, look at the plan, press Make.
+
+- **Privacy:** the thumbnails (photos of people) and captions go to Anthropic through your Claude Code login. `--no-images`
+  sends only names and captions.
+- **Cost and speed:** one call. Measured on the 9-photo CyberDSA project: about 90 s end to end, most of it fetching
+  thumbnails over the slow link; the model call itself is a few seconds to tens of seconds. Claude Code reports a notional
+  per-call cost (about $0.03 for a small image test); on a subscription it counts against your limits. `--budget` caps it.
+- **What it is good and bad at:** it picks and orders pictures, writes short captions and chooses a look, and can drop clips.
+  It does not hear or watch motion, so it does not check beats or speech, and it can overshoot the length you asked for
+  (it drafted 24 s for "about 20"; the plan shows the real total, so read it). It may also pick fields the brief offers that
+  you did not mean, such as a tempo (`music.bpm`) it guessed; edit the recipe or ask again.
+- Exit code 2 means a refusal or a clear error (no project, nothing to draw from, unreachable web app, two answers that
+  failed the checker), never a half-saved recipe.
 
 #### Choosing the project: `--project` and the refuse rule
 

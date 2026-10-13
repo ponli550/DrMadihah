@@ -15,6 +15,7 @@ from . import (auth, doctor, media_scan as inspect_mod, log, media, post, recipe
                recipe_mod, render as render_mod, safe, scaffold,
                script as script_mod, envsecrets, session, spinner, stack, web)
 from . import projects as projects_mod
+from . import draft as draft_mod
 from . import scope
 from .example import EXAMPLE_RECIPE
 from . import __version__
@@ -1118,12 +1119,47 @@ def build_parser() -> argparse.ArgumentParser:
                     help="responses to render in the markdown table")
     ig.set_defaults(func=cmd_ingest)
 
+    dr = sub.add_parser("draft", help="ask Claude to draft a video recipe for a web project (runs on this machine, saves it for you to approve)")
+    dr.add_argument("project", help="the project's folder name on the web app, e.g. cyberdsa")
+    dr.add_argument("request", nargs="+", help="what you want, e.g. a 20 second upbeat reel of the opening")
+    dr.add_argument("--url", help="the web app's address (default: UMC_WEB_URL)")
+    dr.add_argument("--images", type=int, default=draft_mod.MAX_IMAGES, help="how many thumbnails to show Claude")
+    dr.add_argument("--no-images", action="store_true", help="send only names and captions (no pictures leave this machine)")
+    dr.add_argument("--model", help="model for the single call (default: your Claude Code default)")
+    dr.add_argument("--budget", type=float, default=draft_mod.DEFAULT_BUDGET, help="safety cap in dollars for the single call")
+    dr.add_argument("--dry-run", action="store_true", help="check the draft and print it, but do not save it")
+    dr.set_defaults(func=cmd_draft)
+
     co = sub.add_parser("complete",
                         help="completion candidates (used by the shell)")
     co.add_argument("tokens", nargs=argparse.REMAINDER)
     co.set_defaults(func=cmd_complete)
 
     return p
+
+
+def cmd_draft(args, cfg):
+    """Ask Claude (run here, no tools) to draft a recipe for a web project; validate it; save it for approval."""
+    import os
+    url = args.url or cfg.env.get("UMC_WEB_URL") or os.environ.get("UMC_WEB_URL", "")
+    try:
+        site = draft_mod.Site(url)
+        with spinner.spin("Claude is looking at the pictures", 240):
+            res = draft_mod.draft(site, args.project, " ".join(args.request), max_images=args.images, images=not args.no_images,
+                                  budget=args.budget, model=args.model, save=not args.dry_run)
+    except draft_mod.DraftError as e:
+        log.err(str(e))
+        return 2
+    plan = res["plan"]
+    log.ok(f"drafted a {plan['total']} s video of {len(plan['segments'])} pieces ({plan['template']}, {plan['format']}); "
+           f"Claude saw {res['images']} picture(s), {res['attempts']} attempt(s)")
+    for w in plan.get("warnings", []):
+        log.warn(w)
+    if res["name"]:
+        log.ok(f"saved as recipe '{res['name']}': open the project page, Make a video, Saved recipes, then Use or Make. Nothing was rendered.")
+    else:
+        log.out(res["recipe"])
+    return 0
 
 
 def cmd_complete(args, cfg):
