@@ -199,7 +199,11 @@ def draft(site, slug: str, request: str, max_images: int = MAX_IMAGES, images: b
     """Draft, check, (repair once), and save a recipe. Returns {"name", "recipe", "plan", "attempts", "images"}."""
     if not request or not request.strip():
         raise DraftError("say what you want, e.g. \"a 20 second reel of the opening, upbeat\"")
-    ask = ask or (lambda line: ask_claude(line, budget=budget, model=model, claude=claude))
+    if ask is None:
+        claude = claude or shutil.which("claude")
+        if not claude:                                                  # before the slow part, not after it
+            raise DraftError("Claude Code (`claude`) is not installed on this machine")
+        ask = lambda line: ask_claude(line, budget=budget, model=model, claude=claude)
     ctx = gather(site, slug, max_images, images)
     repair, last = None, None
     for attempt in (1, 2):

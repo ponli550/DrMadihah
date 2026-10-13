@@ -153,6 +153,13 @@ class Flow(unittest.TestCase):
             draft.draft(draft.Site("http://127.0.0.1:9"), "demo", "x", ask=Fake())
         self.assertIn("could not reach", str(c4.exception))
 
+    def test_a_missing_claude_is_reported_before_any_slow_work(self):
+        unreachable = draft.Site("http://127.0.0.1:9")                       # would say "could not reach" if it got that far
+        with mock.patch.object(draft.shutil, "which", lambda n: None):
+            with self.assertRaises(draft.DraftError) as ctx:
+                draft.draft(unreachable, "demo", "x")
+        self.assertIn("not installed", str(ctx.exception))
+
     def test_an_empty_project_is_refused_before_the_model_is_asked(self):
         projects.create_project(self.home, "Empty", init_git=False)
         ask = Fake()
