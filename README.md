@@ -668,6 +668,14 @@ renders the same video.
 - **Everything is composed over a blurred copy of itself**, so a portrait photo in a 9:16 frame is never cropped
   and a landscape one never loses its sides. (ffprobe does not report an EXIF-rotated photo's true shape, so
   composing the same way every time is also simpler than detecting it.) Photos get a slow zoom; clips can be slowed.
+- **Motion is eased and has a vocabulary.** A photo's camera move is one of `in` (dolly in), `out`, `pan_left`,
+  `pan_right` or `still`, named per clip as `"move"` (a recipe declares intent, never a timing). Left out, neighbouring
+  photos alternate through the template's own cycle so no two in a row move the same way. Every move follows a
+  smoothstep curve (slow, fast, slow): a linear move reads as mechanical. Captions and title lines glide up a few
+  pixels as they fade in, on an ease-out curve, and a title card gets a thin accent line in the template's colour
+  between the title and the subtitle. (ffmpeg's `drawbox` evaluates a time-based size once, so the line fades in
+  instead of growing.) These behaviours are pinned by pixel tests: the zoom's first and last quarter move less than its
+  middle, a pan goes the right way, a caption starts lower and settles, the accent line sits between the two texts.
 - **On-screen text** is drawn by macOS (AppKit, via `osascript -l JavaScript`) into a transparent PNG and laid
   over with ffmpeg, because **this ffmpeg has no `drawtext` and no libass**. It supports Malay, Indonesian and
   emoji, fits the text to its box, and puts captions on a soft plate so they read over any picture. Captions sit
@@ -695,7 +703,12 @@ live in `recipes/*.montage.json`, are committed to git, and turn "needs fixing" 
 deleted. A video limited by `max_seconds` drops clips from the end and says so; if the cards plus one clip are
 already too long it says that too, instead of silently exceeding the limit.
 
-Not built yet: beat-synced cuts, narration, mode C, and deleting an export from the page.
+Design notes behind the polish (from material saved in SekerinShotto): movement needs written rules and easing,
+not just "a zoom"; a camera vocabulary (dolly in, pan, static) is what a model can name; a short post wants a
+hook in the first seconds, one idea per shot, calm shots between busy ones, and a clear last beat (the brief for
+Claude carries this advice); and typography wants hierarchy, alignment and whitespace.
+
+Not built yet: beat-synced cuts, a paper-collage ("Vox") look, narration, mode C, and deleting an export from the page.
 
 #### Preparing videos for editing
 

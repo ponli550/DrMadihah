@@ -49,17 +49,25 @@ FORMATS = {
 TEMPLATES = {
     "slowmo": {"label": "Slow motion", "blurb": "Gentle zooms, clips slowed, soft crossfades, warm tone.",
                "photo_hold": 2.6, "video_max": 4.0, "video_speed": 0.75, "fade": 0.5, "zoom": 0.10, "vignette": True, "grain": 6,
-               "grade": "eq=saturation=0.95:contrast=1.04,colorbalance=rs=.06:gs=.01:bs=-.06:rm=.04:bm=-.04", "bg": "#14110f"},
+               "grade": "eq=saturation=0.95:contrast=1.04,colorbalance=rs=.06:gs=.01:bs=-.06:rm=.04:bm=-.04", "bg": "#14110f",
+               "accent": "#e8b86a", "moves": ["in", "pan_right", "out", "pan_left"]},
     "punchy": {"label": "Punchy cuts", "blurb": "Fast hard cuts, quick zoom, high contrast.",
                "photo_hold": 1.2, "video_max": 2.0, "video_speed": 1.0, "fade": 0.0, "zoom": 0.07, "vignette": False, "grain": 0,
-               "grade": "eq=contrast=1.15:saturation=1.1:gamma=0.95", "bg": "#0b0b0d"},
+               "grade": "eq=contrast=1.15:saturation=1.1:gamma=0.95", "bg": "#0b0b0d",
+               "accent": "#ff5a4d", "moves": ["in", "out"]},
     "clean": {"label": "Clean", "blurb": "Even pacing, plain crossfades, natural colour.",
               "photo_hold": 3.0, "video_max": 4.0, "video_speed": 1.0, "fade": 0.4, "zoom": 0.05, "vignette": False, "grain": 0,
-              "grade": "", "bg": "#111318"},
+              "grade": "", "bg": "#111318",
+              "accent": "#7fb0ff", "moves": ["in", "pan_right", "out", "pan_left"]},
     "melancholy": {"label": "Melancholy", "blurb": "Slow and quiet: long holds, cool desaturated tone, soft grain.",
                    "photo_hold": 3.4, "video_max": 4.5, "video_speed": 0.8, "fade": 0.9, "zoom": 0.12, "vignette": True, "grain": 10,
-                   "grade": "eq=saturation=0.7:contrast=1.05,colorbalance=rs=-.05:bs=.07:rm=-.03:bm=.05", "bg": "#0d1117"},
+                   "grade": "eq=saturation=0.7:contrast=1.05,colorbalance=rs=-.05:bs=.07:rm=-.03:bm=.05", "bg": "#0d1117",
+                   "accent": "#8fb3c9", "moves": ["in", "out"]},
 }
+
+# How the camera moves over a photo (the words a recipe can use). Every move is eased (smoothstep), because a linear
+# move reads as mechanical: the movement starts slowly, is fastest in the middle, and settles.
+MOVES = ("in", "out", "pan_left", "pan_right", "still")
 
 MAX_CLIPS = 60
 DEFAULT_SECONDS, MAX_SECONDS_LIMIT = 60, 90
@@ -69,7 +77,7 @@ NICE = prepare.NICE
 THREADS = prepare.THREADS
 ALLOWED_TOP = {"kind", "version", "title", "format", "template", "clips", "captions", "title_card", "end_card", "music",
                "max_seconds", "note"}
-ALLOWED_CLIP = {"media", "caption", "hold", "speed", "start", "zoom"}
+ALLOWED_CLIP = {"media", "caption", "hold", "speed", "start", "zoom", "move"}
 ALLOWED_CARD = {"text", "subtitle", "hold"}
 ALLOWED_MUSIC = {"file", "start", "fade_out"}
 
@@ -227,10 +235,14 @@ def validate(recipe, root) -> dict:
         if cap is not None and (not isinstance(cap, str) or len(cap) > 200):
             problems.append(f"{w}.caption: must be text of at most 200 characters")
         if "zoom" in c and not isinstance(c["zoom"], bool):
-            problems.append(f"{w}.zoom: must be true or false")
+            problems.append(f"{w}.zoom: must be true or false (or use move)")
+        if "move" in c and c["move"] not in MOVES:
+            problems.append(f"{w}.move: must be one of {', '.join(MOVES)}")
         if item:
             if item["kind"] == "image" and ("speed" in c or "start" in c):
                 problems.append(f"{w}: speed and start apply to videos, not to a photo")
+            if item["kind"] == "video" and "move" in c:
+                problems.append(f"{w}: move applies to photos; a video keeps its own camera movement")
             clips.append({**c, "_item": item})
     cards = {}
     for key in ("title_card", "end_card"):
@@ -273,6 +285,7 @@ def resolve(validated: dict, root) -> dict:
     r = validated
     tpl, fmt = TEMPLATES[r["template"]], FORMATS[r["format"]]
     segs, warnings = [], []
+    photos_seen = 0
     if "title_card" in r["cards"]:
         c = r["cards"]["title_card"]
         segs.append({"kind": "title", "text": c["text"].strip(), "subtitle": (c.get("subtitle") or "").strip(),
@@ -283,10 +296,12 @@ def resolve(validated: dict, root) -> dict:
         if not path.is_file():
             raise MontageError(f"{item['name']} is no longer in the project")
         text = (c.get("caption") if c.get("caption") is not None else item["caption"]) if r["captions"] else ""
-        base = {"media": item["ref"], "name": item["name"], "rel": item["rel"], "text": (text or "").strip(),
-                "zoom": bool(c.get("zoom", True))}
+        base = {"media": item["ref"], "name": item["name"], "rel": item["rel"], "text": (text or "").strip()}
         if item["kind"] == "image":
-            segs.append({**base, "kind": "photo", "duration": float(c.get("hold", tpl["photo_hold"]))})
+            # the move: what the recipe says, else (zoom:false means still), else the template's cycle so neighbours differ
+            move = c.get("move") or ("still" if c.get("zoom") is False else tpl["moves"][photos_seen % len(tpl["moves"])])
+            photos_seen += 1
+            segs.append({**base, "kind": "photo", "move": move, "duration": float(c.get("hold", tpl["photo_hold"]))})
             continue
         dur = quick_info(path)["duration"]
         start = float(c.get("start", 0))
@@ -438,6 +453,7 @@ def _piece_command(ffmpeg, plan, seg, i, workdir: Path, out: Path):
     fmt = FORMATS[plan["format"]]
     look = _look(tpl)
     steps = []
+    glide = lambda start, dur: f"pow(1-min(1,max(0,(t-{start})/{dur})),3)"          # 1 -> 0 along an ease-out curve
     if seg["kind"] in ("title", "end"):
         # Title above, subtitle below, as two boxes that cannot overlap: the title text is bottom-aligned in a box that ends
         # at 52% of the height, the subtitle top-aligned in a box that starts at 55%. With no subtitle the title is centred.
@@ -446,13 +462,21 @@ def _piece_command(ffmpeg, plan, seg, i, workdir: Path, out: Path):
         has_sub = bool(seg["subtitle"])
         title_h = int(H * 0.22)
         title_y = int(H * 0.30) if has_sub else (H - title_h) // 2
+        lift = max(6, int(H * 0.018))                                              # how far a line glides up as it arrives
         big = _text_png(workdir, seg["text"], f"seg{i}-t", W, title_h, size=int(H * 0.055), valign="bottom" if has_sub else "middle", pad=margin)
         inputs = ["-f", "lavfi", "-i", f"color=c={tpl['bg']}:s={W}x{H}:r={fps}:d={d}", "-loop", "1", "-framerate", str(fps), "-t", str(d), "-i", str(big)]
-        graph = f"[1:v]format=rgba,fade=t=in:st=0.2:d=0.5:alpha=1,fade=t=out:st={max(0.3, d - 0.6):g}:d=0.4:alpha=1[t1];[0:v][t1]overlay=0:{title_y}:format=auto"
+        out_fade = f"fade=t=out:st={max(0.3, d - 0.6):g}:d=0.4:alpha=1"
+        graph = (f"[1:v]format=rgba,fade=t=in:st=0.15:d=0.5:alpha=1,{out_fade}[t1];"
+                 f"[0:v][t1]overlay=0:'{title_y}+{lift}*{glide(0.15, 0.6)}':format=auto")
         if has_sub:
             sub = _text_png(workdir, seg["subtitle"], f"seg{i}-s", W, int(H * 0.15), size=int(H * 0.032), valign="top", color="#d0d4da", pad=margin)
-            inputs += ["-loop", "1", "-framerate", str(fps), "-t", str(d), "-i", str(sub)]
-            graph += f"[a];[2:v]format=rgba,fade=t=in:st=0.5:d=0.5:alpha=1,fade=t=out:st={max(0.3, d - 0.6):g}:d=0.4:alpha=1[t2];[a][t2]overlay=0:{int(H * 0.55)}:format=auto"
+            bar_w, bar_h = max(24, int(W * 0.12)), max(3, int(H * 0.0035))
+            inputs += ["-loop", "1", "-framerate", str(fps), "-t", str(d), "-i", str(sub),
+                       "-f", "lavfi", "-i", f"color=c={tpl['accent']}:s={bar_w}x{bar_h}:r={fps}:d={d}"]
+            graph += (f"[a];[2:v]format=rgba,fade=t=in:st=0.5:d=0.5:alpha=1,{out_fade}[t2];"
+                      f"[a][t2]overlay=0:'{int(H * 0.55)}+{lift}*{glide(0.5, 0.6)}':format=auto[b];"
+                      f"[3:v]format=rgba,fade=t=in:st=0.35:d=0.4:alpha=1,{out_fade}[bar];"
+                      f"[b][bar]overlay={(W - bar_w) // 2}:{int(H * 0.535)}:format=auto")
         graph += ",format=yuv420p[out]"
         return [(_base(ffmpeg) + inputs + ["-filter_complex", graph, "-map", "[out]", "-t", str(d), "-r", str(fps)] + ENCODE_PIECE + [str(out)], d)]
     overlay_in, overlay_graph = [], ""
@@ -461,20 +485,27 @@ def _piece_command(ffmpeg, plan, seg, i, workdir: Path, out: Path):
         png = _text_png(workdir, seg["text"], f"seg{i}-c", W, cap_h, size=int(H * 0.036), plate=True, valign="bottom", pad=int(W * 0.06))
         overlay_in = ["-loop", "1", "-framerate", str(fps), "-t", str(d), "-i", str(png)]
         y = int(H * fmt["caption_bottom"]) - cap_h
+        rise = max(6, int(H * 0.014))
         overlay_graph = (f";[1:v]format=rgba,fade=t=in:st=0.25:d=0.35:alpha=1,fade=t=out:st={max(0.3, d - 0.6):g}:d=0.35:alpha=1[t];"
-                         f"[v][t]overlay=0:{y}:format=auto[o]")
+                         f"[v][t]overlay=0:'{y}+{rise}*{glide(0.25, 0.45)}':format=auto[o]")
     out_label = "[out]" if overlay_graph else "[v]"
     if seg["kind"] == "photo":
-        zoom = tpl["zoom"] if seg["zoom"] else 0
+        move, zoom = seg["move"], tpl["zoom"]
         n = max(1, round(d * fps))
+        u = f"(on/{n})"
+        ease = f"(3*pow({u},2)-2*pow({u},3))"                                      # smoothstep: slow, fast, slow
         comp = workdir / f"seg{i}-compose.jpg"
-        k = 2 if zoom else 1
+        k = 1 if move == "still" else 2                                            # a moving shot is composed larger, then cropped
         steps.append((_base(ffmpeg) + ["-i", str(root_of(plan) / seg["rel"]), "-vf", _compose(W * k, H * k), "-frames:v", "1", "-q:v", "2", str(comp)], 0))
-        if zoom:
-            z = f"1+{zoom}*on/{n}" if i % 2 == 0 else f"1+{zoom}-{zoom}*on/{n}"
-            motion = f"zoompan=z='{z}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={W}x{H}:fps={fps}"
-        else:
-            motion = f"scale={W}:{H}"
+        centre_x, centre_y = "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"
+        pan = max(zoom, 0.08)                                                      # a pan needs room to travel
+        motion = {
+            "still": f"scale={W}:{H}",
+            "in": f"zoompan=z='1+{zoom}*{ease}':x='{centre_x}':y='{centre_y}':d=1:s={W}x{H}:fps={fps}",
+            "out": f"zoompan=z='1+{zoom}*(1-{ease})':x='{centre_x}':y='{centre_y}':d=1:s={W}x{H}:fps={fps}",
+            "pan_right": f"zoompan=z='1+{pan}':x='(iw-iw/zoom)*{ease}':y='{centre_y}':d=1:s={W}x{H}:fps={fps}",
+            "pan_left": f"zoompan=z='1+{pan}':x='(iw-iw/zoom)*(1-{ease})':y='{centre_y}':d=1:s={W}x{H}:fps={fps}",
+        }[move]
         chain = ",".join(p for p in (motion, look, "scale=out_range=tv", "format=yuv420p") if p)
         graph = f"[0:v]{chain}[v]" + overlay_graph + (";[o]format=yuv420p[out]" if overlay_graph else "")
         steps.append((_base(ffmpeg) + ["-loop", "1", "-framerate", str(fps), "-t", str(d), "-i", str(comp)] + overlay_in +
@@ -765,7 +796,7 @@ def list_recipes(root) -> list:
 EXAMPLE = {"kind": "montage", "title": "Event highlights", "format": "reels", "template": "slowmo",
            "captions": True, "title_card": {"text": "Event highlights", "subtitle": "9 October 2026"},
            "clips": [{"media": "<ref or filename>", "caption": "Opening speech"},
-                     {"media": "<ref or filename>", "hold": 3},
+                     {"media": "<ref or filename>", "hold": 3, "move": "pan_right"},
                      {"media": "<video ref>", "start": 1.5, "speed": 0.6}],
            "end_card": {"text": "Thank you"}, "music": None, "max_seconds": 45}
 
@@ -790,12 +821,20 @@ def brief(root, project_name: str = "") -> str:
     lines += ["", "## Templates (the look and the pacing)", ""] + [f"- `{k}`: {v['blurb']}" for k, v in TEMPLATES.items()]
     lines += ["", "## Fields", "",
               "- `clips[]` (required, in order): `media`; optional `caption` (overrides the file's caption), `hold` (seconds on screen), "
-              "`speed` (videos only, 0.25 to 2; below 1 is slow motion), `start` (videos only, seconds into the clip), `zoom` (stills, true/false).",
+              "`speed` (videos only, 0.25 to 2; below 1 is slow motion), `start` (videos only, seconds into the clip), "
+              f"`move` (photos only: {', '.join(MOVES)}; the camera glides, eased. Left out, neighbouring photos alternate on their own).",
               "- `captions`: true draws each clip's caption on screen; `title_card` / `end_card`: `{text, subtitle?, hold?}`.",
               "- `music`: `{file, start?, fade_out?}` or null. Use only royalty-free music; a commercial song gets a posted video muted or blocked.",
               f"- `max_seconds`: up to {MAX_SECONDS_LIMIT} (default {DEFAULT_SECONDS}); clips beyond it are dropped from the end.",
               "", "## Example", "", "```json", json.dumps(EXAMPLE, indent=2), "```", "",
               "## Rules", "", "- Use only files from the table above. Do not invent refs.",
               "- Prefer a caption the owner wrote over one you invent; do not state facts (names, numbers) that are not in the captions.",
-              "- Vary the pacing: hold the strongest shots longer."]
+              "- Vary the pacing: hold the strongest shots longer.",
+              "", "## Structure that works for a short post", "",
+              "- **Hook (first 2 to 3 seconds):** open with the single strongest, clearest shot, not a logo. A title card is fine only if it is short.",
+              "- **Body:** one idea per clip. Change something every 2 to 4 seconds (a different shot, framing or move) so the eye keeps getting a reason to stay.",
+              "- **Cover the joins:** put a calm detail or atmosphere shot between two busy ones.",
+              "- **Close:** end on a clear final beat (an end card with the event name or a short thank-you), not mid-motion.",
+              "- Keep captions short (a few words, never a paragraph); one caption per shot at most.",
+              "- 15 to 30 seconds is plenty. A longer video must earn it."]
     return "\n".join(lines) + "\n"

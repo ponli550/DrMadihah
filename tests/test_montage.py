@@ -357,11 +357,11 @@ class Rendering(Fixtures):
         top = slice(0, 216 * 3 * 100)                                    # the top of the frame carries no caption
         self.assertEqual(sum(1 for i in range(0, len(a[top]), 3) if abs(a[i] - b[i]) > 40), 0)
 
-    def bands(self, path, at, w=216, h=384):
+    def bands(self, path, at, w=216, h=384, thresh=180):
         """Runs of rows that contain bright (text) pixels, top to bottom, as (first_row, last_row)."""
         raw = subprocess.run([FF, "-v", "error", "-ss", str(at), "-i", str(path), "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
                              capture_output=True, check=True).stdout
-        rows = [y for y in range(h) if any(raw[y * w + x] > 180 for x in range(w))]
+        rows = [y for y in range(h) if any(raw[y * w + x] > thresh for x in range(w))]
         runs = []
         for y in rows:
             if runs and y - runs[-1][1] <= 3:
@@ -554,10 +554,131 @@ class Recipes(Fixtures):
         self.assertIn("Opening speech by the dean", text)
         self.assertIn("song.m4a", text)
         self.assertIn("never compute durations", text)
+        self.assertIn("Hook (first 2 to 3 seconds)", text)
+        self.assertIn("pan_left", text)
+        self.assertIn("one caption per shot at most", text)
         self.assertNotIn(str(self.home), text)
         example = json.loads(text.split("```json")[1].split("```")[0])
         self.assertEqual(example["kind"], "montage")
         self.assertEqual(set(example) - montage.ALLOWED_TOP, set())
+
+
+def gray(path, at, w, h):
+    return subprocess.run([FF, "-v", "error", "-ss", str(at), "-i", str(path), "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
+                          capture_output=True, check=True).stdout
+
+
+def mean_diff(a, b):
+    return sum(abs(x - y) for x, y in zip(a, b)) / len(a)
+
+
+def best_shift(a, b, w, h, rng=24):
+    """How far the picture moved sideways between two frames: the shift of the middle row that matches best."""
+    row = lambda f: list(f[(h // 2) * w:(h // 2 + 1) * w])
+    ra, rb = row(a), row(b)
+    best, arg = None, 0
+    for d in range(-rng, rng + 1):
+        lo, hi = max(0, d), min(w, w + d)
+        err = sum(abs(ra[x - d] - rb[x]) for x in range(lo + rng, hi - rng)) / max(1, hi - lo - 2 * rng)
+        if best is None or err < best:
+            best, arg = err, d
+    return arg
+
+
+@NEED
+class Motion(Fixtures):
+    """The camera and the text move on eased curves, with real pixels as the proof."""
+    W, H = 216, 384
+
+    def photo(self, move, hold=3.0, name="land.jpg", template="clean", **kw):
+        self.add(name)
+        _, out = self.render(recipe([{"media": name, "move": move, "hold": hold, **kw.pop("clip", {})}], template=template, captions=False, **kw))
+        return out
+
+    def test_the_moves_are_part_of_the_vocabulary_and_wrong_ones_are_refused_with_a_reason(self):
+        self.add("land.jpg", "clip.mp4")
+        for mv in montage.MOVES:
+            self.assertEqual(montage.validate({"clips": [{"media": "land.jpg", "move": mv}]}, self.root)["clips"][0]["move"], mv)
+        with self.assertRaises(montage.RecipeError) as cm:
+            montage.validate({"clips": [{"media": "land.jpg", "move": "spin"}]}, self.root)
+        self.assertIn("move: must be one of in, out, pan_left, pan_right, still", cm.exception.problems[0])
+        with self.assertRaises(montage.RecipeError) as cm:
+            montage.validate({"clips": [{"media": "clip.mp4", "move": "in"}]}, self.root)
+        self.assertIn("move applies to photos", cm.exception.problems[0])
+
+    def test_neighbouring_photos_get_different_moves_unless_told_otherwise(self):
+        self.add("land.jpg", "port.jpg", "square.jpg", "clip.mp4")
+        p = montage.plan_for(recipe([{"media": "land.jpg"}, {"media": "clip.mp4"}, {"media": "port.jpg"}, {"media": "square.jpg"},
+                                     {"media": "land.jpg", "move": "still"}]), self.root)
+        moves = [s["move"] for s in p["segments"] if s["kind"] == "photo"]
+        self.assertEqual(moves, ["in", "pan_right", "out", "still"], "the cycle counts photos only, and a named move wins")
+
+    def test_zoom_false_still_means_a_still_photo(self):
+        self.add("land.jpg")
+        p = montage.plan_for(recipe([{"media": "land.jpg", "zoom": False}]), self.root)
+        self.assertEqual(p["segments"][0]["move"], "still")
+
+    def test_a_still_does_not_move_and_a_zoom_does(self):
+        still, zoom = self.photo("still"), None
+        self.root2 = None
+        a, b = gray(still, 0.8, self.W, self.H), gray(still, 2.2, self.W, self.H)
+        self.assertLess(mean_diff(a, b), 0.6, "nothing moves in a still")
+        moving = self.photo("in", name="port.jpg")
+        c, d = gray(moving, 0.8, self.W, self.H), gray(moving, 2.2, self.W, self.H)
+        self.assertGreater(mean_diff(c, d), 4 * mean_diff(a, b) + 1.0)
+
+    def test_the_zoom_starts_slowly_and_is_fastest_in_the_middle(self):
+        """A linear zoom moves at one speed all the way; an eased one barely moves at first. That difference is the polish."""
+        with mock.patch.dict(montage.TEMPLATES["clean"], zoom=0.3):         # a big zoom, so the motion stands well above the encoder's noise floor
+            out = self.photo("in", hold=3.0)
+        start = mean_diff(gray(out, 0.05, self.W, self.H), gray(out, 0.25, self.W, self.H))
+        middle = mean_diff(gray(out, 1.4, self.W, self.H), gray(out, 1.6, self.W, self.H))
+        end = mean_diff(gray(out, 2.75, self.W, self.H), gray(out, 2.95, self.W, self.H))
+        self.assertLess(start, 0.55 * middle, f"slow start: start={start:.2f} middle={middle:.2f}")
+        self.assertLess(end, 0.55 * middle, f"gentle settle: end={end:.2f} middle={middle:.2f}")
+
+    def test_a_pan_moves_the_picture_sideways_the_right_way(self):
+        self.add("square.jpg")
+        shifts = {}
+        for mv in ("pan_right", "pan_left"):
+            _, out = self.render(recipe([{"media": "square.jpg", "move": mv, "hold": 3}], template="clean", captions=False))
+            shifts[mv] = best_shift(gray(out, 0.1, self.W, self.H), gray(out, 2.85, self.W, self.H), self.W, self.H)
+        self.assertLessEqual(shifts["pan_right"], -3, "the camera moves right, so the picture slides left")
+        self.assertGreaterEqual(shifts["pan_left"], 3, "the camera moves left, so the picture slides right")
+
+    def test_a_caption_glides_up_into_place_and_then_stays_put(self):
+        flat = self.fx / "flat.jpg"
+        subprocess.run([FF, "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=gray:s=640x360", "-frames:v", "1", str(flat)], check=True)
+        self.add("flat.jpg")
+        with mock.patch.dict(montage.FORMATS["reels"], width=432, height=768):
+            _, out = self.render(recipe([{"media": "flat.jpg", "caption": "Selamat datang", "move": "still", "hold": 3}], template="clean"))
+            def top(at):
+                f = gray(out, at, 432, 768)                              # decode the frame once, then scan it
+                return next((y for y in range(768) if any(abs(f[y * 432 + x] - 128) > 6 for x in range(150, 280, 4))), None)
+            early, settled, later = top(0.35), top(1.0), top(1.5)
+        self.assertIsNotNone(early)
+        self.assertGreater(early, settled, "it starts lower and rises")
+        self.assertEqual(settled, later, "then it stays where it is")
+
+    def test_a_title_card_has_an_accent_line_between_the_title_and_the_subtitle_and_glides_in(self):
+        self.add("land.jpg")
+        _, out = self.render(recipe([{"media": "land.jpg"}], template="slowmo", title_card={"text": "CyberDSA 2026", "subtitle": "Hari terbuka"}))
+        def rgb(at):
+            return subprocess.run([FF, "-v", "error", "-ss", str(at), "-i", str(out), "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                                  capture_output=True, check=True).stdout
+        frame = rgb(1.5)
+        w = 216
+        accent = [(y, x) for y in range(384) for x in range(w)
+                  if abs(frame[(y * w + x) * 3] - 232) < 28 and abs(frame[(y * w + x) * 3 + 1] - 184) < 28 and abs(frame[(y * w + x) * 3 + 2] - 106) < 28]
+        self.assertGreater(len(accent), 20, "the template's amber accent line is on screen")
+        rows = sorted({y for y, _ in accent})
+        runs, _ = Rendering.bands(self, out, 1.5)
+        (t0, t1), (s0, s1) = runs[0], runs[-1]
+        self.assertTrue(t1 < rows[0] and rows[-1] < s0, f"the line sits between the title ({t1}) and the subtitle ({s0}): {rows[0]}-{rows[-1]}")
+        cols = sorted({x for _, x in accent})
+        self.assertAlmostEqual((cols[0] + cols[-1]) / 2, 108, delta=6, msg="centred")
+        early_runs, _ = Rendering.bands(self, out, 0.4, thresh=45)          # half faded in, so dimmer than settled text
+        self.assertGreater(early_runs[0][0], runs[0][0], "the title arrives from slightly below")
 
 
 class Plain(unittest.TestCase):
