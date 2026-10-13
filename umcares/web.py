@@ -432,16 +432,18 @@ __PWA__
 <div class="dim"><a id="back">All projects</a></div>
 <h1 id="title"></h1><div class="dim" id="status">Loading…</div>
 <section class="card" id="add">
-  <h2><span>Add photos or videos</span><span class="dim" id="speed"></span></h2>
+  <h2><span>Add photos, videos or a song</span><span class="dim" id="speed"></span></h2>
   <div class="btns">
     <button id="pick" type="button">Choose from library</button>
     <button id="shoot" type="button" class="alt">Take photo</button>
     <button id="film" type="button" class="alt">Record video</button>
+    <button id="song" type="button" class="alt">Add a song</button>
   </div>
   <button id="detailsBtn" type="button" class="alt" hidden>Add details</button>
   <input id="f_pick" type="file" accept="image/*,video/*" multiple hidden>
   <input id="f_shoot" type="file" accept="image/*" capture="environment" hidden>
   <input id="f_film" type="file" accept="video/*" capture="environment" hidden>
+  <input id="f_song" type="file" accept="audio/*,.mp3,.m4a,.wav,.aac" hidden>
   <div id="queue"></div>
   <div class="dim" id="summary"></div>
   <button id="retry" type="button" class="alt" hidden>Try the failed ones again</button>
@@ -534,7 +536,7 @@ mont.refresh();
 const prep = createPrepare({base: BASE, mount: document.getElementById("prepare"), onChange: () => { mont.refresh(); loadLibrary(); }});
 prep.refresh();
 loadLibrary().then(() => { if (new URLSearchParams(location.search).get("details")) details.start({}); });
-for (const k of ["pick", "shoot", "film"]) {
+for (const k of ["pick", "shoot", "film", "song"]) {
   const input = document.getElementById("f_" + k);
   document.getElementById(k).addEventListener("click", () => input.click());
   input.addEventListener("change", () => { uploader.enqueue(Array.from(input.files)); input.value = ""; });

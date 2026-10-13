@@ -747,7 +747,7 @@ renders the same video.
   over with ffmpeg, because **this ffmpeg has no `drawtext` and no libass**. It supports Malay, Indonesian and
   emoji, fits the text to its box, and puts captions on a soft plate so they read over any picture. Captions sit
   clear of the bottom of a 9:16 frame, where the platform's own buttons are.
-- **Music:** upload an `.mp3`, `.m4a`, `.wav` or `.aac` (it goes to `assets/music/`, not through the share sheet).
+- **Music:** press **Add a song** on the project page and pick an `.mp3`, `.m4a`, `.wav` or `.aac` (it goes to `assets/music/`, never through the share sheet or the caption pass); it then appears in the Music list of the Make-a-video card. Until 13 Oct 2026 the page had no such button (only the server accepted audio), so the README claimed something the page could not do.
   It is faded and loudness-normalised to -16 LUFS. **Use royalty-free music**: a commercial song in a posted
   video gets muted or blocked. With "No music" the video is silent, so you can add a licensed track inside the
   platform's own app when you post.

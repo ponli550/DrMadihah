@@ -30,7 +30,7 @@ function find(node, cls) {
   return null;
 }
 const ids = {};
-for (const id of ["back", "title", "status", "add", "speed", "summary", "queue", "retry", "lib", "pick", "shoot", "film", "f_pick", "f_shoot", "f_film", "details", "detailsBtn", "prepare", "montage"]) ids[id] = mk("x");
+for (const id of ["back", "title", "status", "add", "speed", "summary", "queue", "retry", "lib", "pick", "shoot", "film", "song", "f_pick", "f_shoot", "f_film", "f_song", "details", "detailsBtn", "prepare", "montage"]) ids[id] = mk("x");
 ids.retry.hidden = true; ids.detailsBtn.hidden = true;
 const document = {
   title: "", getElementById: id => ids[id],
@@ -86,6 +86,7 @@ const ctx = vm.createContext({
     flaky: () => [mkFile("flaky.jpg", other, 4), mkFile("flaky2.mp4", Buffer.from("more video ".repeat(40000)), 5)],
     repick: () => [mkFile("one.jpg", big, 1)],
     refused: () => [mkFile("notes.txt", small, 6), mkFile("ok.jpg", small, 7)],
+    song: () => [mkFile("track.m4a", Buffer.from("fake audio bytes ".repeat(2000)), 8)],
   }[scenario === "flaky" ? "flaky" : scenario]();
 
   ctx.__files = files;

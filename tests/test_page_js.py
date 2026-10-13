@@ -1,6 +1,7 @@
 """The page's real upload script, run under node against a live server."""
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -87,6 +88,28 @@ class PageUpload(unittest.TestCase):
             names = [p.name for p in (self.root / "assets" / folder).iterdir()]
             self.assertFalse([n for n in names if ".part" in n], names)
 
+
+    def test_7_a_song_uploaded_from_the_page_lands_in_the_music_folder_and_is_offered_for_videos(self):
+        out = self.run_page("song")
+        self.assertTrue(self.msgs(out)["track.m4a"].startswith("✓"), self.msgs(out))
+        self.assertEqual([p.name for p in (self.root / "assets" / "music").iterdir() if not p.name.startswith(".")], ["track.m4a"])
+        from umcares import montage
+        self.assertIn(("track.m4a", "audio"), [(i["name"], i["kind"]) for i in montage.catalog(self.root)])
+        from umcares import captions
+        self.assertNotIn("track.m4a", [i["name"] for i in captions.items(self.root)], "a song is never put through the one-by-one caption pass")
+
+    def test_8_the_page_has_an_add_a_song_button_that_opens_an_audio_picker(self):
+        import http.client
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
+        c.request("GET", "/p/demo/")
+        html = c.getresponse().read().decode()
+        self.assertIn('>Add a song</button>', html)
+        m = re.search(r'<input id="f_song" type="file" accept="([^"]+)"', html)
+        self.assertTrue(m, "an audio file input exists")
+        for want in ("audio/*", ".mp3", ".m4a", ".wav", ".aac"):
+            self.assertIn(want, m.group(1))
+        self.assertNotIn("image/", m.group(1), "the song picker offers songs, not photos")
+        self.assertIn('["pick", "shoot", "film", "song"]', html, "the button is wired like the others")
 
 if __name__ == "__main__":
     unittest.main()

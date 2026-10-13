@@ -18,7 +18,7 @@ function mk(tag) {
 const walk = (n, f) => { if (!n || typeof n !== "object") return; f(n); (n.children || []).forEach(c => walk(c, f)); };
 const all = (n, pred) => { const out = []; walk(n, x => { if (pred(x)) out.push(x); }); return out; };
 const ids = {};
-for (const id of ["back", "title", "status", "add", "speed", "summary", "queue", "retry", "lib", "pick", "shoot", "film", "f_pick", "f_shoot", "f_film", "details", "detailsBtn", "prepare", "montage"]) ids[id] = mk("x");
+for (const id of ["back", "title", "status", "add", "speed", "summary", "queue", "retry", "lib", "pick", "shoot", "film", "song", "f_pick", "f_shoot", "f_film", "f_song", "details", "detailsBtn", "prepare", "montage"]) ids[id] = mk("x");
 ids.retry.hidden = true; ids.detailsBtn.hidden = true;
 const document = { title: "", getElementById: id => ids[id], createElement: mk };
 
