@@ -1173,6 +1173,9 @@ class SpeechFollow(Fixtures):
         st = stats(out)
         self.assertEqual(st["audio"], "aac")
         self.assertAlmostEqual(st["dur"], job["total"], delta=0.15)
+        adur = float(subprocess.run([prepare.find_tool("ffprobe"), "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=duration", "-of", "csv=p=0", str(out)],
+                                    capture_output=True, text=True).stdout.strip())
+        self.assertAlmostEqual(adur, job["total"], delta=0.2, msg="the audio runs as long as the video, not just as long as the talking clip")
         r = subprocess.run([FF, "-hide_banner", "-ss", "0.2", "-t", "1.5", "-i", str(out), "-af", "volumedetect", "-f", "null", "-"], capture_output=True, text=True).stderr
         self.assertGreater(float(re.search(r"mean_volume: (-?[\d.]+)", r).group(1)), -45, "the speech is audible in the first seconds")
 

@@ -755,7 +755,7 @@ def _audio_mix(ffmpeg, plan: dict, root: Path, work: Path, ctl: Control) -> Path
         labels.append(f"[v{n}]")
     chains.append("".join(labels) + f"amix=inputs={len(kept)}:normalize=0:duration=longest[voice]")
     m, total = plan["music"], plan["total"]
-    tail = f"loudnorm=I=-16:LRA=11:TP=-1.5,atrim=0:{total:g}[mix]"
+    tail = f"loudnorm=I=-16:LRA=11:TP=-1.5,apad=whole_dur={total:g},atrim=0:{total:g}[mix]"         # as long as the video, not as long as the last talking clip
     if m:
         cmd += ["-ss", str(m["start"]), "-t", str(total), "-i", str(root / m["rel"])]
         fo = m["fade_out"]
