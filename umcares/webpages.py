@@ -862,6 +862,40 @@ function createMontage(opts) {
       await load(); renderJobs(); say("Deleted " + x.name + " and freed " + mb(d.freed) + ".");
     } catch (e) { say("Could not delete: " + e.message, e.problems, true); }
   }
+  // The judge runs only on the videos the person ticks (or checks one by one): nothing is judged automatically.
+  const toCheck = new Set(), reports = {}, opened = new Set();
+  let checking = false;
+  const plural = (n, w) => n + " " + w + (n === 1 ? "" : "s");
+  function verdictText(x) {
+    if (!x.verdict) return "";
+    const c = x.counts || {};
+    return x.verdict === "pass" ? "✓ checks passed" : x.verdict === "warn" ? "⚠ " + plural(c.warn || 0, "warning") : "✗ " + plural(c.fail || 0, "problem");
+  }
+  async function checkNames(names, force) {
+    if (checking || !names.length) return;
+    checking = true; renderJobs(); say("Checking " + plural(names.length, "video") + "…");
+    try {
+      const d = await call("POST", "/api/montage/judge", JSON.stringify({names, force: !!force}));
+      Object.assign(reports, d.results);
+      const bad = Object.keys(d.errors || {});
+      await load();
+      say(bad.length ? "Checked, but not " + bad.join(", ") + ": " + d.errors[bad[0]] : "Checked " + plural(names.length, "video") + ". Tap a result to see why.", [], bad.length > 0);
+    } catch (e) { say("Could not check: " + e.message, e.problems, true); }
+    checking = false; renderJobs();
+  }
+  async function toggleReport(name) {
+    if (opened.has(name)) { opened.delete(name); renderJobs(); return; }
+    opened.add(name);
+    if (!reports[name]) { try { reports[name] = await call("GET", "/api/montage/judge?name=" + encodeURIComponent(name)); } catch (e) { opened.delete(name); say("Could not read the checks: " + e.message, [], true); } }
+    renderJobs();
+  }
+  function reportBox(name) {
+    const r = reports[name];
+    if (!r) return el("div", {className: "dim"}, "Loading…");
+    const bad = r.checks.filter(c => c.level !== "ok"), good = r.checks.length - bad.length;
+    return el("div", {}, ...bad.map(c => el("div", {className: "dim"}, (c.level === "fail" ? "✗ " : "⚠ ") + c.message)),
+      el("div", {className: "dim"}, "✓ " + plural(good, "check") + " fine" + (r.plan ? "" : " (this video has no plan to compare with, so only what could be measured was)")));
+  }
   async function cancel() { try { await call("POST", "/api/montage/cancel", "{}"); } catch (e) {} poll(); }
   function renderJobs() {
     if (!jobsBox || !st) return;
@@ -885,13 +919,30 @@ function createMontage(opts) {
     }
     if (st.active) { const stop = el("button", {type: "button", className: "alt"}, "Cancel"); stop.addEventListener("click", cancel); kids.push(stop); }
     if (st.exports.length) {
-      kids.push(el("div", {className: "dim"}, "Finished videos"));
-      st.exports.slice(0, 12).forEach(x => {
+      kids.push(el("div", {className: "dim"}, "Finished videos (tick the ones you want checked)"));
+      const shown = st.exports.slice(0, 12);
+      Array.from(toCheck).forEach(n => { if (!shown.some(x => x.name === n)) toCheck.delete(n); });
+      const checkSel = el("button", {type: "button", className: "alt"}, toCheck.size ? "Check selected (" + toCheck.size + ")" : "Check selected");
+      checkSel.disabled = checking || !toCheck.size;
+      checkSel.addEventListener("click", () => checkNames(Array.from(toCheck)));
+      const all = el("button", {type: "button", className: "mv"}, toCheck.size === shown.length ? "Select none" : "Select all");
+      all.addEventListener("click", () => { if (toCheck.size === shown.length) toCheck.clear(); else shown.forEach(x => toCheck.add(x.name)); renderJobs(); });
+      kids.push(el("div", {className: "row"}, checkSel, all));
+      shown.forEach(x => {
         const del = el("button", {type: "button", className: "mv", title: "Delete this video"}, "Delete");
         del.addEventListener("click", () => removeExport(x));
+        const tick = el("input", {type: "checkbox", checked: toCheck.has(x.name), title: "Choose this video to be checked"});
+        tick.addEventListener("change", () => { if (tick.checked) toCheck.add(x.name); else toCheck.delete(x.name); renderJobs(); });
         kids.push(el("div", {className: "row"},
-          el("a", {href: BASE + "/exports/" + encodeURIComponent(x.name), target: "_blank"}, x.name),
+          el("span", {}, tick, " ", el("a", {href: BASE + "/exports/" + encodeURIComponent(x.name), target: "_blank"}, x.name)),
           el("span", {}, el("span", {className: "dim"}, (x.quality === "draft" ? "draft · " : "") + (x.duration ? secs(x.duration) + " · " : "") + mb(x.size) + " "), del)));
+        const one = el("button", {type: "button", className: "mv"}, x.verdict ? "Check again" : "Check");
+        one.disabled = checking;
+        one.addEventListener("click", () => checkNames([x.name], !!x.verdict));
+        const badge = x.verdict ? el("button", {type: "button", className: "mv", title: "Show why"}, verdictText(x)) : "";
+        if (badge) badge.addEventListener("click", () => toggleReport(x.name));
+        kids.push(el("div", {className: "row"}, el("span", {className: "dim"}, x.verdict ? "" : "not checked"), el("span", {}, badge, " ", one)));
+        if (opened.has(x.name)) kids.push(reportBox(x.name));
         if (opts.downloader) kids.push(opts.downloader.row(x.name, x.size, x.quality));
       });
       if (opts.downloader) {

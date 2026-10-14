@@ -36,7 +36,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import beats, captions, kinetic, prepare, speech, textcards, textimg, uploads
+from . import beats, captions, judge, kinetic, prepare, speech, textcards, textimg, uploads
 from .layout import kind_of
 
 FORMATS = {
@@ -1120,6 +1120,9 @@ def exports(root) -> list:
                         "quality": d["plan"].get("quality", "final")}
             except (ValueError, KeyError):
                 pass
+        report = judge.cached(p)                                       # only a report that is already kept: listing never judges anything
+        if report:
+            meta = {**meta, "verdict": report["verdict"], "counts": report["counts"]}
         out.append({"name": p.name, "size": p.stat().st_size, "mtime": int(p.stat().st_mtime), **meta})
     return out
 
@@ -1152,6 +1155,24 @@ def poster_for(video: Path):
 
 
 EXPORT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.mp4")
+
+
+_JUDGE_LOCK = threading.Lock()
+MAX_JUDGE_NAMES = 20
+
+
+def judge_export(root, name, force: bool = False) -> dict:
+    """The judge's report for one finished video the person chose (kept beside it; `force` judges it again). One at a time."""
+    if not isinstance(name, str) or not EXPORT_NAME.fullmatch(name) or ".part" in name:
+        raise MontageError("that is not the name of a finished video")
+    video = Path(root) / "exports" / name
+    if not video.is_file() or video.is_symlink():
+        raise MontageError(f"{name} is not in this project's exports")
+    with _JUDGE_LOCK:
+        try:
+            return {**judge.run(video, force=force), "name": name}
+        except judge.JudgeError as e:
+            raise MontageError(str(e)) from None
 
 
 def export_sha256(root, name) -> dict:
@@ -1187,7 +1208,7 @@ def export_sha256(root, name) -> dict:
 
 
 def delete_export(root, name) -> dict:
-    """Delete one finished video, its small .json sidecar, its .jpg poster and its .sha256 from the project's exports folder, nothing else.
+    """Delete one finished video, its small .json sidecar, its .jpg poster, its .sha256 and its judge report from the project's exports folder, nothing else.
 
     A video is cheap to make again (its recipe is in the sidecar and in saved recipes), so this is a real delete, not a
     trash folder: the point is to give the disk back. Only a plain file name matching an export is accepted, so no path
@@ -1201,7 +1222,7 @@ def delete_export(root, name) -> dict:
     if not video.is_file() or video.is_symlink():
         raise MontageError(f"{name} is not in this project's exports")
     gone, freed = [], 0
-    for f in (video, video.with_suffix(".json"), video.with_suffix(".jpg"), video.with_suffix(".sha256")):
+    for f in (video, video.with_suffix(".json"), video.with_suffix(".jpg"), video.with_suffix(".sha256"), video.with_suffix(".judge.json")):
         if f.is_file() and not f.is_symlink():
             try:
                 size = f.stat().st_size

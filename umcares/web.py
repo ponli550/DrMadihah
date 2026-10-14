@@ -624,6 +624,11 @@ def make_handler(home, owner: str):
                 return self._upload(slug, rest, "GET", query)
             if rest == "/api/montage":
                 return self._json(200, montage_state(root))
+            if rest == "/api/montage/judge":
+                try:
+                    return self._json(200, montage.judge_export(root, (query.get("name") or [""])[0], (query.get("force") or [""])[0] == "1"))
+                except montage.MontageError as e:
+                    return self._json(404 if "is not in" in str(e) else 400, {"error": str(e)})
             if rest == "/api/montage/hash":
                 try:
                     return self._json(200, montage.export_sha256(root, (query.get("name") or [""])[0]))
@@ -846,6 +851,17 @@ def make_handler(home, owner: str):
             try:
                 if action == "cancel":
                     return self._json(200, {"cancelled": montage.RENDERER.cancel(root)})
+                if action == "judge":
+                    names = body.get("names")
+                    if not (isinstance(names, list) and 0 < len(names) <= montage.MAX_JUDGE_NAMES and all(isinstance(n, str) for n in names)):
+                        return self._json(400, {"error": f"send {{\"names\": [...]}} with 1 to {montage.MAX_JUDGE_NAMES} video names"})
+                    results, errors = {}, {}
+                    for n in dict.fromkeys(names):                     # the videos the person chose, once each, in order
+                        try:
+                            results[n] = montage.judge_export(root, n, body.get("force") is True)
+                        except montage.MontageError as e:
+                            errors[n] = str(e)
+                    return self._json(200, {"results": results, "errors": errors})
                 if action == "delete-export":
                     return self._json(200, montage.delete_export(root, body.get("name")))
                 if action == "recipes":
@@ -878,7 +894,7 @@ def make_handler(home, owner: str):
             m = re.fullmatch(r"/p/([a-z0-9-]+)(/api/upload/.*)", path)
             if m:
                 return self._upload(m.group(1), m.group(2), method, query)
-            m = re.fullmatch(r"/p/([a-z0-9-]+)/api/montage(?:/(cancel|recipes|delete-export))?", path)
+            m = re.fullmatch(r"/p/([a-z0-9-]+)/api/montage(?:/(cancel|recipes|delete-export|judge))?", path)
             if m and method == "POST":
                 return self._montage_write(m.group(1), m.group(2) or "make")
             m = re.fullmatch(r"/p/([a-z0-9-]+)/api/prepare(/cancel)?", path)

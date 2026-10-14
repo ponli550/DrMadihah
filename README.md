@@ -880,6 +880,24 @@ Each clip is probed and gets the least work that makes it safe:
 | remux | picture fine, audio (not AAC 48 kHz) or layout (not faststart) is not | rewrite the container, no re-encode |
 | reencode | anything wrong with the picture | libx264 CRF 16 (the project's existing setting), constant frame rate, rotation applied, limited-range yuv420p, AAC 192k 48 kHz stereo, faststart |
 
+- **The judge: checking videos you choose** (`judge.py`). **Nothing is judged unless you pick it**: tick videos in the list and press
+  **Check selected**, or press **Check** on one (page), or `umcares judge PROJECT NAME [NAME ...]` / `--all` (CLI; exit code 0 =
+  all pass, 1 = some warn, 2 = some fail or could not be checked). It gives a **pass / warn / fail** with reasons, never a score:
+  a number like "7/10" would be false confidence. Tap a result to see which checks passed and which did not. What it measures:
+  **format** (size, frame rate, H.264, `yuv420p` and not full-range `yuvj420p`, length against the video's own plan and the
+  `max_seconds` limit, audio present exactly when the plan wanted it, audio as long as the picture, video bits per pixel: too thin
+  looks soft, too heavy is slow to move), **sound** (integrated loudness against the -16 LUFS target: -19 to -13 is fine, to
+  -23/-10 a warning, beyond that a failure; true peak above -1 dBTP warns, above 0 fails; a soundtrack under -40 LUFS is silent;
+  a silent gap of 1.5 s or more under a song), **picture** (black frames where a photo or clip should be, a clip that sits
+  frozen 1.5 s or more; text cards are allowed to be dark and still), and **the plan** (every warning it carried; on a tempo, every
+  cut within one frame of the beat grid). It uses ffprobe and two light ffmpeg passes, a few seconds per minute of video, no model
+  and no network; the report is kept beside the video as `<name>.judge.json` and judged again only if the file changed or you
+  press **Check again** / `--force`. Videos without a sidecar plan are judged on what can be measured. **It cannot judge**
+  whether a video is good, its pacing, captions that fit, or whether the beat feels right: those need a person (a Claude pass over
+  a contact sheet could find overlapping text, and is not built). Written lessons: the first loudness and bitrate checks measured
+  the wrong thing (the whole file instead of the video stream), and `freezedetect`'s start and end lines run across cuts and pair
+  wrongly in a whole file, so each video clip is analysed by itself; a freeze test fixture must change LUMA, because a hue
+  rotation counts as frozen.
 - **Download to this phone** (`downloader.js`): each finished video has a **Download to this phone** button, and by default a
   new final video that appears while the page is open starts downloading by itself (drafts and videos that were already there
   do not; a tick turns the automatic part off). It fetches the file in **128 KB pieces with Range requests** and keeps each piece
