@@ -1130,6 +1130,15 @@ def build_parser() -> argparse.ArgumentParser:
     dr.add_argument("--dry-run", action="store_true", help="check the draft and print it, but do not save it")
     dr.set_defaults(func=cmd_draft)
 
+    jd = sub.add_parser("judge", help="check finished videos you choose (format, sound, picture) and say pass, warn or fail")
+    jd.add_argument("project", help="the project's folder name on the web app, e.g. cyberdsa")
+    jd.add_argument("names", nargs="*", help="the video file names to check (nothing is checked unless you name it or use --all)")
+    jd.add_argument("--all", action="store_true", help="check every finished video in the project")
+    jd.add_argument("--force", action="store_true", help="judge again even if a report is already kept")
+    jd.add_argument("--details", action="store_true", help="also list the checks that passed")
+    jd.add_argument("--url", help="the web app's address (default: UMC_WEB_URL)")
+    jd.set_defaults(func=cmd_judge)
+
     co = sub.add_parser("complete",
                         help="completion candidates (used by the shell)")
     co.add_argument("tokens", nargs=argparse.REMAINDER)
@@ -1160,6 +1169,45 @@ def cmd_draft(args, cfg):
     else:
         log.out(res["recipe"])
     return 0
+
+
+def cmd_judge(args, cfg):
+    """Judge the finished videos you NAME (or all of a project's with --all) and print a verdict for each.
+    Exit code: 0 all pass, 1 some warn, 2 some fail or could not be checked."""
+    import os
+    url = args.url or cfg.env.get("UMC_WEB_URL") or os.environ.get("UMC_WEB_URL", "")
+    try:
+        site = draft_mod.Site(url)
+        code, state = site.call("GET", f"/p/{args.project}/api/montage")
+        if code != 200:
+            raise draft_mod.DraftError(f"no such project '{args.project}' on the web app")
+        have = [x["name"] for x in state["exports"]]
+        names = have if args.all else list(dict.fromkeys(args.names))
+        if not names:
+            raise draft_mod.DraftError("name the videos to check, or use --all (nothing is checked unless you choose it)")
+        unknown = [n for n in names if n not in have]
+        if unknown:
+            raise draft_mod.DraftError("not in this project's exports: " + ", ".join(unknown))
+        with spinner.spin(f"checking {len(names)} video(s)", 120):
+            res = draft_mod.judge_remote(site, args.project, names, force=args.force)
+    except draft_mod.DraftError as e:
+        log.err(str(e))
+        return 2
+    worst = 0
+    width = max(len(n) for n in names)
+    for n in names:
+        if n in res["errors"]:
+            print(f"{n:<{width}}  error  {res['errors'][n]}")
+            worst = 2
+            continue
+        r = res["results"][n]
+        c = r["counts"]
+        print(f"{n:<{width}}  {r['verdict']:<5}  {c['ok']} ok, {c['warn']} warning(s), {c['fail']} problem(s)")
+        for chk in r["checks"]:
+            if chk["level"] != "ok" or args.details:
+                print(f"    {'✗' if chk['level'] == 'fail' else '⚠' if chk['level'] == 'warn' else '✓'} {chk['message']}")
+        worst = max(worst, {"pass": 0, "warn": 1, "fail": 2}[r["verdict"]])
+    return worst
 
 
 def cmd_complete(args, cfg):

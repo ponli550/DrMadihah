@@ -175,6 +175,63 @@ class Routes(unittest.TestCase):
         self.assertIn(name.replace(".mp4", ".jpg"), d["deleted"])
         self.assertEqual(sorted(p.name for p in (self.root / "exports").iterdir() if not p.name.startswith(".")), [])
 
+    # ------------------------------------------------------------ the judge: only the videos the person chooses
+    def real_export(self, name):
+        d = self.exports_dir()
+        subprocess.run([FF, "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=216x384:rate=30:d=2", "-f", "lavfi", "-i", "sine=frequency=330:duration=2,loudnorm=I=-16:LRA=11:TP=-1.5",
+                        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ar", "48000", "-t", "2", str(d / name)], check=True)
+        return name
+
+    def test_nothing_is_judged_until_a_video_is_chosen_and_the_list_shows_only_kept_verdicts(self):
+        a, b = self.real_export("one-20261014-000001.mp4"), self.real_export("two-20261014-000002.mp4")
+        listed = {x["name"]: x for x in self.get()[1]["exports"]}
+        self.assertNotIn("verdict", listed[a])
+        self.assertFalse(list(self.exports_dir().glob("*.judge.json")), "listing judged nothing")
+        status, d = self.post({"names": [a]}, "/p/demo/api/montage/judge")
+        self.assertEqual(status, 200, d)
+        self.assertEqual(list(d["results"]), [a])
+        self.assertIn(d["results"][a]["verdict"], ("pass", "warn", "fail"))
+        listed = {x["name"]: x for x in self.get()[1]["exports"]}
+        self.assertIn("verdict", listed[a])
+        self.assertNotIn("verdict", listed[b], "the video that was not chosen is still unchecked")
+        self.assertTrue((self.exports_dir() / a.replace(".mp4", ".judge.json")).is_file())
+
+    def test_several_videos_can_be_chosen_at_once_and_a_bad_name_is_reported_without_stopping_the_rest(self):
+        a = self.real_export("one-20261014-000001.mp4")
+        status, d = self.post({"names": [a, "ghost-20261014.mp4", "../x.mp4", a]}, "/p/demo/api/montage/judge")
+        self.assertEqual(status, 200)
+        self.assertEqual(list(d["results"]), [a], "each video once")
+        self.assertEqual(sorted(d["errors"]), ["../x.mp4", "ghost-20261014.mp4"])
+
+    def test_the_judge_endpoint_checks_what_it_is_sent(self):
+        for bad in ({}, {"names": []}, {"names": "a.mp4"}, {"names": [5]}, {"names": [f"v{i}-20261014.mp4" for i in range(21)]}):
+            with self.subTest(bad=bad):
+                self.assertEqual(self.post(bad, "/p/demo/api/montage/judge")[0], 400)
+        self.assertEqual(self.post({"names": ["a.mp4"]}, "/p/demo/api/montage/judge", {"Content-Type": "application/json"})[0], 403, "needs the guard header")
+
+    def test_one_video_by_name_with_its_checks_and_force_judges_it_again(self):
+        a = self.real_export("one-20261014-000001.mp4")
+        status, d = self.get(f"/p/demo/api/montage/judge?name={a}")
+        self.assertEqual(status, 200)
+        self.assertEqual(d["name"], a)
+        self.assertTrue(d["checks"])
+        self.assertTrue(all(c["level"] in ("ok", "warn", "fail") for c in d["checks"]))
+        first = d["judged_at"]
+        time.sleep(1.1)
+        self.assertEqual(self.get(f"/p/demo/api/montage/judge?name={a}")[1]["judged_at"], first, "kept, not recomputed")
+        self.assertNotEqual(self.get(f"/p/demo/api/montage/judge?name={a}&force=1")[1]["judged_at"], first)
+        self.assertEqual(self.get("/p/demo/api/montage/judge?name=ghost-20261014.mp4")[0], 404)
+        self.assertEqual(self.get("/p/demo/api/montage/judge?name=..%2Fx.mp4")[0], 400)
+
+    def test_deleting_a_video_removes_its_judge_report_and_a_render_judges_nothing(self):
+        a = self.real_export("one-20261014-000001.mp4")
+        self.post({"names": [a]}, "/p/demo/api/montage/judge")
+        d = self.post({"name": a}, "/p/demo/api/montage/delete-export")[1]
+        self.assertIn(a.replace(".mp4", ".judge.json"), d["deleted"])
+        self.post({"recipe": recipe([{"media": "land.jpg"}])})
+        self.wait()
+        self.assertFalse(list(self.exports_dir().glob("*.judge.json")), "a finished render is not judged on its own")
+
     # ------------------------------------------------------------ the hash a phone checks its download against
     def test_the_hash_endpoint_gives_the_files_sha256_and_size_and_keeps_it_for_next_time(self):
         import hashlib

@@ -225,3 +225,18 @@ def draft(site, slug: str, request: str, max_images: int = MAX_IMAGES, images: b
         problems = d.get("problems") or [d.get("error", f"HTTP {code}")]
         repair, last = {"answer": json.dumps(recipe)[:4000], "problems": problems}, "; ".join(problems[:3])
     raise DraftError("Claude's recipe did not pass the checker after one correction: " + (last or "unknown problem"))
+
+
+# ------------------------------------------------------------------ judging chosen videos
+def judge_remote(site, slug: str, names: list, force: bool = False, batch: int = 5) -> dict:
+    """Ask the web app to judge the named videos (a few per request, so one request never takes minutes).
+    Returns {"results": {name: report}, "errors": {name: message}}."""
+    out = {"results": {}, "errors": {}}
+    for i in range(0, len(names), batch):
+        code, d = site.call("POST", f"/p/{slug}/api/montage/judge", {"names": names[i:i + batch], "force": bool(force)})
+        if code != 200:
+            raise DraftError("the web app refused to judge: " + str(d.get("error", code)))
+        out["results"].update(d.get("results", {}))
+        out["errors"].update(d.get("errors", {}))
+    return out
+
