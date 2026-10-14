@@ -82,6 +82,7 @@ The right pane must hold a live ssh session — it is the fallback transport.
 | `config set\|get\|list` | settings and credentials (auto-encrypts secrets) |
 | `secrets status\|init\|rotate\|encrypt\|decrypt` | dotenvx-encrypted `.env` (opt-in) |
 | `remote <cmd>` | run a command on the Adobe machine |
+| `web [--serve]` | read-only media library UI, run on the Premiere machine; `--serve` publishes it on the tailnet |
 | `push <local> <remote>` / `pull` | verified file transfer |
 | `premiere heal\|status\|report\|import\|build\|export` | control Premiere |
 | `media probe\|prepare\|kenburns\|levels` | codec checks, transcode, motion stills |

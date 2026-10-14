@@ -23,7 +23,7 @@ def load_env(path: Path | None = None) -> dict:
     if not path.exists():
         return env
 
-    from . import secrets as _secrets
+    from . import envsecrets as _secrets
     if _secrets.is_encrypted(path):
         return _secrets.load_encrypted(path)
 

@@ -11,9 +11,12 @@ import json
 import sys
 from pathlib import Path
 
-from . import (auth, doctor, inspect as inspect_mod, log, media, post, recipe as
+from . import (auth, doctor, media_scan as inspect_mod, log, media, post, recipe as
                recipe_mod, render as render_mod, safe, scaffold,
-               script as script_mod, secrets, session, spinner, stack)
+               script as script_mod, envsecrets, session, spinner, stack, web)
+from . import projects as projects_mod
+from . import draft as draft_mod
+from . import scope
 from .example import EXAMPLE_RECIPE
 from . import __version__
 from .config import Config
@@ -114,7 +117,7 @@ def cmd_config(args, cfg):
         if not args.key or args.value is None:
             log.err("usage: umcares config set KEY VALUE")
             return 2
-        res = secrets.set_value(env_path, args.key, args.value,
+        res = envsecrets.set_value(env_path, args.key, args.value,
                                 encrypt_secrets=args.encrypt)
         (log.ok if res["stored"] == "encrypted" else log.warn)(
             f"{args.key} stored ({res['stored']})")
@@ -126,7 +129,7 @@ def cmd_config(args, cfg):
         if not val:
             log.err(f"{args.key} is not set")
             return 1
-        log.out(val if args.reveal else secrets.mask(args.key, val))
+        log.out(val if args.reveal else envsecrets.mask(args.key, val))
         return 0
 
     if args.action == "show":
@@ -141,8 +144,8 @@ def cmd_config(args, cfg):
         return 0
 
     # list
-    rows = {k: secrets.mask(k, v) for k, v in sorted(cfg.env.items())}
-    info = secrets.status(env_path)
+    rows = {k: envsecrets.mask(k, v) for k, v in sorted(cfg.env.items())}
+    info = envsecrets.status(env_path)
     (log.ok if info["encrypted"] else log.warn)(
         ".env is encrypted" if info["encrypted"] else ".env is plaintext")
     log.out(rows)
@@ -152,7 +155,7 @@ def cmd_config(args, cfg):
 def cmd_secrets(args, cfg):
     env_path = cfg.root / ".env"
     if args.action == "status":
-        info = secrets.status(env_path)
+        info = envsecrets.status(env_path)
         if info["encrypted"]:
             log.ok(".env is encrypted (dotenvx) — safe to commit")
             if not info["keys_file_exists"] and not info["private_key_in_env"]:
@@ -165,18 +168,44 @@ def cmd_secrets(args, cfg):
         log.out(info)
         return 0
     if args.action == "init":
-        log.out(secrets.init(env_path))
+        log.out(envsecrets.init(env_path))
         return 0
     if args.action == "rotate":
-        log.out(secrets.rotate(env_path))
+        log.out(envsecrets.rotate(env_path))
         return 0
     if args.action == "encrypt":
-        log.out(secrets.encrypt(env_path))
+        log.out(envsecrets.encrypt(env_path))
         return 0
     if args.action == "decrypt":
-        log.out(secrets.decrypt(env_path))
+        log.out(envsecrets.decrypt(env_path))
         return 0
     return 2
+
+
+def cmd_web(args, cfg):
+    """Serve the projects web app (run), or put it on the Premiere machine (deploy)."""
+    import os
+    import subprocess
+    owner = args.owner or os.environ.get("UMC_WEB_OWNER", "")
+    if args.action == "deploy":
+        from . import webdeploy
+        t = _transport(args, cfg)
+        with spinner.spin("deploying the web app", 60):
+            report = webdeploy.deploy(t, cfg.remote.root, owner, args.port)
+        if not report["published"]:
+            log.info("not on the tailnet yet; run: umcares web --serve   (or on that machine: "
+                     + " ".join(web.serve_command(args.port)) + ")")
+        log.ok(f"web app running on the remote (http {report['http']})")
+        log.out(report)
+        return 0
+    if args.serve:
+        cmd = web.serve_command(args.port)
+        if args.print_serve:
+            log.out({"command": " ".join(cmd)})
+            return 0
+        log.info("publishing to the tailnet: " + " ".join(cmd))
+        return subprocess.run(cmd).returncode
+    return web.run(args.home or projects_mod.DEFAULT_HOME, owner, args.port, awake=not args.no_caffeinate)
 
 
 def cmd_init(args, cfg):
@@ -893,6 +922,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--transport", choices=["auto", "ssh", "tmux"], default="auto",
                    help="how to reach the remote (default: auto = ssh, else tmux pane)")
     p.add_argument("-v", "--verbose", action="store_true")
+    p.add_argument("--project", dest="project_slug", metavar="SLUG",
+                   help="which project folder on the remote to act on (its folder name; NOT the .prproj that "
+                        "`premiere --project` takes). Required for commands that write or build once more than one project exists")
     p.add_argument("--version", action="version",
                    version=f"umcares {__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -951,6 +983,20 @@ def build_parser() -> argparse.ArgumentParser:
     i.add_argument("--remote-only", action="store_true")
     i.add_argument("--plan", action="store_true", help="show what would be created")
     i.set_defaults(func=cmd_init)
+
+    w = sub.add_parser("web", help="projects and media web app (run on the Premiere machine)")
+    w.add_argument("action", nargs="?", choices=["run", "deploy"], default="run",
+                   help="run = serve here; deploy = install/refresh it on the remote as a LaunchAgent")
+    w.add_argument("--home", help="folder that holds the projects (default ~/Projects/umcares-projects)")
+    w.add_argument("--owner", help="the one Tailscale login allowed in (or UMC_WEB_OWNER)")
+    w.add_argument("--port", type=int, default=web.DEFAULT_PORT)
+    w.add_argument("--no-caffeinate", action="store_true",
+                   help="do not hold the Mac awake while serving")
+    w.add_argument("--serve", action="store_true",
+                   help="publish the running server on the tailnet (tailscale serve, never Funnel)")
+    w.add_argument("--print-serve", action="store_true",
+                   help="with --serve: print the command instead of running it")
+    w.set_defaults(func=cmd_web)
 
     st = sub.add_parser("stack", help="MCP backend containers on the remote")
     st.add_argument("action",
@@ -1073,12 +1119,47 @@ def build_parser() -> argparse.ArgumentParser:
                     help="responses to render in the markdown table")
     ig.set_defaults(func=cmd_ingest)
 
+    dr = sub.add_parser("draft", help="ask Claude to draft a video recipe for a web project (runs on this machine, saves it for you to approve)")
+    dr.add_argument("project", help="the project's folder name on the web app, e.g. cyberdsa")
+    dr.add_argument("request", nargs="+", help="what you want, e.g. a 20 second upbeat reel of the opening")
+    dr.add_argument("--url", help="the web app's address (default: UMC_WEB_URL)")
+    dr.add_argument("--images", type=int, default=draft_mod.MAX_IMAGES, help="how many thumbnails to show Claude")
+    dr.add_argument("--no-images", action="store_true", help="send only names and captions (no pictures leave this machine)")
+    dr.add_argument("--model", help="model for the single call (default: your Claude Code default)")
+    dr.add_argument("--budget", type=float, default=draft_mod.DEFAULT_BUDGET, help="safety cap in dollars for the single call")
+    dr.add_argument("--dry-run", action="store_true", help="check the draft and print it, but do not save it")
+    dr.set_defaults(func=cmd_draft)
+
     co = sub.add_parser("complete",
                         help="completion candidates (used by the shell)")
     co.add_argument("tokens", nargs=argparse.REMAINDER)
     co.set_defaults(func=cmd_complete)
 
     return p
+
+
+def cmd_draft(args, cfg):
+    """Ask Claude (run here, no tools) to draft a recipe for a web project; validate it; save it for approval."""
+    import os
+    url = args.url or cfg.env.get("UMC_WEB_URL") or os.environ.get("UMC_WEB_URL", "")
+    try:
+        site = draft_mod.Site(url)
+        with spinner.spin("Claude is looking at the pictures", 240):
+            res = draft_mod.draft(site, args.project, " ".join(args.request), max_images=args.images, images=not args.no_images,
+                                  budget=args.budget, model=args.model, save=not args.dry_run)
+    except draft_mod.DraftError as e:
+        log.err(str(e))
+        return 2
+    plan = res["plan"]
+    log.ok(f"drafted a {plan['total']} s video of {len(plan['segments'])} pieces ({plan['template']}, {plan['format']}); "
+           f"Claude saw {res['images']} picture(s), {res['attempts']} attempt(s)")
+    for w in plan.get("warnings", []):
+        log.warn(w)
+    if res["name"]:
+        log.ok(f"saved as recipe '{res['name']}': open the project page, Make a video, Saved recipes, then Use or Make. Nothing was rendered.")
+    else:
+        log.out(res["recipe"])
+    return 0
 
 
 def cmd_complete(args, cfg):
@@ -1092,7 +1173,11 @@ def main(argv=None) -> int:
     log.set_verbose(args.verbose)
     cfg = Config.load()
     try:
+        cfg = scope.apply(args, cfg, lambda: _transport(args, cfg), warn=log.warn)
         return args.func(args, cfg)
+    except scope.ScopeError as e:
+        log.err(str(e))
+        return 2
     except KeyboardInterrupt:
         log.err("interrupted")
         return 130
