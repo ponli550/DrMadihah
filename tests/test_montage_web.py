@@ -175,6 +175,42 @@ class Routes(unittest.TestCase):
         self.assertIn(name.replace(".mp4", ".jpg"), d["deleted"])
         self.assertEqual(sorted(p.name for p in (self.root / "exports").iterdir() if not p.name.startswith(".")), [])
 
+    # ------------------------------------------------------------ the hash a phone checks its download against
+    def test_the_hash_endpoint_gives_the_files_sha256_and_size_and_keeps_it_for_next_time(self):
+        import hashlib
+        name = self.fake_export(size=3000)
+        want = hashlib.sha256((self.exports_dir() / name).read_bytes()).hexdigest()
+        status, d = self.get(f"/p/demo/api/montage/hash?name={name}")
+        self.assertEqual((status, d), (200, {"sha256": want, "size": 3000}))
+        self.assertTrue((self.exports_dir() / name.replace(".mp4", ".sha256")).is_file(), "kept beside the video")
+        self.assertEqual(self.get(f"/p/demo/api/montage/hash?name={name}")[1]["sha256"], want)
+        self.assertEqual([x["name"] for x in self.get()[1]["exports"]], [name], "the hash file is not listed as a video")
+
+    def test_a_replaced_video_is_hashed_again_not_served_from_the_old_cache(self):
+        import hashlib
+        name = self.fake_export(size=2000)
+        first = self.get(f"/p/demo/api/montage/hash?name={name}")[1]["sha256"]
+        (self.exports_dir() / name).write_bytes(b"w" * 2500)
+        later = self.get(f"/p/demo/api/montage/hash?name={name}")[1]
+        self.assertNotEqual(later["sha256"], first)
+        self.assertEqual((later["sha256"], later["size"]), (hashlib.sha256(b"w" * 2500).hexdigest(), 2500))
+
+    def test_the_hash_endpoint_refuses_paths_unknown_files_and_half_written_videos(self):
+        self.fake_export()
+        (self.exports_dir() / "reel-20261013-999999.part.mp4").write_bytes(b"x")
+        for bad in ("../assets/x.mp4", "..%2Fx.mp4", "", "notes.txt", "reel-20261013-999999.part.mp4", "x" * 200 + ".mp4"):
+            with self.subTest(bad=bad):
+                self.assertEqual(self.get(f"/p/demo/api/montage/hash?name={bad}")[0], 400)
+        self.assertEqual(self.get("/p/demo/api/montage/hash?name=ghost-20261013.mp4")[0], 404)
+        self.assertEqual(self.get("/p/demo/api/montage/hash")[0], 400)
+
+    def test_deleting_a_video_removes_its_hash_file_too(self):
+        name = self.fake_export()
+        self.get(f"/p/demo/api/montage/hash?name={name}")
+        d = self.post({"name": name}, "/p/demo/api/montage/delete-export")[1]
+        self.assertIn(name.replace(".mp4", ".sha256"), d["deleted"])
+        self.assertEqual([p.name for p in self.exports_dir().iterdir() if not p.name.startswith(".")], [])
+
     def test_deleting_removes_the_video_and_its_sidecar_and_nothing_else(self):
         name, other = self.fake_export(), self.fake_export("other-20261013-101011.mp4")
         (self.root / "recipes").mkdir(exist_ok=True)

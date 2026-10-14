@@ -59,7 +59,10 @@ import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 def proxy(upstream_port, login="me@x.com"):
-    """Strips /umcares like `tailscale serve` does and adds the owner's login header."""
+    """Strips /umcares like `tailscale serve` does and adds the owner's login header. Its `opts` can make the link misbehave:
+    drop_every=N cuts every Nth export range response in half (a connection that dies mid-body), corrupt_at=K flips one byte of
+    the response to the Kth export range request once, delay=S waits S seconds before answering each export range request, and `log`
+    records the start of every export range requested."""
     class H(BaseHTTPRequestHandler):
         def log_message(self, *a): pass
         def _go(self):
@@ -69,11 +72,29 @@ def proxy(upstream_port, login="me@x.com"):
             h["Tailscale-User-Login"] = login
             c = http.client.HTTPConnection("127.0.0.1", upstream_port, timeout=60)
             c.request(self.command, path, body=body, headers=h); r = c.getresponse(); data = r.read()
+            ranged = "/exports/" in path and self.headers.get("Range") and r.status == 206
+            drop = False
+            if ranged:
+                start = int(self.headers["Range"].split("=")[1].split("-")[0])
+                px.opts["count"] = px.opts.get("count", 0) + 1
+                px.log.append(start)
+                if px.opts.get("corrupt_at") == px.opts["count"]:
+                    data = bytes([data[0] ^ 0xFF]) + data[1:]
+                if px.opts.get("delay"):
+                    time.sleep(px.opts["delay"])                       # a slow link: so a test can act while a download is part-way
+                every = px.opts.get("drop_every")
+                drop = bool(every) and px.opts["count"] % every == 0
             self.send_response(r.status)
             for k, v in r.getheaders():
                 if k.lower() not in ("transfer-encoding", "connection", "content-length"): self.send_header(k, v)
-            self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
+            self.send_header("Content-Length", str(len(data))); self.end_headers()
+            if drop:
+                self.wfile.write(data[: len(data) // 2]); self.wfile.flush(); self.close_connection = True
+                self.connection.shutdown(2)
+                return
+            self.wfile.write(data)
         do_GET = do_POST = do_PUT = do_HEAD = _go
-    p = ThreadingHTTPServer(("127.0.0.1", 0), H)
-    threading.Thread(target=p.serve_forever, daemon=True).start()
-    return p
+    px = ThreadingHTTPServer(("127.0.0.1", 0), H)
+    px.opts, px.log = {}, []
+    threading.Thread(target=px.serve_forever, daemon=True).start()
+    return px

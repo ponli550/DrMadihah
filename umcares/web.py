@@ -456,6 +456,7 @@ __PWA__
 <script src="__ROOT__/uploader.js"></script>
 <script src="__ROOT__/details.js"></script>
 <script src="__ROOT__/prepare.js"></script>
+<script src="__ROOT__/downloader.js"></script>
 <script src="__ROOT__/montage.js"></script>
 <script>
 const HOME = __HOME__;
@@ -531,7 +532,8 @@ const uploader = createUploader({
 });
 const details = createDetails({base: BASE, mount: document.getElementById("details"), banner: document.getElementById("detailsBtn"), onChange: () => { mont.refresh(); loadLibrary(); }});
 details.refresh();
-const mont = createMontage({base: BASE, mount: document.getElementById("montage"), name: PROJECT.name});
+const dl = createDownloader({base: BASE});
+const mont = createMontage({base: BASE, mount: document.getElementById("montage"), name: PROJECT.name, downloader: dl});
 mont.refresh();
 const prep = createPrepare({base: BASE, mount: document.getElementById("prepare"), onChange: () => { mont.refresh(); loadLibrary(); }});
 prep.refresh();
@@ -622,6 +624,11 @@ def make_handler(home, owner: str):
                 return self._upload(slug, rest, "GET", query)
             if rest == "/api/montage":
                 return self._json(200, montage_state(root))
+            if rest == "/api/montage/hash":
+                try:
+                    return self._json(200, montage.export_sha256(root, (query.get("name") or [""])[0]))
+                except montage.MontageError as e:
+                    return self._json(404 if "is not in" in str(e) else 400, {"error": str(e)})
             if rest == "/api/montage/brief":
                 return self._send(200, montage.brief(root, (projects.find_project(home, slug) or {}).get("name", "")).encode(),
                                   "text/markdown; charset=utf-8")
@@ -671,6 +678,8 @@ def make_handler(home, owner: str):
             path, query = unquote(parts.path), parse_qs(parts.query)
             if path == "/manifest.webmanifest":
                 return self._send(200, json.dumps(manifest()).encode(), "application/manifest+json")
+            if path == "/downloader.js":
+                return self._send(200, webpages.DOWNLOADER_JS.encode(), "text/javascript; charset=utf-8", {"Cache-Control": "no-cache"})
             if path == "/montage.js":
                 return self._send(200, webpages.MONTAGE_JS.encode(), "text/javascript; charset=utf-8", {"Cache-Control": "no-cache"})
             if path == "/prepare.js":

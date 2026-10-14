@@ -880,6 +880,20 @@ Each clip is probed and gets the least work that makes it safe:
 | remux | picture fine, audio (not AAC 48 kHz) or layout (not faststart) is not | rewrite the container, no re-encode |
 | reencode | anything wrong with the picture | libx264 CRF 16 (the project's existing setting), constant frame rate, rotation applied, limited-range yuv420p, AAC 192k 48 kHz stereo, faststart |
 
+- **Download to this phone** (`downloader.js`): each finished video has a **Download to this phone** button, and by default a
+  new final video that appears while the page is open starts downloading by itself (drafts and videos that were already there
+  do not; a tick turns the automatic part off). It fetches the file in **128 KB pieces with Range requests** and keeps each piece
+  in the browser's IndexedDB as it arrives, so a dropped connection only costs the piece in flight (retried with a growing wait,
+  and paused while the browser is offline), a reload or a closed tab resumes from the stored pieces (and a paused one stays
+  paused), and the page shows real progress and an estimate. When the last piece arrives the file is rebuilt, its size and its
+  **SHA-256** are checked against the server (`GET .../api/montage/hash?name=`, cached beside the video as `<name>.sha256`), and
+  only then is **Save to phone** offered, which hands the browser the whole file under its own name; a damaged copy is thrown away
+  and fetched again, a video replaced on the server restarts instead of mixing two files, a deleted one loses its phone copy.
+  The stored copy stays until **Remove copy**. It asks the browser for persistent storage and for room first, and holds a
+  screen wake lock while downloading. **It does not make the link faster** (12 MB at 7-25 kB/s is still many minutes), it makes
+  it start earlier and survive drops; a normal page download pauses when the tab is closed or the phone sleeps, and Android
+  Chrome's Background Fetch (keeps going with the tab closed) is **not** used yet. Tested in real headless Chrome through a proxy
+  that drops connections mid-body and corrupts a piece (`tests/test_download_browser.py`).
 - **A poster for each video:** next to every export is a small first-frame JPEG (`<name>.jpg`, about 15 KB), made when the
   render finishes (and on first request for an older export). The page's player shows it at once and loads only the video's
   metadata, because over a slow link (measured 7-10 kB/s) a 12 MB video is a black box for many minutes. Above 4 MB the page

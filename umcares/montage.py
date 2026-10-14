@@ -1154,8 +1154,40 @@ def poster_for(video: Path):
 EXPORT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,119}\.mp4")
 
 
+def export_sha256(root, name) -> dict:
+    """{"sha256", "size"} of a finished video, so a phone that downloaded it in pieces can check it arrived whole.
+
+    Computed once and kept beside the video (`<name>.sha256`, with the size and mtime it was computed for, so a replaced file is
+    hashed again). Only a plain export name is accepted."""
+    if not isinstance(name, str) or not EXPORT_NAME.fullmatch(name) or ".part" in name:
+        raise MontageError("that is not the name of a finished video")
+    video = Path(root) / "exports" / name
+    if not video.is_file() or video.is_symlink():
+        raise MontageError(f"{name} is not in this project's exports")
+    st = video.stat()
+    cache = video.with_suffix(".sha256")
+    try:
+        d = json.loads(cache.read_text(encoding="utf-8"))
+        if d.get("size") == st.st_size and d.get("mtime") == int(st.st_mtime) and re.fullmatch(r"[0-9a-f]{64}", d.get("sha256", "")):
+            return {"sha256": d["sha256"], "size": st.st_size}
+    except (OSError, ValueError):
+        pass
+    h = hashlib.sha256()
+    with open(video, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
+    out = {"sha256": h.hexdigest(), "size": st.st_size}
+    try:
+        tmp = cache.with_name(cache.name + ".part")
+        tmp.write_text(json.dumps({**out, "mtime": int(st.st_mtime)}), encoding="utf-8")
+        os.replace(tmp, cache)
+    except OSError:
+        pass                                                           # a read-only folder just means it is hashed again next time
+    return out
+
+
 def delete_export(root, name) -> dict:
-    """Delete one finished video, its small .json sidecar and its .jpg poster from the project's exports folder, nothing else.
+    """Delete one finished video, its small .json sidecar, its .jpg poster and its .sha256 from the project's exports folder, nothing else.
 
     A video is cheap to make again (its recipe is in the sidecar and in saved recipes), so this is a real delete, not a
     trash folder: the point is to give the disk back. Only a plain file name matching an export is accepted, so no path
@@ -1169,7 +1201,7 @@ def delete_export(root, name) -> dict:
     if not video.is_file() or video.is_symlink():
         raise MontageError(f"{name} is not in this project's exports")
     gone, freed = [], 0
-    for f in (video, video.with_suffix(".json"), video.with_suffix(".jpg")):
+    for f in (video, video.with_suffix(".json"), video.with_suffix(".jpg"), video.with_suffix(".sha256")):
         if f.is_file() and not f.is_symlink():
             try:
                 size = f.stat().st_size

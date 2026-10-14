@@ -473,6 +473,256 @@ function createPrepare(opts) {
 
 # The Make-a-video card. It builds a montage recipe from what the person picks and sends it to the server, which
 # validates it and works out every timing. Nothing here computes a duration.
+DOWNLOADER_JS = r"""
+// Download finished videos to THIS browser in small pieces, resumably, then let the person Save the finished file.
+// Why: the link to the Premiere machine is slow and lossy (measured 7-25 kB/s). A normal download restarts from nothing when the
+// connection drops and shows nothing until it ends. Here every 128 KB piece is kept in IndexedDB as it arrives (a Range request),
+// a drop only costs the piece in flight, the page shows real progress, and Save is instant once the file is whole and verified.
+function createDownloader(opts) {
+  if (typeof indexedDB === "undefined" || typeof fetch === "undefined") return null;
+  const BASE = opts.base, CHUNK = opts.chunk || 131072, TIMEOUT = opts.timeout || 120000, MAXWAIT = opts.maxWait || 30000;
+  const SETTING = "umcares-auto-download";
+  let dbp = null, onChange = opts.onChange || (() => {}), wake = null, firstWatch = true;
+  const known = new Set(), tasks = {}, state = {}, rows = {};
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  const mb = n => n < 1048576 ? Math.max(1, Math.round(n / 1024)) + " KB" : (n / 1048576).toFixed(1) + " MB";
+  const keyOf = name => BASE + "|" + name;
+  const urlOf = name => BASE + "/exports/" + encodeURIComponent(name);
+
+  function db() {
+    return dbp || (dbp = new Promise((res, rej) => {
+      const r = indexedDB.open("umcares-dl", 1);
+      r.onupgradeneeded = () => { r.result.createObjectStore("meta"); r.result.createObjectStore("chunks"); };
+      r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+    }));
+  }
+  async function op(store, mode, fn) {
+    const d = await db();
+    return new Promise((res, rej) => {
+      const t = d.transaction(store, mode), r = fn(t.objectStore(store));
+      t.oncomplete = () => res(r && r.result); t.onerror = t.onabort = () => rej(t.error);
+    });
+  }
+  const get = (store, key) => op(store, "readonly", s => s.get(key));
+  const put = (store, key, val) => op(store, "readwrite", s => s.put(val, key));
+  const dropChunks = key => op("chunks", "readwrite", s => s.delete(IDBKeyRange.bound(key + "#", key + "#\uffff")));
+  async function allMeta() {
+    return op("meta", "readonly", s => s.getAll()).then(list => (list || []).filter(m => m && m.base === BASE));
+  }
+
+  function st(name) { return state[name] || (state[name] = {state: "idle", got: 0, size: 0, rate: 0, note: "", saved: false}); }
+  function changed(name) { render(name); onChange(name, st(name)); }
+  function setAuto(on) { try { localStorage.setItem(SETTING, on ? "1" : "0"); } catch (e) {} }
+  function auto() { try { return localStorage.getItem(SETTING) !== "0"; } catch (e) { return true; } }
+
+  async function keepAwake(on) {
+    try {
+      if (on && navigator.wakeLock && !wake) { wake = await navigator.wakeLock.request("screen"); wake.addEventListener("release", () => { wake = null; }); }
+      if (!on && wake) { await wake.release(); wake = null; }
+    } catch (e) {}
+  }
+  const busy = () => Object.keys(tasks).some(n => tasks[n] && !tasks[n].stop);
+
+  async function roomFor(size) {
+    try {
+      if (navigator.storage && navigator.storage.estimate) {
+        const e = await navigator.storage.estimate();
+        if (e.quota && e.quota - (e.usage || 0) < size * 1.3) return false;
+      }
+    } catch (e) {}
+    return true;
+  }
+
+  async function start(name, size) {
+    const s = st(name);
+    if (tasks[name] && !tasks[name].stop) return;
+    let m = await get("meta", keyOf(name));
+    if (m && m.size !== size) { await dropChunks(keyOf(name)); m = null; }                  // the file on the server is not the one we were fetching
+    if (m && m.state === "done") { s.state = "done"; s.got = s.size = m.size; s.saved = !!m.saved; changed(name); return; }
+    if (!m) {
+      if (!(await roomFor(size))) { s.state = "failed"; s.note = "not enough room left in this browser's storage"; changed(name); return; }
+      try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
+      m = {key: keyOf(name), base: BASE, name, size, next: 0, state: "downloading", startedAt: Date.now()};
+    }
+    m.state = "downloading"; m.error = ""; await put("meta", keyOf(name), m);
+    s.state = "downloading"; s.size = m.size; s.got = Math.min(m.size, m.next * CHUNK); s.note = ""; s.samples = [];
+    const t = tasks[name] = {stop: false};
+    keepAwake(true);
+    changed(name);
+    t.done = run(name).catch(e => { s.state = "failed"; s.note = String(e && e.message || e); changed(name); }).finally(() => { if (!busy()) keepAwake(false); });
+  }
+
+  // The download loop is the only writer of a video's progress record while it runs, so a pause or a removal first waits for it to stop.
+  async function halt(name) {
+    const t = tasks[name];
+    if (!t) return;
+    t.stop = true;
+    try { t.ctl && t.ctl.abort(); } catch (e) {}
+    try { await t.done; } catch (e) {}
+  }
+
+  async function restart(name, m, why) {
+    await dropChunks(keyOf(name)); m.next = 0; await put("meta", keyOf(name), m);
+    const s = st(name); s.got = 0; s.samples = []; s.note = why; changed(name);
+  }
+
+  async function run(name) {
+    const t = tasks[name], s = st(name);
+    let fails = 0;
+    while (!t.stop) {
+      const m = await get("meta", keyOf(name));
+      if (!m || m.state !== "downloading") return;
+      if (m.next * CHUNK >= m.size) return finish(name, m);
+      const a = m.next * CHUNK, b = Math.min(m.size, a + CHUNK) - 1;
+      try {
+        if (typeof navigator !== "undefined" && navigator.onLine === false) { s.note = "waiting for a connection…"; changed(name); await sleep(1500); continue; }
+        const ctl = new AbortController(); t.ctl = ctl;
+        const timer = setTimeout(() => ctl.abort(), TIMEOUT);
+        let r;
+        try { r = await fetch(urlOf(name), {headers: {Range: "bytes=" + a + "-" + b}, signal: ctl.signal, cache: "no-store"}); }
+        finally { clearTimeout(timer); }
+        if (t.stop) return;
+        if (r.status === 404) { s.state = "failed"; s.note = "the video is no longer on the server"; await dropChunks(keyOf(name)); await op("meta", "readwrite", x => x.delete(keyOf(name))); t.stop = true; changed(name); return; }
+        if (r.status !== 206) throw new Error("the server answered " + r.status + " to a range request");
+        const total = Number(((r.headers.get("Content-Range") || "").split("/")[1]) || 0);
+        if (total && total !== m.size) { m.size = total; s.size = total; await restart(name, m, "the video changed on the server; starting over"); continue; }
+        const buf = await r.arrayBuffer();
+        if (buf.byteLength !== b - a + 1) throw new Error("a piece arrived short");
+        await put("chunks", keyOf(name) + "#" + m.next, buf);
+        m.next += 1; await put("meta", keyOf(name), m);
+        fails = 0; s.note = "";
+        const now = Date.now(); s.samples.push([now, buf.byteLength]); s.samples = s.samples.filter(x => now - x[0] < 30000);
+        const span = Math.max(1000, now - s.samples[0][0]); s.rate = s.samples.length > 1 ? s.samples.slice(1).reduce((n, x) => n + x[1], 0) / (span / 1000) : buf.byteLength / ((now - (s.last || now) || 1000) / 1000);
+        s.last = now; s.got = Math.min(m.size, m.next * CHUNK);
+        changed(name);
+      } catch (e) {
+        if (t.stop) return;
+        fails += 1; s.note = "connection trouble, retrying (" + fails + ")…"; changed(name);
+        await sleep(Math.min(MAXWAIT, 500 * Math.pow(2, Math.min(fails, 6))));
+      }
+    }
+  }
+
+  async function assemble(name, m) {
+    const parts = [];
+    for (let i = 0; i * CHUNK < m.size; i++) {
+      const c = await get("chunks", keyOf(name) + "#" + i);
+      if (!c) return null;
+      parts.push(c);
+    }
+    return new Blob(parts, {type: "video/mp4"});
+  }
+
+  async function finish(name, m) {
+    const s = st(name);
+    s.note = "checking the file…"; changed(name);
+    const blob = await assemble(name, m);
+    let ok = !!blob && blob.size === m.size;
+    if (ok && typeof crypto !== "undefined" && crypto.subtle) {
+      try {
+        const r = await fetch(BASE + "/api/montage/hash?name=" + encodeURIComponent(name), {cache: "no-store"});
+        if (r.ok) {
+          const want = (await r.json()).sha256, got = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", await blob.arrayBuffer()))).map(x => x.toString(16).padStart(2, "0")).join("");
+          ok = want === got;
+        }
+      } catch (e) { /* no hash available right now: the size check stands */ }
+    }
+    if (!ok) { s.state = "failed"; s.note = "the file arrived damaged; downloading it again"; m.state = "downloading"; await restart(name, m, s.note); const t2 = tasks[name] = {stop: false}; t2.done = Promise.resolve(); return run(name); }
+    m.state = "done"; m.doneAt = Date.now(); await put("meta", keyOf(name), m);
+    s.state = "done"; s.got = s.size = m.size; s.note = ""; s.rate = 0; s.saved = !!m.saved; tasks[name].stop = true;
+    changed(name);
+  }
+
+  async function pause(name) {
+    await halt(name);
+    const m = await get("meta", keyOf(name)), s = st(name);
+    if (m && m.state === "downloading") { m.state = "paused"; await put("meta", keyOf(name), m); }
+    s.state = "paused"; s.note = ""; s.rate = 0; changed(name);
+    if (!busy()) keepAwake(false);
+  }
+  async function discard(name) {
+    await halt(name);
+    await dropChunks(keyOf(name)); await op("meta", "readwrite", x => x.delete(keyOf(name)));
+    state[name] = {state: "idle", got: 0, size: 0, rate: 0, note: "", saved: false}; changed(name);
+    if (!busy()) keepAwake(false);
+  }
+  async function blob(name) {
+    const m = await get("meta", keyOf(name));
+    return m && m.state === "done" ? assemble(name, m) : null;
+  }
+  async function save(name) {
+    const b = await blob(name);
+    if (!b) { const s = st(name); s.note = "the stored copy is incomplete; download it again"; changed(name); return false; }
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(b); a.download = name; a.style.display = "none";
+    document.body.append(a); a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 60000);
+    const m = await get("meta", keyOf(name)); m.saved = true; await put("meta", keyOf(name), m);
+    st(name).saved = true; changed(name);
+    return true;
+  }
+
+  // The page tells us which videos exist; we resume unfinished downloads, drop copies of deleted videos, and (if on) start new final ones.
+  async function watch(exportsList) {
+    const names = new Set(exportsList.map(x => x.name));
+    const metas = await allMeta();
+    for (const m of metas) if (!names.has(m.name)) await discard(m.name);                      // deleted on the server: free the space
+    const byName = {}; metas.forEach(m => { byName[m.name] = m; });
+    for (const x of exportsList) {
+      const m = byName[x.name], s = st(x.name);
+      if (m && m.state === "done" && m.size === x.size) { s.state = "done"; s.got = s.size = m.size; s.saved = !!m.saved; changed(x.name); }
+      else if (m && m.state === "downloading") { start(x.name, x.size); }
+      else if (m && m.state === "paused") { s.state = "paused"; s.size = m.size; s.got = Math.min(m.size, m.next * CHUNK); changed(x.name); }
+      else if (!m && !firstWatch && !known.has(x.name) && auto() && x.quality !== "draft") { start(x.name, x.size); }           // a NEW final video appeared while the page was open
+      known.add(x.name);
+    }
+    firstWatch = false;
+  }
+
+  function eta(s) {
+    if (!s.rate || s.rate < 1) return "";
+    const sec = (s.size - s.got) / s.rate;
+    return sec < 90 ? " · about " + Math.ceil(sec) + " s left" : " · about " + Math.ceil(sec / 60) + " min left";
+  }
+  function label(name) {
+    const s = st(name);
+    if (s.state === "downloading") return "⬇ " + Math.floor(100 * s.got / Math.max(1, s.size)) + "% · " + mb(s.got) + " of " + mb(s.size) + eta(s) + (s.note ? " · " + s.note : "");
+    if (s.state === "paused") return "⏸ paused at " + Math.floor(100 * s.got / Math.max(1, s.size)) + "%";
+    if (s.state === "done") return "✓ on this phone (" + mb(s.size) + ")" + (s.saved ? ", saved" : "") + (s.note ? " · " + s.note : "");
+    if (s.state === "failed") return "✗ " + s.note;
+    return "";
+  }
+  function el(tag, props, ...kids) { const e = document.createElement(tag); Object.assign(e, props || {}); kids.forEach(k => e.append(k)); return e; }
+
+  // One element per video, kept alive between redraws of the list so its progress can update in place.
+  function row(name, size, quality) {
+    if (rows[name]) { rows[name].size = size; rows[name].quality = quality; render(name); return rows[name].box; }
+    const box = el("div", {className: "dl"}), text = el("div", {className: "dim"}), bar = el("progress", {max: 100, value: 0}), btns = el("div", {});
+    box.append(text, bar, btns);
+    rows[name] = {box, text, bar, btns, size, quality};
+    render(name);
+    return box;
+  }
+  function render(name) {
+    const r = rows[name]; if (!r) return;
+    const s = st(name);
+    r.text.textContent = label(name);
+    r.bar.hidden = s.state !== "downloading" && s.state !== "paused";
+    r.bar.value = Math.floor(100 * s.got / Math.max(1, s.size));
+    const mk = (t, fn) => { const b = el("button", {type: "button", className: "mv"}, t); b.addEventListener("click", fn); return b; };
+    const kids = [];
+    if (s.state === "idle" || s.state === "failed") kids.push(mk(s.state === "failed" ? "Try again" : "Download to this phone", () => start(name, r.size)));
+    if (s.state === "downloading") kids.push(mk("Pause", () => pause(name)));
+    if (s.state === "paused") kids.push(mk("Resume", () => start(name, r.size)), mk("Remove", () => discard(name)));
+    if (s.state === "done") kids.push(mk("Save to phone", () => save(name)), mk("Remove copy", () => discard(name)));
+    r.btns.replaceChildren(...kids);
+  }
+
+  return {start, pause, discard, save, blob, watch, row, status: st, auto, setAuto, busy, chunk: CHUNK, label};
+}
+"""
+
+
 MONTAGE_JS = r"""
 // BPM from tap times (ms, ascending): the median gap of the last 12 taps, so one clumsy tap does not move it, folded into 50-200
 function tempoFromTaps(times) {
@@ -505,6 +755,7 @@ function createMontage(opts) {
   }
   async function load() {
     st = await call("GET", "/api/montage");
+    if (opts.downloader) opts.downloader.watch(st.exports);
     const refs = st.catalog.filter(i => i.kind !== "audio").map(i => i.ref);
     const known = new Set(order);
     order = order.filter(r => refs.includes(r)).concat(refs.filter(r => !known.has(r)));
@@ -641,7 +892,13 @@ function createMontage(opts) {
         kids.push(el("div", {className: "row"},
           el("a", {href: BASE + "/exports/" + encodeURIComponent(x.name), target: "_blank"}, x.name),
           el("span", {}, el("span", {className: "dim"}, (x.quality === "draft" ? "draft · " : "") + (x.duration ? secs(x.duration) + " · " : "") + mb(x.size) + " "), del)));
+        if (opts.downloader) kids.push(opts.downloader.row(x.name, x.size, x.quality));
       });
+      if (opts.downloader) {
+        const auto = el("input", {type: "checkbox", checked: opts.downloader.auto()});
+        auto.addEventListener("change", () => opts.downloader.setAuto(auto.checked));
+        kids.push(el("label", {className: "row"}, el("span", {}, auto, " Download new finished videos to this phone automatically (resumes if the connection drops)")));
+      }
     }
     jobsBox.replaceChildren(...kids);
   }
