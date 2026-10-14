@@ -109,6 +109,15 @@ class Judging(unittest.TestCase):
         r = judge.judge(heavy, plan(total=2.0, segments=[{"kind": "photo", "start": 0.0, "duration": 2.0}]))
         self.assertEqual(level_of(r, "bitrate"), "warn")
 
+    def test_a_thin_bitrate_is_not_a_fault_when_most_of_the_video_is_flat_text_cards(self):
+        thin = self.make("thincards.mp4", vopts=("-b:v", "4k", "-maxrate", "4k", "-bufsize", "8k"))
+        cards = plan(segments=[{"kind": "quote", "start": 0.0, "duration": 3.0}, {"kind": "photo", "start": 3.0, "duration": 1.0}])
+        r = judge.judge(thin, cards)
+        self.assertEqual(level_of(r, "bitrate"), "ok")
+        self.assertIn("flat text cards", next(c["message"] for c in r["checks"] if c["id"] == "bitrate"))
+        pictures = plan(segments=[{"kind": "photo", "start": 0.0, "duration": 3.0}, {"kind": "quote", "start": 3.0, "duration": 1.0}])
+        self.assertEqual(level_of(judge.judge(thin, pictures), "bitrate"), "warn", "but thin over mostly pictures still warns")
+
     # ---------------------------------------------------------------- sound
     def test_a_silent_soundtrack_fails_when_the_plan_wanted_sound(self):
         silent = self.make("silent.mp4", audio="anullsrc=r=48000:cl=mono")

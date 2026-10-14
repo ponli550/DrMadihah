@@ -183,7 +183,10 @@ def judge(path, plan=None) -> dict:
             vbits = max(0.0, size * 8 / duration - float((a or {}).get("bit_rate") or 0))
         bpp = vbits / (w * h * fps)
         level = "ok" if BPP[0] <= bpp <= BPP[1] else "warn"
-        msg = f"video {vbits / 1e6:.1f} Mbit/s" if level == "ok" else (
+        pictured = sum(float(x.get("duration", 0)) for x in ((plan or {}).get("segments") or []) if x.get("kind") in PICTURE_KINDS)
+        if level == "warn" and bpp < BPP[0] and plan and plan.get("segments") and pictured < 0.5 * duration:
+            level = "ok"                                              # mostly flat text cards: a low rate is natural there and still crisp
+        msg = (f"video {vbits / 1e6:.1f} Mbit/s" + (" (low because most of it is flat text cards)" if bpp < BPP[0] else "")) if level == "ok" else (
             f"video {vbits / 1e6:.2f} Mbit/s is thin for this size: it will look soft or blocky" if bpp < BPP[0]
             else f"video {vbits / 1e6:.1f} Mbit/s is unusually heavy for this size: slow to move and upload")
         add(level, "bitrate", msg)
