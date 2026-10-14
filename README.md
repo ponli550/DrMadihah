@@ -719,6 +719,18 @@ renders the same video.
 - **Everything is composed over a blurred copy of itself**, so a portrait photo in a 9:16 frame is never cropped
   and a landscape one never loses its sides. (ffprobe does not report an EXIF-rotated photo's true shape, so
   composing the same way every time is also simpler than detecting it.) Photos get a slow zoom; clips can be slowed.
+- **Audiogram** (`{"audiogram": "song.mp3", "image": "photo.jpg", "caption": "Dr Madihah", "start": 0, "hold": 8}`): a song or voice
+  file drawn as a moving waveform (ffmpeg `showwaves`), solid in the accent colour, over the picture darkened by 30% (or on the
+  look's colour if there is no `image`), with the caption under it. **Its sound is always heard** (it is added to the soundtrack
+  step, at the piece's place on the timeline) and **the music dips about 14 dB under all of it**. Every look and format. It
+  is never slowed: cut to a tempo it fills whole cuts and, if its audio is shorter than the cut, the sound just ends early.
+  Only recipes use it for now (not the page's picture list). Lessons from real frames: (1) the first version showed the
+  file name as the caption (arguments swapped), (2) `colorkey` on a coloured waveform turned the accent green, so the waveform
+  is built as the alpha of a solid colour (`alphamerge`), (3) the picture path needs its range set to limited like every
+  other piece, or the whole video comes out `yuvj420p`. I first blamed (2) on 4:2:0 chroma loss on hairlines; measured, a
+  hairline keeps its colour just as well (97% vs 98% accent pixels), so the chunky bars are a look, not a fix. **Limit:** over a
+  long silent stretch, the final `loudnorm` lifts a dipped passage of a mix that has no voice in it (a 4 s dip measured
+  about 5 dB instead of 14); with the audiogram's own voice in the mix the dip relative to the voice holds.
 - **Text cards: quote, announcement, countdown** (`textcards.py`; not `cards.py`, which is the json2video title/stat/logo module
   of the Premiere pipeline). A clip with no picture: give exactly one of `quote`, `announce` or `countdown` instead of `media`.
   `{"quote": "...", "by": "Dr Madihah"}` is a big opening mark, the quote wrapped and centred, then the attribution in the accent;

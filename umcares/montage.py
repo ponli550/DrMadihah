@@ -95,9 +95,9 @@ NICE = prepare.NICE
 THREADS = prepare.THREADS
 ALLOWED_TOP = {"kind", "version", "title", "format", "template", "clips", "captions", "title_card", "end_card", "music",
                "max_seconds", "note", "quality", "speech", "clip_sound"}
-ALLOWED_CLIP = {"media", "caption", "hold", "speed", "start", "zoom", "move", "quote", "by", "announce", "countdown"}
+ALLOWED_CLIP = {"media", "caption", "hold", "speed", "start", "zoom", "move", "quote", "by", "announce", "countdown", "audiogram", "image"}
 ALLOWED_ANNOUNCE = {"title", "date", "time", "place", "note"}
-CONTENT_KINDS = ("photo", "video", "quote", "announce", "countdown")      # what counts as a clip of the video (cards at the ends do not)
+CONTENT_KINDS = ("photo", "video", "quote", "announce", "countdown", "audiogram")      # what counts as a clip of the video (cards at the ends do not)
 ALLOWED_CARD = {"text", "subtitle", "hold"}
 ALLOWED_MUSIC = {"file", "start", "fade_out", "sync", "bpm"}
 
@@ -249,9 +249,26 @@ def validate(recipe, root) -> dict:
             continue
         for k in sorted(set(c) - ALLOWED_CLIP):
             problems.append(f"{w}.{k}: unknown field (allowed: {', '.join(sorted(ALLOWED_CLIP))})")
-        given = [k for k in ("media", *textcards.KINDS) if k in c]
+        given = [k for k in ("media", *textcards.KINDS, "audiogram") if k in c]
         if len(given) != 1:
-            problems.append(f"{w}: give exactly one of media, quote, announce or countdown")
+            problems.append(f"{w}: give exactly one of media, quote, announce, countdown or audiogram")
+            continue
+        if "image" in c and given[0] != "audiogram":
+            problems.append(f"{w}.image: only an audiogram has an image")
+        if given[0] == "audiogram":
+            before = len(problems)
+            audio = _find(items, c["audiogram"], {"audio"}, f"{w}.audiogram", problems)
+            image = _find(items, c["image"], {"image"}, f"{w}.image", problems) if "image" in c else None
+            for k in ("speed", "zoom", "move", "by"):
+                if k in c:
+                    problems.append(f"{w}.{k}: does not apply to an audiogram")
+            for k, lo, hi in (("hold", 0.5, 15), ("start", 0, 3600)):
+                if k in c and not _num(c[k], lo, hi):
+                    problems.append(f"{w}.{k}: must be a number from {lo} to {hi}")
+            if c.get("caption") is not None and (not isinstance(c["caption"], str) or len(c["caption"]) > 200):
+                problems.append(f"{w}.caption: must be text of at most 200 characters")
+            if len(problems) == before and audio:
+                clips.append({**c, "_audiogram": True, "_item": audio, "_image": image})
             continue
         if given[0] != "media":
             before = len(problems)
@@ -358,6 +375,24 @@ def _check_text_clip(c: dict, kind: str, w: str, problems: list) -> None:
             problems.append(f"{w}.countdown: a whole number from 2 to 5 (it counts down to 1)")
 
 
+def _audiogram_segment(c: dict, r: dict, root: Path) -> dict:
+    """A song or voice clip drawn as a moving waveform (over a picture, if one is given). Its sound is always heard."""
+    item, image = c["_item"], c.get("_image")
+    path = root / item["rel"]
+    if not path.is_file():
+        raise MontageError(f"{item['name']} is no longer in the project")
+    if image is not None and not (root / image["rel"]).is_file():
+        raise MontageError(f"{image['name']} is no longer in the project")
+    dur = quick_info(path)["duration"]
+    start = float(c.get("start", 0))
+    if dur - start < 0.5:
+        raise MontageError(f"audiogram: start {start:g}s is past the end of {item['name']} ({dur:.1f}s long)")
+    used = round(min(dur - start, float(c.get("hold", 8.0))), 3)
+    text = c.get("caption") if c.get("caption") is not None else (image or {}).get("caption", "")
+    return {"kind": "audiogram", "media": item["ref"], "name": item["name"], "rel": item["rel"], "image_rel": image["rel"] if image else None,
+            "text": (text if r["captions"] else "").strip(), "src_start": start, "src_used": used, "speed": 1.0, "duration": used, "sound": True}
+
+
 def _text_segment(c: dict) -> dict:
     kind = c["_card"]
     if kind == "quote":
@@ -388,6 +423,9 @@ def resolve(validated: dict, root) -> dict:
     for i, c in enumerate(r["clips"]):
         if c.get("_card"):
             segs.append(_text_segment(c))
+            continue
+        if c.get("_audiogram"):
+            segs.append(_audiogram_segment(c, r, root))
             continue
         item = c["_item"]
         path = root / item["rel"]
@@ -486,6 +524,9 @@ def _settle_sound(r, segs: list) -> list:
     (clip_sound "speech" and enough speech in the excerpt) and return the video-time windows the music must dip under."""
     windows = []
     for s in segs:
+        if s["kind"] == "audiogram":                                    # its sound is the content: the music dips under all of it
+            windows.append([round(s["start"], 3), round(s["start"] + s["duration"], 3)])
+            continue
         spans = s.pop("_spans", None)
         if spans is None:
             continue
@@ -538,6 +579,10 @@ def _beat_sync(r, root: Path, segs: list, warnings: list, fps: int):
     slowed, cum = 0, 0
     for s in segs:
         n = max(1, math.floor(s["duration"] / unit + 0.5))
+        if s["kind"] == "audiogram":                                      # never slowed: the waveform and the sound must stay in step
+            avail = quick_info(root / s["rel"])["duration"] - s["src_start"]
+            if n * unit > avail + 1e-6:
+                n = max(1, math.floor(avail / unit + 1e-6))                # shorter than one cut: it still fills a cut and its sound just ends early
         if s["kind"] == "video":
             avail = quick_info(root / s["rel"])["duration"] - s["src_start"]
             out_avail = avail / s["speed"]
@@ -552,7 +597,7 @@ def _beat_sync(r, root: Path, segs: list, warnings: list, fps: int):
         # every cut time is a whole frame, so rounding never drifts away from the beat across a long video
         s["duration"] = (round((cum + n) * unit * fps) - round(cum * unit * fps)) / fps
         cum += n
-        if s["kind"] == "video":
+        if s["kind"] in ("video", "audiogram"):
             s["src_used"] = round(min(avail, s["duration"] * s["speed"]), 3)
     if slowed:
         warnings.append(f"{slowed} clip{'s' if slowed != 1 else ''} shorter than one beat-cut {'were' if slowed != 1 else 'was'} slowed down to fill it")
@@ -660,6 +705,8 @@ def _piece_command(ffmpeg, plan, seg, i, workdir: Path, out: Path):
     W, H, fps, d = plan["width"], plan["height"], plan["fps"], seg["duration"]
     tpl = TEMPLATES[plan["template"]]
     fmt = FORMATS[plan["format"]]
+    if seg["kind"] == "audiogram":
+        return _audiogram_command(ffmpeg, plan, seg, i, workdir, out, tpl)
     if seg["kind"] in textcards.KINDS:                        # no picture: drawn the same way in every look
         return textcards.piece_commands(_base, ffmpeg, plan, seg, i, workdir, out, _encode_piece(plan), tpl)
     if tpl.get("style") == "collage":                        # a different way of drawing the whole piece
@@ -753,6 +800,45 @@ def _piece_command(ffmpeg, plan, seg, i, workdir: Path, out: Path):
     steps.append((_base(ffmpeg) + ["-ss", str(seg["src_start"]), "-t", str(seg["src_used"]), "-i", str(root_of(plan) / seg["rel"])] + overlay_in +
                   ["-filter_complex", graph, "-map", out_label, "-t", str(d), "-r", str(fps)] + _encode_piece(plan) + [str(out)], d))
     return steps
+
+
+def _audiogram_command(ffmpeg, plan, seg, i, workdir: Path, out: Path, tpl):
+    """A moving waveform of the clip's own audio (ffmpeg's showwaves, black keyed out) over a darkened picture or the look's colour,
+    with an optional name below. The piece itself is silent like every piece; the sound is placed by the soundtrack step."""
+    W, H, fps, d = plan["width"], plan["height"], plan["fps"], seg["duration"]
+    root = root_of(plan)
+    picture = seg.get("image_rel")
+    ink = textcards.LIGHT if picture else textcards.ink_for(tpl["bg"])
+    wave = tpl["accent"] if (picture or ink == textcards.LIGHT) else textcards.accent_text(tpl["accent"], tpl["bg"])
+    wave_h = int(H * 0.2)
+    wave_y = int(H * 0.5) - wave_h // 2
+    if picture:
+        inputs = ["-loop", "1", "-framerate", str(fps), "-t", str(d), "-i", str(root / picture)]
+        bg = f"[0:v]{_compose(W, H)},eq=brightness=-0.3:contrast=1.1,scale=out_range=tv,format=yuv420p[bg]"
+    else:
+        inputs = ["-f", "lavfi", "-i", f"color=c={tpl['bg']}:s={W}x{H}:r={fps}:d={d}"]
+        bg = "[0:v]null[bg]"
+    inputs += ["-ss", str(seg["src_start"]), "-t", str(d), "-i", str(root / seg["rel"])]
+    # The waveform's colour: the white waveform is used as the ALPHA of a solid accent colour (alphamerge). `colorkey` on a coloured
+    # waveform turned the accent green (measured), so it is not used. The waveform is drawn small and enlarged with nearest-neighbour
+    # so it reads as chunky bars, a look rather than a necessity (measured: a hairline keeps its colour just as well).
+    k = max(3, W // 150)
+    cw, ch = W // k, max(2, wave_h // k)
+    ww, wh2 = cw * k, ch * k
+    graph = (f"{bg};[1:a]aresample=48000,showwaves=s={cw}x{ch}:mode=cline:draw=full:rate={fps}:colors=white:scale=sqrt,"
+             f"scale={ww}:{wh2}:flags=neighbor,format=gray[m];color=c=0x{wave.lstrip('#')}:s={ww}x{wh2}:r={fps}[c];[c][m]alphamerge,format=rgba[wv];"
+             f"[bg][wv]overlay=({W}-w)/2:{wave_y}:format=auto[o]")
+    last = "[o]"
+    if seg["text"]:
+        label_h = int(H * 0.12)
+        pad = max(4, int(W * 0.06))
+        png = _text_png(workdir, seg["text"], f"seg{i}-name", W, label_h + 2 * pad, size=int(H * 0.04), font=kinetic.FONT, color=ink, valign="middle",
+                        pad=pad, shadow=ink == textcards.LIGHT)
+        inputs += ["-loop", "1", "-framerate", str(fps), "-t", str(d), "-i", str(png)]
+        graph += f";[2:v]format=rgba,fade=t=in:st=0.2:d=0.4:alpha=1[nm];[o][nm]overlay=0:{int(H * 0.68) - pad}:format=auto[o2]"
+        last = "[o2]"
+    graph += f";{last}format=yuv420p[out]"
+    return [(_base(ffmpeg) + inputs + ["-filter_complex", graph, "-map", "[out]", "-t", str(d), "-r", str(fps)] + _encode_piece(plan) + [str(out)], d)]
 
 
 def root_of(plan) -> Path:
@@ -980,6 +1066,8 @@ class Renderer:
         root = Path(job["root"])
         plan = job["_plan"]
         for seg in plan["segments"]:
+            if seg.get("image_rel") and not (root / seg["image_rel"]).is_file():
+                raise MontageError(f"{seg['image_rel'].rsplit('/', 1)[-1]} is no longer in the project")
             if seg.get("rel") and not (root / seg["rel"]).is_file():
                 raise MontageError(f"{seg['name']} is no longer in the project")
         if plan["music"] and not (root / plan["music"]["rel"]).is_file():
@@ -1162,7 +1250,10 @@ def brief(root, project_name: str = "") -> str:
               "- `clips[]` (required, in order): `media`; optional `caption` (overrides the file's caption), `hold` (seconds on screen), "
               "`speed` (videos only, 0.25 to 2; below 1 is slow motion), `start` (videos only, seconds into the clip), "
               f"`move` (photos only: {', '.join(MOVES)}; the camera glides, eased. Left out, neighbouring photos alternate on their own).",
-              "- A clip with no picture is a text card; give exactly one of `media`, `quote`, `announce` or `countdown`:",
+              "- A clip can also be an audiogram: `{\"audiogram\": \"<a song or voice file>\", \"image\": \"<optional picture>\", \"caption\": \"a name\", \"start\": 0, \"hold\": 8}`. "
+              "It draws the audio as a moving waveform (over the darkened picture if given, else on the look's colour), shows the caption below, and its sound is always heard "
+              "with the music dipping under it. It is never slowed, so cut to a tempo it fills whole cuts and its sound just ends early if it is shorter.",
+              "- A clip with no picture is a text card; give exactly one of `media`, `quote`, `announce`, `countdown` or `audiogram`:",
               "  `{\"quote\": \"text up to 160 characters\", \"by\": \"who said it\", \"hold\": 4}`; "
               "`{\"announce\": {\"title\": \"Hackathon CyberDSA\", \"date\": \"12 Okt 2026\", \"time\": \"9 pagi\", \"place\": \"Dewan A\", \"note\": \"Percuma\"}}` "
               "(title plus chips; every field but the title is optional); `{\"countdown\": 3}` (a whole number from 2 to 5, counts down to 1, one number per equal share, so on the beat when cut to one). "

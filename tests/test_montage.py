@@ -1436,6 +1436,189 @@ class TextCards(Fixtures):
         self.assertEqual([(s["start"], s["duration"]) for s in final["segments"]], [(s["start"], s["duration"]) for s in draft["segments"]])
 
 
+@NEED
+class Audiogram(Fixtures):
+    """A song or voice clip drawn as a moving waveform, its sound always heard, the music dipping under it."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        ff("-f", "lavfi", "-i", "sine=frequency=440:duration=2,volume=3", "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono", "-filter_complex",
+           "[0:a]aresample=48000[a];[1:a]atrim=0:2[b];[a][b]concat=n=2:v=0:a=1", "-c:a", "aac", str(cls.fx / "gap.m4a"))        # 2 s of tone, 2 s of silence
+        ff("-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono", "-t", "4", "-c:a", "aac", str(cls.fx / "hush.m4a"))
+        ff("-f", "lavfi", "-i", "sine=frequency=330:duration=0.7", "-c:a", "aac", "-ar", "48000", str(cls.fx / "blip.m4a"))
+
+    def plan(self, clips, **kw):
+        return montage.plan_for(recipe(clips, template="kinetic", **kw), self.root)
+
+    def problems(self, clips, **kw):
+        with self.assertRaises(montage.RecipeError) as ctx:
+            self.plan(clips, **kw)
+        return " | ".join(ctx.exception.problems)
+
+    # ---------------------------------------------------------------- validation
+    def test_the_audio_must_be_audio_and_the_image_an_image(self):
+        self.add("land.jpg", "clip.mp4", "gap.m4a")
+        self.assertIn("audiogram", self.problems([{"audiogram": "land.jpg"}]))
+        self.assertIn("audiogram", self.problems([{"audiogram": "clip.mp4"}]))
+        self.assertIn("image", self.problems([{"audiogram": "gap.m4a", "image": "gap.m4a"}]))
+        self.assertIn("image", self.problems([{"audiogram": "gap.m4a", "image": "clip.mp4"}]))
+        self.assertIn("audiogram", self.problems([{"audiogram": "missing.m4a"}]))
+
+    def test_a_clip_is_exactly_one_kind_and_only_an_audiogram_has_an_image(self):
+        self.add("land.jpg", "gap.m4a")
+        self.assertIn("exactly one", self.problems([{"audiogram": "gap.m4a", "media": "land.jpg"}]))
+        self.assertIn("exactly one", self.problems([{"audiogram": "gap.m4a", "quote": "Hi"}]))
+        self.assertIn("only an audiogram has an image", self.problems([{"media": "land.jpg", "image": "land.jpg"}]))
+        self.assertIn("only an audiogram has an image", self.problems([{"quote": "Hi", "image": "land.jpg"}]))
+
+    def test_the_fields_an_audiogram_does_not_take_are_refused_and_the_ranges_are_checked(self):
+        self.add("gap.m4a")
+        for k, v in (("speed", 1.5), ("zoom", True), ("move", "in"), ("by", "x")):
+            with self.subTest(k=k):
+                self.assertIn(k, self.problems([{"audiogram": "gap.m4a", k: v}]))
+        self.assertIn("hold", self.problems([{"audiogram": "gap.m4a", "hold": 99}]))
+        self.assertIn("start", self.problems([{"audiogram": "gap.m4a", "start": -1}]))
+        self.assertIn("caption", self.problems([{"audiogram": "gap.m4a", "caption": "x" * 201}]))
+
+    # ---------------------------------------------------------------- the plan
+    def test_an_audiogram_lasts_as_long_as_asked_or_as_its_audio_and_its_sound_is_always_kept(self):
+        self.add("gap.m4a", "land.jpg")
+        p = self.plan([{"audiogram": "gap.m4a"}, {"audiogram": "gap.m4a", "start": 1.0, "hold": 2, "caption": "Dekan"}])
+        whole, part = p["segments"]
+        self.assertEqual((whole["kind"], whole["sound"], whole["src_start"], whole["duration"]), ("audiogram", True, 0.0, whole["src_used"]))
+        self.assertAlmostEqual(whole["duration"], 4.0, delta=0.15, msg="the whole of a 4 s clip (the default hold of 8 s is capped by the audio)")
+        self.assertEqual((part["src_start"], part["duration"], part["text"], part["speed"]), (1.0, 2.0, "Dekan", 1.0))
+        self.assertEqual(part["name"], "gap.m4a")
+        self.assertTrue(part["rel"].endswith("gap.m4a"))
+
+    def test_a_start_past_the_end_is_refused_with_the_files_name(self):
+        self.add("gap.m4a")
+        with self.assertRaises(montage.MontageError) as ctx:
+            self.plan([{"audiogram": "gap.m4a", "start": 3.9}])
+        self.assertIn("gap.m4a", str(ctx.exception))
+
+    def test_the_caption_comes_from_the_picture_when_none_is_given_and_not_at_all_with_captions_off(self):
+        self.add("land.jpg", "gap.m4a")
+        captions.set_detail(self.root, self.sha("land.jpg"), "The Dean")
+        self.assertEqual(self.plan([{"audiogram": "gap.m4a", "image": "land.jpg"}])["segments"][0]["text"], "The Dean")
+        self.assertEqual(self.plan([{"audiogram": "gap.m4a", "image": "land.jpg", "caption": "Mine"}])["segments"][0]["text"], "Mine")
+        self.assertEqual(self.plan([{"audiogram": "gap.m4a", "image": "land.jpg"}], captions=False)["segments"][0]["text"], "")
+
+    def test_the_music_dips_under_the_whole_audiogram_but_not_after_it(self):
+        self.add("gap.m4a", "land.jpg", music=["song.m4a"])
+        p = self.plan([{"audiogram": "gap.m4a", "hold": 3}, {"media": "land.jpg"}], music={"file": "song.m4a"})
+        self.assertEqual(p["duck"], [[0.0, 3.0]])
+        self.assertTrue(any(s.get("sound") for s in p["segments"]))
+
+    # ---------------------------------------------------------------- on the beat
+    def test_cut_to_a_tempo_it_fills_whole_cuts_and_never_runs_past_its_audio(self):
+        self.add("gap.m4a", "land.jpg")
+        p = self.plan([{"audiogram": "gap.m4a", "hold": 3}, {"media": "land.jpg"}], music={"bpm": 75})
+        unit = p["sync"]["cut_seconds"]
+        seg = p["segments"][0]
+        self.assertAlmostEqual(seg["duration"] / unit, round(seg["duration"] / unit), delta=0.02)
+        self.assertAlmostEqual(seg["src_used"], min(4.0, seg["duration"]), delta=0.02, msg="the sound taken follows the snapped length")
+        self.assertEqual(seg["speed"], 1.0, "never slowed: the waveform and the sound must stay in step")
+
+    def test_an_audio_clip_shorter_than_one_cut_still_takes_a_whole_cut_and_later_cuts_stay_on_the_grid(self):
+        self.add("blip.m4a", "land.jpg")
+        p = self.plan([{"audiogram": "blip.m4a"}, {"media": "land.jpg"}], music={"bpm": 75})
+        unit = p["sync"]["cut_seconds"]
+        blip, photo = p["segments"]
+        self.assertAlmostEqual(blip["duration"], unit, delta=1 / p["fps"] + 1e-6)
+        self.assertAlmostEqual(blip["src_used"], 0.7, delta=0.1, msg="its sound is just shorter than its slot")
+        self.assertAlmostEqual(photo["start"] / unit, round(photo["start"] / unit), delta=0.03, msg="the next cut is still on the beat")
+
+    # ---------------------------------------------------------------- the pictures and the sound
+    ACCENT = staticmethod(lambda r, g, b: r > 215 and g > 190 and b < 130)
+    MUSTARD = staticmethod(lambda r, g, b: 110 < r < 200 and 90 < g < 170 and b < 90)
+
+    def count(self, path, at, test, w=216, h=384):
+        d = frame(path, at, w, h)
+        return sum(1 for i in range(0, len(d), 3) if test(d[i], d[i + 1], d[i + 2]))
+
+    def level(self, path, a, b):
+        r = subprocess.run([FF, "-hide_banner", "-ss", str(a), "-t", str(b - a), "-i", str(path), "-af", "volumedetect", "-f", "null", "-"], capture_output=True, text=True).stderr
+        m = re.search(r"mean_volume: (-?[\d.]+)", r)
+        return float(m.group(1)) if m else -91.0
+
+    def test_the_waveform_is_solid_in_the_accent_colour_and_moves_with_the_sound(self):
+        self.add("gap.m4a")
+        job, out = self.render(recipe([{"audiogram": "gap.m4a"}], template="kinetic"))
+        self.assertEqual(job["state"], "done", job["error"])
+        loud, quiet = self.count(out, 1.0, self.ACCENT), self.count(out, 3.0, self.ACCENT)
+        self.assertGreater(loud, 150, "a solid yellow waveform while the tone plays")
+        self.assertGreater(loud, quiet * 3, "and a flat line while it is silent")
+        d = frame(out, 1.0, 216, 384)
+        band = [tuple(d[(y * 216 + x) * 3:(y * 216 + x) * 3 + 3]) for y in range(int(384 * 0.38), int(384 * 0.62)) for x in range(216)]
+        bright = [p for p in band if p[0] > 100 or p[1] > 100]
+        pure = sum(1 for p in bright if self.ACCENT(*p))
+        self.assertGreater(pure / len(bright), 0.6, "the waveform is the accent colour (colorkey on a coloured waveform turned it green)")
+        st = stats(out)
+        self.assertEqual(st["pix"], "yuv420p", "not the full-range yuvj420p a picture piece gave before its range was set")
+        self.assertIn(st["range"], (None, "tv"))
+
+    def test_on_a_light_look_the_waveform_is_the_darkened_accent(self):
+        self.add("gap.m4a")
+        job, out = self.render(recipe([{"audiogram": "gap.m4a"}], template="collage"))
+        self.assertEqual(job["state"], "done", job["error"])
+        self.assertGreater(self.count(out, 1.0, self.MUSTARD), 150)
+        self.assertEqual(self.count(out, 1.0, self.ACCENT), 0, "not the raw highlighter yellow on cream")
+
+    def test_the_name_below_the_waveform_is_the_caption_and_absent_without_one(self):
+        self.add("gap.m4a")
+        white = lambda r, g, b: r > 235 and g > 235 and b > 235
+        job, out = self.render(recipe([{"audiogram": "gap.m4a", "caption": "Dekan Fakulti"}], template="kinetic"))
+        self.assertEqual(job["state"], "done", job["error"])
+        d = frame(out, 3.0, 216, 384)                                                        # the label sits at about 68% of the height
+        in_band = sum(1 for y in range(int(384 * 0.62), int(384 * 0.78)) for x in range(216) if white(*d[(y * 216 + x) * 3:(y * 216 + x) * 3 + 3]))
+        self.assertGreater(in_band, 40, "the caption is drawn below the waveform")
+        job, out = self.render(recipe([{"audiogram": "gap.m4a", "caption": "I"}], template="kinetic"))
+        d = frame(out, 3.0, 216, 384)
+        short = sum(1 for y in range(int(384 * 0.62), int(384 * 0.78)) for x in range(216) if white(*d[(y * 216 + x) * 3:(y * 216 + x) * 3 + 3]))
+        self.assertGreater(in_band, short * 3, "the label shows what the caption SAYS: a long caption draws far more than a one-letter one")
+        job, out = self.render(recipe([{"audiogram": "gap.m4a"}], template="kinetic"))
+        d = frame(out, 3.0, 216, 384)
+        none = sum(1 for y in range(int(384 * 0.62), int(384 * 0.78)) for x in range(216) if white(*d[(y * 216 + x) * 3:(y * 216 + x) * 3 + 3]))
+        self.assertEqual(none, 0, "and nothing is drawn when there is no caption")
+
+    def test_over_a_picture_with_a_name_and_the_sound_in_the_video(self):
+        self.add("land.jpg", "gap.m4a")
+        job, out = self.render(recipe([{"audiogram": "gap.m4a", "image": "land.jpg", "caption": "Dekan"}], template="kinetic"))
+        self.assertEqual(job["state"], "done", job["error"])
+        self.assertEqual(stats(out)["audio"], "aac")
+        self.assertEqual(stats(out)["pix"], "yuv420p", "a picture piece is limited range, not the full-range yuvj420p")
+        self.assertGreater(self.level(out, 0.2, 1.8), -40, "the tone is heard")
+        self.assertLess(self.level(out, 2.4, 3.8), -60, "and then silence")
+        self.assertGreater(self.count(out, 1.0, self.ACCENT), 100)
+
+    def test_the_music_is_about_14_db_quieter_during_the_audiogram_and_returns_after_it(self):
+        self.add("hush.m4a", "land.jpg", music=["song.m4a"])
+        # a short window: over a long silent one, loudnorm's loudness-range compression lifts the dipped part of a mix that has no
+        # voice in it (here the audiogram is silent so that only the music is measured)
+        job, out = self.render(recipe([{"audiogram": "hush.m4a", "hold": 1.5}, {"media": "land.jpg", "hold": 4}], template="punchy", quality="draft",
+                                      music={"file": "song.m4a"}))
+        self.assertEqual(job["state"], "done", job["error"])
+        during, after = self.level(out, 0.4, 1.3), self.level(out, 3.0, 5.0)
+        self.assertAlmostEqual(after - during, 14, delta=4, msg=f"{during} dB during, {after} dB after")
+
+    def test_every_look_and_format_draws_it_and_a_draft_has_the_same_timings(self):
+        self.add("gap.m4a")
+        clips = [{"audiogram": "gap.m4a", "hold": 2, "caption": "Nama"}]
+        for tpl in montage.TEMPLATES:
+            with self.subTest(template=tpl):
+                job, out = self.render(recipe(clips, template=tpl, quality="draft"))
+                self.assertEqual(job["state"], "done", f"{tpl}: {job['error']}")
+        for fmt, size in (("square", 324), ("wide", 576)):
+            with mock.patch.dict(montage.FORMATS[fmt], width=size, height=324):
+                job, out = self.render(recipe(clips, format=fmt, quality="draft"))
+            self.assertEqual(job["state"], "done", f"{fmt}: {job['error']}")
+        final = montage.plan_for(recipe(clips, template="kinetic"), self.root)
+        draft = montage.plan_for(recipe(clips, template="kinetic", quality="draft"), self.root)
+        self.assertEqual([(x["start"], x["duration"]) for x in final["segments"]], [(x["start"], x["duration"]) for x in draft["segments"]])
+
+
 def gray_frame(path, at):
     return subprocess.run([FF, "-v", "error", "-ss", str(at), "-i", str(path), "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
                           capture_output=True, check=True).stdout
