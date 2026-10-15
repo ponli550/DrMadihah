@@ -98,8 +98,8 @@ DUCK_IN, DUCK_OUT = 0.25, 0.4  # seconds the music takes to dip before a phrase 
 NICE = prepare.NICE
 THREADS = prepare.THREADS
 ALLOWED_TOP = {"kind", "version", "title", "format", "template", "clips", "captions", "title_card", "end_card", "music",
-               "max_seconds", "note", "quality", "speech", "clip_sound", "transition"}
-ALLOWED_CLIP = {"media", "caption", "hold", "speed", "start", "zoom", "move", "quote", "by", "announce", "countdown", "audiogram", "image"}
+               "max_seconds", "note", "quality", "speech", "clip_sound", "transition", "tighten"}
+ALLOWED_CLIP = {"media", "caption", "hold", "speed", "start", "zoom", "move", "quote", "by", "announce", "countdown", "audiogram", "image", "tighten"}
 ALLOWED_ANNOUNCE = {"title", "date", "time", "place", "note"}
 CONTENT_KINDS = ("photo", "video", "quote", "announce", "countdown", "audiogram")      # what counts as a clip of the video (cards at the ends do not)
 ALLOWED_CARD = {"text", "subtitle", "hold"}
@@ -282,6 +282,8 @@ def validate(recipe, root) -> dict:
             continue
         if "by" in c:
             problems.append(f"{w}.by: only a quote card has a 'by'")
+        if "tighten" in c and not isinstance(c["tighten"], bool):
+            problems.append(f"{w}.tighten: must be true or false")
         item = _find(items, c.get("media"), {"image", "video"}, f"{w}.media", problems)
         for k, lo, hi in (("hold", 0.5, 15), ("speed", 0.25, 2.0), ("start", 0, 3600)):
             if k in c and not _num(c[k], lo, hi):
@@ -294,6 +296,8 @@ def validate(recipe, root) -> dict:
         if "move" in c and c["move"] not in MOVES:
             problems.append(f"{w}.move: must be one of {', '.join(MOVES)}")
         if item:
+            if item["kind"] == "image" and "tighten" in c:
+                problems.append(f"{w}.tighten: applies to video clips (it cuts the dead air out of what is said)")
             if item["kind"] == "image" and ("speed" in c or "start" in c):
                 problems.append(f"{w}: speed and start apply to videos, not to a photo")
             if item["kind"] == "video" and "move" in c and c["move"] not in VIDEO_MOVES:
@@ -316,6 +320,8 @@ def validate(recipe, root) -> dict:
         cards[key] = card
     if recipe.get("speech") not in (None, "follow"):
         problems.append('speech: must be "follow" (start clips where people speak) or left out')
+    if recipe.get("tighten") not in (None, "gaps"):
+        problems.append('tighten: must be "gaps" (cut the dead air out of talking clips) or left out')
     if recipe.get("transition") not in (None, *TRANSITIONS):
         problems.append(f"transition: must be one of {', '.join(TRANSITIONS)} (a zoom cut between pieces) or left out")
     if recipe.get("clip_sound") not in (None, "speech"):
@@ -346,7 +352,7 @@ def validate(recipe, root) -> dict:
         raise RecipeError(problems)
     return {"kind": "montage", "version": 1, "title": title.strip(), "format": fmt, "template": tpl,
             "captions": recipe.get("captions", True), "max_seconds": max_s, "clips": clips, "cards": cards,
-            "quality": recipe.get("quality", "final"), "speech": recipe.get("speech"), "clip_sound": recipe.get("clip_sound"), "transition": recipe.get("transition"), "tempo": tempo,
+            "quality": recipe.get("quality", "final"), "speech": recipe.get("speech"), "clip_sound": recipe.get("clip_sound"), "transition": recipe.get("transition"), "tighten": recipe.get("tighten"), "tempo": tempo,
             "music": None if music_item is None else {**music, "_item": music_item}, "note": recipe.get("note")}
 
 
@@ -448,9 +454,10 @@ def resolve(validated: dict, root) -> dict:
         dur = quick_info(path)["duration"]
         start = float(c.get("start", 0))
         spans = None
-        if r.get("speech") == "follow" or r.get("clip_sound") == "speech":
+        tighten_on = bool(c.get("tighten", r.get("tighten") == "gaps"))
+        if r.get("speech") == "follow" or r.get("clip_sound") == "speech" or tighten_on:
             spans = _speech_spans(path, root, item["name"], warnings)
-            if spans and r.get("speech") == "follow" and "start" not in c:                              # an explicit start is the author's call
+            if spans and r.get("speech") == "follow" and "start" not in c and not tighten_on:                              # an explicit start is the author's call
                 want = float(c.get("hold", tpl["video_max"])) * float(c.get("speed", tpl["video_speed"]))
                 pick = speech.best_start(spans, dur, want)
                 if pick:
@@ -463,10 +470,15 @@ def resolve(validated: dict, root) -> dict:
         used = min(avail, want_out * speed)
         seg = {**base, "kind": "video", "src_start": start, "src_used": round(used, 3), "speed": speed,
                "duration": round(used / speed, 3)}
+        ranges = speech.tighten(spans, dur, start=start, budget=want_out * speed) if tighten_on and spans else []
+        if ranges:                                                                       # jump cuts: the phrases only, joined (built at render time)
+            total = round(sum(b - a for a, b in ranges), 3)
+            seg.update({"ranges": ranges, "tight_total": total, "src_start": 0.0, "src_used": total, "duration": round(total / speed, 3),
+                        "cuts": len(ranges) - 1, "trimmed": round(max(0.0, ranges[-1][1] - ranges[0][0] - total), 2)})
         if c.get("move"):
             seg["move"] = c["move"]                                                     # a zoom over the whole clip
         if spans is not None:
-            seg["speech"] = round(speech.covered(spans, start, start + used), 1)     # seconds of speech in the part used
+            seg["speech"] = round(sum(speech.covered(spans, a, b) for a, b in ranges) if ranges else speech.covered(spans, start, start + used), 1)
             seg["_spans"] = spans                                                    # settled after cuts are placed (see _settle_sound)
         segs.append(seg)
     if "end_card" in r["cards"]:
@@ -539,6 +551,17 @@ def _settle_sound(r, segs: list) -> list:
         if spans is None:
             continue
         lo, hi = s["src_start"], s["src_start"] + s["src_used"]
+        if s.get("ranges"):                                             # tightened: map each phrase onto the joined clip's own timeline
+            pieces = [p for a, b, _ in spans for p in speech.to_tight(s["ranges"], a, b)]
+            heard = sum(max(0.0, min(e, hi) - max(b, lo)) for b, e in pieces)
+            s["speech"] = round(heard, 1)
+            if heard >= MIN_SOUND:                                      # a tightened talking clip is kept WITH its sound: that is the point of it
+                s["sound"] = True
+                for b, e in pieces:
+                    b, e = max(b, lo), min(e, hi)
+                    if e > b:
+                        windows.append([round(s["start"] + b / s["speed"], 3), round(min(s["start"] + e / s["speed"], s["start"] + s["duration"]), 3)])
+            continue
         s["speech"] = round(speech.covered(spans, lo, hi), 1)
         if r.get("clip_sound") == "speech" and speech.covered(spans, lo, hi) >= MIN_SOUND:
             s["sound"] = True
@@ -592,7 +615,7 @@ def _beat_sync(r, root: Path, segs: list, warnings: list, fps: int):
             if n * unit > avail + 1e-6:
                 n = max(1, math.floor(avail / unit + 1e-6))                # shorter than one cut: it still fills a cut and its sound just ends early
         if s["kind"] == "video":
-            avail = quick_info(root / s["rel"])["duration"] - s["src_start"]
+            avail = s["tight_total"] if s.get("ranges") else quick_info(root / s["rel"])["duration"] - s["src_start"]
             out_avail = avail / s["speed"]
             if n * unit > out_avail + 1e-6:
                 fit = math.floor(out_avail / unit + 1e-6)
@@ -880,6 +903,33 @@ def root_of(plan) -> Path:
     return Path(plan["_root"])
 
 
+def _tight_file(ffmpeg, root: Path, seg: dict, ctl: Control) -> Path:
+    """The jump-cut version of a clip: just the kept stretches, joined, picture and sound. Made once and kept in .umcares/tight/ (it is a
+    cache: nothing in it is irreplaceable, and it is not in git)."""
+    src = root / seg["rel"]
+    st = src.stat()
+    key = hashlib.sha1(json.dumps([str(src.resolve()), st.st_size, int(st.st_mtime), seg["ranges"]]).encode()).hexdigest()[:20]
+    out = root / ".umcares" / "tight" / f"{key}.mp4"
+    if out.is_file():
+        return out
+    out.parent.mkdir(parents=True, exist_ok=True)
+    n = len(seg["ranges"])
+    parts = []
+    for i, (a, b) in enumerate(seg["ranges"]):
+        parts.append(f"[0:v]trim=start={a}:end={b},setpts=PTS-STARTPTS[v{i}]")
+        parts.append(f"[0:a]atrim=start={a}:end={b},asetpts=PTS-STARTPTS[a{i}]")
+    graph = ";".join(parts) + ";" + "".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[v][a]"
+    part = out.with_name(out.stem + ".part.mp4")
+    try:
+        _run(_base(ffmpeg) + ["-i", str(src), "-filter_complex", graph, "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-preset", "veryfast", "-crf", "14",
+                              "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-threads", THREADS, "-movflags", "+faststart", "-f", "mp4", str(part)],
+             seg["tight_total"], ctl, lambda f: None)
+        os.replace(part, out)
+    finally:
+        part.unlink(missing_ok=True)
+    return out
+
+
 def render(plan: dict, root, out: Path, ctl: Control, on_pct=lambda p: None) -> dict:
     """Render the plan to `out` (a .part file the caller moves into place). Returns what was made."""
     root = Path(root)
@@ -889,6 +939,14 @@ def render(plan: dict, root, out: Path, ctl: Control, on_pct=lambda p: None) -> 
         raise MontageError("ffmpeg is not installed on this machine")
     work = Path(tempfile.mkdtemp(prefix="montage-", dir=_workroot(root)))
     try:
+        # a tightened clip is joined once, then everything after treats it as an ordinary clip (its own picture and sound, from 0)
+        joined = []
+        for seg in plan["segments"]:
+            if seg.get("ranges"):
+                tight = _tight_file(ffmpeg, root, seg, ctl)
+                seg = {**seg, "rel": str(tight.relative_to(root)), "src_start": 0.0}
+            joined.append(seg)
+        plan = {**plan, "segments": joined}
         segs, total_d = plan["segments"], sum(s["duration"] for s in plan["segments"])
         done_d, pieces = 0.0, []
         for i, seg in enumerate(segs):
@@ -1350,6 +1408,7 @@ def brief(root, project_name: str = "") -> str:
               "- `music`: `{file, start?, fade_out?, sync?}` or null. `\"sync\": \"beat\"` finds the song's beat, makes every piece a whole number of beats long and starts the song on a beat, so every cut lands on one (hard cuts; the plan reports the BPM, or warns when the song has no steady beat). Use only royalty-free music; a commercial song gets a posted video muted or blocked.",
               "- `music: {\"bpm\": 75}` (no file) cuts to that tempo with NO audio: every piece is a whole number of beats from the first frame, so a song added later in the app (a trending sound that cannot be downloaded) lines up if it is started on a beat. Use it when the song's BPM is known and its file is not.",
               "- `clip_sound`: `\"speech\"` keeps the own sound of a video clip whose excerpt has speech (others stay muted, so crowd noise does not leak in) and dips the music about 14 dB under the speech.",
+              "- `tighten`: `\"gaps\"` cuts the dead air out of talking video clips: each phrase is kept with a little either side, pauses up to about 0.8 s stay, longer silences are cut and the phrases joined (jump cuts), and the clip keeps its own sound. A clip can opt in or out with `\"tighten\": true|false`. It finds speech-like sound, not words, so it cannot remove a repeated take.",
               "- `transition`: `\"zoom\"` (punch in at the end of a piece and settle at the start of the next, a zoom cut), `\"zoom_in\"` or `\"zoom_out\"` (just one half). Applies to photos and clips, never changes any timing. "
               "A video clip can also take `move`: `\"in\"` or `\"out\"` to zoom slowly over its whole length.",
               "- `speech`: `\"follow\"` starts each video clip (that has no explicit `start`) where people speak, so a long clip's excerpt holds the words, not dead air. It finds speech-like sound, not words.",

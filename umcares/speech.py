@@ -174,3 +174,47 @@ def best_start(spans: list, duration: float, length: float, lead: float = 0.3):
         if best is None or got > best[1] + 1e-6:
             best = (round(c, 3), round(got, 3))
     return best if best and best[1] > 0 else None
+
+
+# ------------------------------------------------------------------ tightening: cutting the dead air out of a talking clip
+GAP_KEEP = 0.5          # a silence between two phrases up to this long (plus the pads) is a natural pause and stays
+LEAD, TAIL = 0.12, 0.22 # kept before a phrase and after it, so the first and last words are not clipped
+MIN_RANGE = 0.3         # a kept stretch shorter than this is dropped
+
+
+def tighten(spans: list, clip_duration: float, start: float = 0.0, budget=None, gap: float = GAP_KEEP, lead: float = LEAD, tail: float = TAIL) -> list:
+    """The stretches of a clip to keep as jump cuts: each phrase with a little before and after, phrases a short pause apart joined,
+    and everything quieter and longer than that cut out. Returns [[start, end], ...] in source seconds, in order.
+
+    `start` ignores everything before it; `budget` caps the total kept length (the last stretch is shortened to fit)."""
+    ranges = []
+    for s, e, _ in spans:
+        if e <= start:
+            continue
+        a, b = max(start, s - lead), min(clip_duration, e + tail)
+        if ranges and a - ranges[-1][1] <= gap:
+            ranges[-1][1] = max(ranges[-1][1], b)
+        else:
+            ranges.append([a, b])
+    if budget is not None:
+        kept, left = [], float(budget)
+        for a, b in ranges:
+            if left <= 0.05:
+                break
+            take = min(b - a, left)
+            kept.append([a, a + take])
+            left -= take
+        ranges = kept
+    return [[round(a, 3), round(b, 3)] for a, b in ranges if b - a >= MIN_RANGE]
+
+
+def to_tight(ranges: list, a: float, b: float) -> list:
+    """Where the source interval [a, b] lands on the tightened timeline: a list of [start, end] pieces (one per kept stretch it touches)."""
+    out, offset = [], 0.0
+    for ra, rb in ranges:
+        lo, hi = max(a, ra), min(b, rb)
+        if hi > lo:
+            out.append([offset + lo - ra, offset + hi - ra])
+        offset += rb - ra
+    return out
+

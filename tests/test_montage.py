@@ -1734,6 +1734,143 @@ class Zoom(Fixtures):
             self.assertEqual(job["state"], "done", f"{fmt}: {job['error']}")
 
 
+NEED_SAY2 = unittest.skipUnless(shutil.which("say"), "needs macOS `say` for real speech")
+
+
+@NEED
+@NEED_SAY2
+class TightenGaps(Fixtures):
+    """Jump cuts: the dead air cut out of a talking clip, with its sound and the music dip following."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        subprocess.run(["say", "-o", str(cls.fx / "ta.aiff"), "Selamat datang ke hari terbuka CyberDSA dua ribu dua puluh enam."], check=True)
+        subprocess.run(["say", "-o", str(cls.fx / "tb.aiff"), "Terima kasih kerana hadir hari ini."], check=True)
+        for n in ("ta", "tb"):
+            ff("-i", str(cls.fx / f"{n}.aiff"), "-ar", "48000", "-ac", "1", str(cls.fx / f"{n}.wav"))
+        ff("-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono", "-t", "3.5", str(cls.fx / "gap35.wav"))
+        ff("-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono", "-t", "2.5", str(cls.fx / "gap25.wav"))
+        ff("-i", str(cls.fx / "ta.wav"), "-i", str(cls.fx / "gap35.wav"), "-i", str(cls.fx / "tb.wav"), "-i", str(cls.fx / "gap25.wav"),
+           "-filter_complex", "concat=n=4:v=0:a=1", str(cls.fx / "gappy.wav"))
+        dur = float(subprocess.run([prepare.find_tool("ffprobe"), "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(cls.fx / "gappy.wav")],
+                                   capture_output=True, text=True).stdout)
+        cls.gappy_len = dur
+        ff("-f", "lavfi", "-i", f"testsrc2=size=640x360:rate=30:d={dur},noise=alls=30:allf=t", "-i", str(cls.fx / "gappy.wav"), "-c:v", "libx264", "-pix_fmt", "yuv420p",
+           "-c:a", "aac", "-shortest", str(cls.fx / "gappy.mp4"))
+
+    def plan(self, clips, **kw):
+        return montage.plan_for(recipe(clips, template="punchy", max_seconds=60, **kw), self.root)
+
+    # ---------------------------------------------------------------- validation
+    def test_tighten_is_gaps_or_nothing_and_a_clip_can_opt_out_but_a_photo_cannot_use_it(self):
+        self.add("gappy.mp4", "land.jpg")
+        with self.assertRaises(montage.RecipeError) as ctx:
+            self.plan([{"media": "gappy.mp4"}], tighten="all")
+        self.assertIn("tighten", str(ctx.exception))
+        with self.assertRaises(montage.RecipeError) as ctx:
+            self.plan([{"media": "gappy.mp4", "tighten": "yes"}])
+        self.assertIn("true or false", str(ctx.exception))
+        with self.assertRaises(montage.RecipeError) as ctx:
+            self.plan([{"media": "land.jpg", "tighten": True}])
+        self.assertIn("video clips", str(ctx.exception))
+
+    # ---------------------------------------------------------------- the plan
+    def test_the_dead_air_between_phrases_is_cut_and_the_plan_says_how_much(self):
+        self.add("gappy.mp4")
+        before = self.plan([{"media": "gappy.mp4", "hold": 15}])["segments"][0]
+        after = self.plan([{"media": "gappy.mp4", "hold": 15}], tighten="gaps")["segments"][0]
+        self.assertNotIn("ranges", before)
+        self.assertEqual(after["cuts"], 1, "two phrases: one jump cut")
+        self.assertGreater(after["trimmed"], 2.0, "most of the 3.5 s silence between them is gone")
+        self.assertLess(after["duration"], before["duration"] - 2.0)
+        self.assertAlmostEqual(after["duration"], sum(b - a for a, b in after["ranges"]) / after["speed"], delta=0.01)
+        (a1, b1), (a2, b2) = after["ranges"]
+        self.assertLess(b1, a2)
+        self.assertLessEqual(a1, 0.3, "the first phrase starts at the start of the clip")
+        self.assertGreater(after["speech"], 5.0)
+
+    def test_a_clip_can_opt_out_and_one_without_speech_is_left_alone(self):
+        self.add("gappy.mp4", "short.mp4", "clip.mp4")
+        p = self.plan([{"media": "gappy.mp4", "tighten": False}, {"media": "short.mp4"}, {"media": "clip.mp4"}], tighten="gaps")
+        for seg in p["segments"]:
+            self.assertNotIn("ranges", seg)
+        p = self.plan([{"media": "gappy.mp4", "hold": 15, "tighten": True}])
+        self.assertIn("ranges", p["segments"][0], "per clip, without the recipe-level switch")
+
+    def test_the_hold_still_caps_the_length_of_a_tightened_clip(self):
+        self.add("gappy.mp4")
+        seg = self.plan([{"media": "gappy.mp4", "hold": 4}], tighten="gaps")["segments"][0]
+        self.assertAlmostEqual(seg["duration"], 4.0, delta=0.05)
+        self.assertAlmostEqual(sum(b - a for a, b in seg["ranges"]), 4.0, delta=0.05)
+
+    def test_a_tightened_clip_keeps_its_sound_even_without_the_clip_sound_option(self):
+        self.add("gappy.mp4")
+        self.assertTrue(self.plan([{"media": "gappy.mp4", "hold": 15}], tighten="gaps")["segments"][0]["sound"])
+        self.assertNotIn("sound", self.plan([{"media": "gappy.mp4", "hold": 15}])["segments"][0])
+
+    def test_sound_and_the_music_dip_follow_the_joined_clip_not_the_original_timeline(self):
+        self.add("gappy.mp4", "land.jpg", music=["song.m4a"])
+        p = self.plan([{"media": "gappy.mp4", "hold": 15}, {"media": "land.jpg"}], tighten="gaps", clip_sound="speech", music={"file": "song.m4a"})
+        seg = p["segments"][0]
+        self.assertTrue(seg["sound"])
+        self.assertTrue(p["duck"])
+        for a, b in p["duck"]:
+            self.assertGreaterEqual(a, seg["start"] - 1e-6)
+            self.assertLessEqual(b, seg["start"] + seg["duration"] + 1e-6)
+        self.assertLessEqual(max(b for a, b in p["duck"]), seg["duration"] + 1e-6, "no dip beyond the end of the shortened clip")
+        self.assertTrue(all(a < b for a, b in p["duck"]), "every dip window is well-formed")
+        self.assertLessEqual(p["duck"][0][0], seg["start"] + 0.6, "the first dip starts where the first phrase does (the clip's own timeline, not the source's)")
+        self.assertGreater(sum(b - a for a, b in p["duck"]), seg["speech"] * 0.8, "and together they cover the speech that is heard")
+
+    def test_it_composes_with_a_tempo_and_never_slows_on_its_own(self):
+        self.add("gappy.mp4", "land.jpg")
+        p = self.plan([{"media": "gappy.mp4", "hold": 15}, {"media": "land.jpg"}], tighten="gaps", music={"bpm": 75})
+        unit = p["sync"]["cut_seconds"]
+        seg = p["segments"][0]
+        self.assertAlmostEqual(seg["duration"] / unit, round(seg["duration"] / unit), delta=0.03)
+        self.assertLessEqual(seg["src_used"], seg["tight_total"] + 1e-6)
+        self.assertEqual(seg["speed"], 1.0)
+
+    def test_a_zoom_move_and_a_zoom_cut_do_not_stop_it(self):
+        self.add("gappy.mp4")
+        seg = self.plan([{"media": "gappy.mp4", "hold": 15, "move": "in"}], tighten="gaps", transition="zoom")["segments"][0]
+        self.assertEqual((seg["move"], seg["cuts"]), ("in", 1))
+
+    # ---------------------------------------------------------------- the video it makes
+    def test_the_rendered_video_is_as_short_as_planned_with_its_sound_and_the_joined_file_is_cached(self):
+        self.add("gappy.mp4")
+        rec = recipe([{"media": "gappy.mp4", "hold": 15}], template="punchy", tighten="gaps", quality="draft", max_seconds=60)
+        planned = montage.plan_for(rec, self.root)["total"]
+        job, out = self.render(rec)
+        self.assertEqual(job["state"], "done", job["error"])
+        st = stats(out)
+        self.assertAlmostEqual(st["dur"], planned, delta=0.4)
+        self.assertLess(st["dur"], self.gappy_len - 2.0, "shorter than the clip by the dead air")
+        self.assertEqual(st["audio"], "aac", "the clip's own sound is kept without asking: a tightened talking clip is useless silent")
+        cached = list((self.root / ".umcares" / "tight").glob("*.mp4"))
+        self.assertEqual(len(cached), 1)
+        stamp = cached[0].stat().st_mtime_ns
+        job, out = self.render({**rec, "title": "again"})
+        self.assertEqual(job["state"], "done", job["error"])
+        self.assertEqual(cached[0].stat().st_mtime_ns, stamp, "the joined clip was reused, not made again")
+
+    def test_the_joined_clip_has_no_silent_gap_where_the_dead_air_was(self):
+        self.add("gappy.mp4")
+        job, out = self.render(recipe([{"media": "gappy.mp4", "hold": 15}], template="punchy", tighten="gaps", quality="draft", max_seconds=60))
+        self.assertEqual(job["state"], "done", job["error"])
+        log = subprocess.run([FF, "-hide_banner", "-i", str(out), "-af", "silencedetect=n=-45dB:d=1.2", "-f", "null", "-"], capture_output=True, text=True).stderr
+        long_silences = [float(x) for x in re.findall(r"silence_duration: ([\d.]+)", log)]
+        self.assertEqual([d for d in long_silences if d < 5], [], f"no silence of 1.2 s or more is left inside the video: {long_silences}")
+
+    def test_a_tightened_clip_in_every_look_renders(self):
+        self.add("gappy.mp4")
+        for tpl in montage.TEMPLATES:
+            with self.subTest(template=tpl):
+                job, out = self.render(recipe([{"media": "gappy.mp4", "hold": 15}], template=tpl, tighten="gaps", quality="draft", max_seconds=60))
+                self.assertEqual(job["state"], "done", f"{tpl}: {job['error']}")
+
+
 def gray_frame(path, at):
     return subprocess.run([FF, "-v", "error", "-ss", str(at), "-i", str(path), "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "gray", "-"],
                           capture_output=True, check=True).stdout

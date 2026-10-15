@@ -719,6 +719,16 @@ renders the same video.
 - **Everything is composed over a blurred copy of itself**, so a portrait photo in a 9:16 frame is never cropped
   and a landscape one never loses its sides. (ffprobe does not report an EXIF-rotated photo's true shape, so
   composing the same way every time is also simpler than detecting it.) Photos get a slow zoom; clips can be slowed.
+- **Jump cuts: cut the dead air out of talking clips** (`"tighten": "gaps"` for every video clip, or `"tighten": true|false` on one; the page tick
+  "Cut the dead air out of talking clips", **off by default**). It takes the speech detector's phrases, keeps each with 0.12 s before and
+  0.22 s after (so first and last words are not clipped), joins phrases a short pause apart (silences up to about 0.8 s are natural and
+  stay) and cuts every longer silence, then joins what is left. The plan shows `✂ n jump cuts, x s of dead air removed`; the clip is
+  shorter by that much, `hold` still caps its length, the **clip keeps its own sound** (a silent tightened talking clip is useless)
+  and the music dips under the phrases on the *joined* timeline. At render time one joined file is made (picture and sound, re-encoded
+  once) and kept in `<project>/.umcares/tight/` (a cache, not in git, safe to delete), after which it is an ordinary clip, so zoom,
+  tempo and every look work with it. **It cannot remove a repeated take or a filler word**: it finds speech-like sound, not words,
+  and speech-to-text was not built. It also treats any speech-like sound as a phrase, so loud crowd chatter keeps its silences
+  short and may be kept whole. Real footage has not been judged by ear.
 - **Zoom in and zoom out.** Two things, both timing-neutral. (1) A **video clip** can zoom over its whole length: `"move": "in"` or
   `"out"` (before, only photos had moves; panning and still are still photo-only). The amount is the look's zoom (at least 6%).
   (2) A recipe-level **`transition`** adds a zoom cut: `"zoom_out"` starts a piece 12% bigger and settles in 0.3 s (ease-out),
