@@ -62,7 +62,7 @@ const view = () => {
     saved: all(c, n => n.className === "urow" && n.parent === c).map(r => deepText(r)),
   };
 };
-const check = (i, v) => { all(card(), n => n.tag === "input" && n.type === "checkbox")[i + 6].checked = v; };   // [0] is "show captions", [1] "cut on the beat", [2] "start where people speak", [3] "keep the sound", [4] "cut the dead air", [5] "tick on each word"
+const check = (i, v) => { all(card(), n => n.tag === "input" && n.type === "checkbox")[i + 7].checked = v; };   // [0] is "show captions", [1] "cut on the beat", [2] "start where people speak", [3] "keep the sound", [4] "cut the dead air", [5] "tick on each word", [6] "3D cards"
 
 (async () => {
   const page = await (await realFetch(`/umcares/p/${slug}/`)).text();
@@ -108,6 +108,11 @@ const check = (i, v) => { all(card(), n => n.tag === "input" && n.type === "chec
     out.afterRemoval = { disabled: !!sync.disabled, checked: !!sync.checked };
   } else if (scenario === "zoomcut") {
     selects()[4].value = "zoom";                                       // [0] format, [1] look, [2] music, [3] length, [4] cut style
+    await press(button("Preview plan"));
+    out.view = view();
+  } else if (scenario === "threed") {
+    selects()[4].value = "flip";
+    all(card(), n => n.tag === "input" && n.type === "checkbox")[6].checked = true;
     await press(button("Preview plan"));
     out.view = view();
   } else if (scenario === "sfx") {

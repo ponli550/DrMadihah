@@ -79,7 +79,14 @@ TEMPLATES = {
 # move reads as mechanical: the movement starts slowly, is fastest in the middle, and settles.
 MOVES = ("in", "out", "pan_left", "pan_right", "still")
 VIDEO_MOVES = ("in", "out")                       # a video clip can zoom over its whole length; panning is for photos
-TRANSITIONS = ("zoom", "zoom_in", "zoom_out")     # zoom cuts: push in at the end of a piece (zoom_in), settle at its start (zoom_out), or both (zoom)
+ZOOM_TRANSITIONS = ("zoom", "zoom_in", "zoom_out")  # zoom cuts: push in at the end of a piece (zoom_in), settle at its start (zoom_out), or both (zoom)
+TRANSITIONS = ZOOM_TRANSITIONS + ("flip",)        # flip: a piece swings in around its vertical axis in perspective, and swings out before the next
+DEPTHS = ("card",)                                # card: each picture is a smaller card that sways in perspective over a blurred copy of itself
+FLIP_TIME = 0.4                                   # seconds a card flip takes, in and out (at most a third of a short piece)
+FLIP_EDGE = 0.94                                  # how far edge-on the card gets at the very start: 1 would be a line (the maths has no solution)
+FLIP_DEPTH = 0.22                                 # how much smaller the far edge is than the near edge: the perspective
+CARD_SIZE = 0.8                                   # the swaying card's width and height as a fraction of the frame
+CARD_SWAY = 0.28                                  # the sway, in fractions of a quarter turn (about 25 degrees)
 PUNCH = 0.12                                      # how much bigger a piece is at the peak of a zoom cut
 PUNCH_TIME = 0.3                                  # seconds a zoom cut takes (at most a third of a short piece)
 
@@ -98,7 +105,7 @@ DUCK_IN, DUCK_OUT = 0.25, 0.4  # seconds the music takes to dip before a phrase 
 NICE = prepare.NICE
 THREADS = prepare.THREADS
 ALLOWED_TOP = {"kind", "version", "title", "format", "template", "clips", "captions", "title_card", "end_card", "music",
-               "max_seconds", "note", "quality", "speech", "clip_sound", "transition", "tighten", "sfx"}
+               "max_seconds", "note", "quality", "speech", "clip_sound", "transition", "tighten", "sfx", "depth"}
 ALLOWED_CLIP = {"media", "caption", "hold", "speed", "start", "zoom", "move", "quote", "by", "announce", "countdown", "audiogram", "image", "tighten"}
 ALLOWED_ANNOUNCE = {"title", "date", "time", "place", "note"}
 CONTENT_KINDS = ("photo", "video", "quote", "announce", "countdown", "audiogram")      # what counts as a clip of the video (cards at the ends do not)
@@ -336,7 +343,9 @@ def validate(recipe, root) -> dict:
     if recipe.get("tighten") not in (None, "gaps"):
         problems.append('tighten: must be "gaps" (cut the dead air out of talking clips) or left out')
     if recipe.get("transition") not in (None, *TRANSITIONS):
-        problems.append(f"transition: must be one of {', '.join(TRANSITIONS)} (a zoom cut between pieces) or left out")
+        problems.append(f"transition: must be one of {', '.join(TRANSITIONS)} (a zoom cut or a card flip between pieces) or left out")
+    if recipe.get("depth") not in (None, *DEPTHS):
+        problems.append(f"depth: must be {' or '.join(DEPTHS)} (pictures as swaying cards) or left out")
     if recipe.get("clip_sound") not in (None, "speech"):
         problems.append('clip_sound: must be "speech" (keep the sound of clips where people speak) or left out')
     music = recipe.get("music")
@@ -365,7 +374,7 @@ def validate(recipe, root) -> dict:
         raise RecipeError(problems)
     return {"kind": "montage", "version": 1, "title": title.strip(), "format": fmt, "template": tpl,
             "captions": recipe.get("captions", True), "max_seconds": max_s, "clips": clips, "cards": cards,
-            "quality": recipe.get("quality", "final"), "speech": recipe.get("speech"), "clip_sound": recipe.get("clip_sound"), "transition": recipe.get("transition"), "tighten": recipe.get("tighten"), "sfx": recipe.get("sfx"), "tempo": tempo,
+            "quality": recipe.get("quality", "final"), "speech": recipe.get("speech"), "clip_sound": recipe.get("clip_sound"), "transition": recipe.get("transition"), "depth": recipe.get("depth"), "tighten": recipe.get("tighten"), "sfx": recipe.get("sfx"), "tempo": tempo,
             "music": None if music_item is None else {**music, "_item": music_item}, "note": recipe.get("note")}
 
 
@@ -553,7 +562,7 @@ def resolve(validated: dict, root) -> dict:
     width, height = (even(fmt["width"] * DRAFT_SCALE), even(fmt["height"] * DRAFT_SCALE)) if draft else (fmt["width"], fmt["height"])
     return {"title": r["title"], "format": r["format"], "template": r["template"], "quality": "draft" if draft else "final",
             "width": width, "height": height,
-            "fps": fmt["fps"], "fade": round(fade, 3), "total": total, "transition": r.get("transition"), "sfx": sfx_plan, "segments": segs, "duck": duck, "music": music, "sync": None if not sync else {k: v for k, v in sync.items() if k != "music_start"},
+            "fps": fmt["fps"], "fade": round(fade, 3), "total": total, "transition": r.get("transition"), "depth": r.get("depth"), "sfx": sfx_plan, "segments": segs, "duck": duck, "music": music, "sync": None if not sync else {k: v for k, v in sync.items() if k != "music_start"},
             "warnings": warnings,
             "recipe": {k: v for k, v in r.items() if k not in ("clips", "cards", "music")}}
 
@@ -748,7 +757,7 @@ def _zoom_filter(W: int, H: int, d: float, move=None, amount: float = 0.0, trans
         terms.append(f"{amount:g}*{ease}")
     elif move == "out" and amount > 0:
         terms.append(f"{amount:g}*(1-{ease})")
-    if transition in TRANSITIONS:
+    if transition in ZOOM_TRANSITIONS:
         T = min(PUNCH_TIME, d / 3)
         if transition in ("zoom", "zoom_out"):
             terms.append(f"{PUNCH:g}*pow(1-min(1,t/{T:g}),3)")
@@ -758,6 +767,64 @@ def _zoom_filter(W: int, H: int, d: float, move=None, amount: float = 0.0, trans
         return ""
     z = "1+" + "+".join(terms)
     return f"scale=w='trunc(iw*({z})/2)*2':h='trunc(ih*({z})/2)*2':eval=frame:flags=bicubic,crop={W}:{H}"
+
+
+def _quad(a: str, pin: str, pout: str) -> str:
+    """perspective= corner expressions for a card turned about its vertical axis by the quarter-turn fraction `a` (an expression).
+    `pin` and `pout` are expressions that are 1 where the left / right edge is the far (smaller) one."""
+    c, s = f"cos(PI/2*({a}))", f"sin(PI/2*({a}))"
+    fl, fr = f"(1-{FLIP_DEPTH}*abs({s})*({pin}))", f"(1-{FLIP_DEPTH}*abs({s})*({pout}))"
+    x0, x1 = f"W/2-W/2*{c}", f"W/2+W/2*{c}"
+    return (f"perspective=x0='{x0}':y0='H/2-H/2*{fl}':x1='{x1}':y1='H/2-H/2*{fr}':x2='{x0}':y2='H/2+H/2*{fl}':x3='{x1}':y3='H/2+H/2*{fr}'"
+            ":sense=destination:eval=frame:interpolation=cubic")
+
+
+def _on_black(src: str, out: str, quad: str) -> str:
+    """Graph fragment: the picture `src` put through `quad`, with everything the card does not cover black.
+
+    The perspective filter smears the picture's edge pixels over the empty space, so the same quad is applied to a white card on black
+    and the two are multiplied: that is the mask."""
+    n = out.strip("[]")
+    return (f"{src}format=gbrp,split[pa_{n}][pb_{n}];[pb_{n}]geq=r=255:g=255:b=255,drawbox=x=0:y=0:w=iw:h=ih:color=black:t=2[pm_{n}];"
+            f"[pa_{n}]{quad}[pq_{n}];[pm_{n}]format=gbrp,{quad}[pr_{n}];[pq_{n}][pr_{n}]blend=all_mode=multiply,format=yuv420p{out}")
+
+
+def _flip_fragment(src: str, out: str, fps: int, d: float, enter: bool, leave: bool) -> str:
+    """The card flip of one piece, as a graph fragment from label `src` to label `out`, or '' when this piece does not flip.
+    It swings in over FLIP_TIME (not the first piece) and out over FLIP_TIME (not the last): the timings never change."""
+    if not (enter or leave):
+        return ""
+    T = min(FLIP_TIME, d / 3)
+    t = f"(on/{fps})"
+    ein = f"pow(1-min(1,{t}/{T:g}),3)" if enter else "0"
+    eout = f"pow(max(0,({t}-({d:g}-{T:g}))/{T:g}),3)" if leave else "0"
+    quad = _quad(f"min({FLIP_EDGE},{ein}+{eout})", f"gte({ein},{eout})", f"gt({eout},{ein})")
+    return _on_black(src, out, quad)
+
+
+def _card_fragment(src: str, out: str, fps: int, d: float, W: int, H: int) -> str:
+    """The `depth: card` look: the picture shrunk to a card that sways in perspective, over a darkened, blurred copy of itself."""
+    cw, ch = int(W * CARD_SIZE) // 2 * 2, int(H * CARD_SIZE) // 2 * 2
+    period = max(2.4, d)
+    t = f"(on/{fps})"
+    sway = f"({CARD_SWAY}*sin(2*PI*{t}/{period:g}))"
+    quad = _quad(sway, f"gt({sway},0)", f"lt({sway},0)")
+    pad = f"pad={W}:{H}:{(W - cw) // 2}:{(H - ch) // 2}:color=black"
+    return (f"{src}split=3[ca][cb][cc];"
+            f"[ca]gblur=sigma={max(4, W // 25)},eq=brightness=-0.28:saturation=0.85,format=gbrp[cbg];"
+            f"[cb]scale={cw}:{ch},{pad},format=gbrp,{quad}[ccard];"
+            f"[cc]format=gbrp,geq=r=255:g=255:b=255,scale={cw}:{ch},{pad},format=gray,{quad.replace('interpolation=cubic', 'interpolation=linear')}[cmask];"
+            f"[cbg][ccard][cmask]maskedmerge,format=yuv420p{out}")
+
+
+def _finish_3d(plan, seg, i, graph: str, out_label: str, fps: int, d: float) -> str:
+    """Put the card flip after the last stage of a piece's graph (so the captions flip with the picture)."""
+    last = len(plan["segments"]) - 1
+    frag = _flip_fragment("[pre3d]", out_label, fps, d, i > 0, i < last) if plan.get("transition") == "flip" else ""
+    if not frag:
+        return graph
+    head, _, tail = graph.rpartition(out_label)
+    return head + "[pre3d]" + tail + ";" + frag
 
 
 def _text_png(workdir: Path, text, name, width, height, **kw) -> Path:
@@ -852,7 +919,7 @@ def _piece_command(ffmpeg, plan, seg, i, workdir: Path, out: Path):
         ease = f"(3*pow({u},2)-2*pow({u},3))"                                      # smoothstep: slow, fast, slow
         comp = workdir / f"seg{i}-compose.jpg"
         transition = plan.get("transition")
-        k = 1 if (move == "still" and not transition) else 2                       # a moving shot (or a zoom cut) is composed larger, then cropped
+        k = 1 if (move == "still" and transition not in ZOOM_TRANSITIONS) else 2                       # a moving shot (or a zoom cut) is composed larger, then cropped
         steps.append((_base(ffmpeg) + ["-i", str(root_of(plan) / seg["rel"]), "-vf", _compose(W * k, H * k), "-frames:v", "1", "-q:v", "2", str(comp)], 0))
         centre_x, centre_y = "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"
         pan = max(zoom, 0.08)                                                      # a pan needs room to travel
@@ -866,6 +933,9 @@ def _piece_command(ffmpeg, plan, seg, i, workdir: Path, out: Path):
         punch = _zoom_filter(W, H, d, transition=transition)
         chain = ",".join(p for p in (motion, punch, look, "scale=out_range=tv", "format=yuv420p") if p)
         graph = f"[0:v]{chain}[v]" + overlay_graph + (";[o]format=yuv420p[out]" if overlay_graph else "")
+        if plan.get("depth") == "card":
+            graph = f"[0:v]{chain}[v0];" + _card_fragment("[v0]", "[v]", fps, d, W, H) + overlay_graph + (";[o]format=yuv420p[out]" if overlay_graph else "")
+        graph = _finish_3d(plan, seg, i, graph, out_label, fps, d)
         steps.append((_base(ffmpeg) + ["-loop", "1", "-framerate", str(fps), "-t", str(d), "-i", str(comp)] + overlay_in +
                       ["-filter_complex", graph, "-map", out_label, "-t", str(d), "-r", str(fps)] + _encode_piece(plan) + [str(out)], d))
         return steps
@@ -874,6 +944,9 @@ def _piece_command(ffmpeg, plan, seg, i, workdir: Path, out: Path):
     zoom = _zoom_filter(W, H, d, move=seg.get("move"), amount=max(tpl["zoom"], 0.06), transition=plan.get("transition"))
     chain = ",".join(p for p in (f"setpts=(PTS-STARTPTS)/{speed}", fps_f, zoom, look, "scale=out_range=tv", "format=yuv420p") if p)
     graph = f"[0:v]{_compose(W, H)},{chain}[v]" + overlay_graph + (";[o]format=yuv420p[out]" if overlay_graph else "")
+    if plan.get("depth") == "card":
+        graph = f"[0:v]{_compose(W, H)},{chain}[v0];" + _card_fragment("[v0]", "[v]", fps, d, W, H) + overlay_graph + (";[o]format=yuv420p[out]" if overlay_graph else "")
+    graph = _finish_3d(plan, seg, i, graph, out_label, fps, d)
     steps.append((_base(ffmpeg) + ["-ss", str(seg["src_start"]), "-t", str(seg["src_used"]), "-i", str(root_of(plan) / seg["rel"])] + overlay_in +
                   ["-filter_complex", graph, "-map", out_label, "-t", str(d), "-r", str(fps)] + _encode_piece(plan) + [str(out)], d))
     return steps
@@ -1462,8 +1535,9 @@ def brief(root, project_name: str = "") -> str:
               "- `sfx`: `{\"cuts\": \"whoosh\"|\"pop\"|\"hit\", \"words\": \"tick\"|\"pop\", \"level\": -12}`, all optional: synthesised sound effects, a short sound on every cut and/or a tick on every word the kinetic look pops in and every countdown number. "
               "They are mixed under the music and speech, never change a timing, and give a video that has no music a soundtrack of just the effects.",
               "- `tighten`: `\"gaps\"` cuts the dead air out of talking video clips: each phrase is kept with a little either side, pauses up to about 0.8 s stay, longer silences are cut and the phrases joined (jump cuts), and the clip keeps its own sound. A clip can opt in or out with `\"tighten\": true|false`. It finds speech-like sound, not words, so it cannot remove a repeated take.",
-              "- `transition`: `\"zoom\"` (punch in at the end of a piece and settle at the start of the next, a zoom cut), `\"zoom_in\"` or `\"zoom_out\"` (just one half). Applies to photos and clips, never changes any timing. "
+              "- `transition`: `\"zoom\"` (punch in at the end of a piece and settle at the start of the next, a zoom cut), `\"zoom_in\"` or `\"zoom_out\"` (just one half), or `\"flip\"` (a 3D card flip: each piece swings out around its vertical axis and the next swings in, through black; it suits hard cuts). Applies to photos and clips, never changes any timing. "
               "A video clip can also take `move`: `\"in\"` or `\"out\"` to zoom slowly over its whole length.",
+              "- `depth`: `\"card\"` shows each photo and clip as a smaller card that sways in 3D perspective over a darkened, blurred copy of itself. It is a flat picture tilted, not a depth map, so nothing parallaxes. It also works with `transition`.",
               "- `speech`: `\"follow\"` starts each video clip (that has no explicit `start`) where people speak, so a long clip's excerpt holds the words, not dead air. It finds speech-like sound, not words.",
               f"- `max_seconds`: up to {MAX_SECONDS_LIMIT} (default {DEFAULT_SECONDS}); clips beyond it are dropped from the end.",
               "", "## Example", "", "```json", json.dumps(EXAMPLE, indent=2), "```", "",

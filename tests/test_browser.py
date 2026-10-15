@@ -58,6 +58,11 @@ class RealPage(unittest.TestCase):
         self.assertIn("numbers only", text)
         self.assertIn("pick a song from this list", text)
 
+    def test_the_3d_choices_are_on_the_page(self):
+        opts = self.ev("Array.from(document.querySelectorAll('#montage select')).flatMap(s => Array.from(s.options)).map(o => o.value + '|' + o.text).join('\\n')")
+        self.assertIn("flip|3D card flip", opts)
+        self.assertIn("3D cards that sway", self.ev("document.querySelector('#montage').innerText"))
+
     def test_the_music_control_is_a_pick_list_not_a_text_box_and_there_is_an_add_a_song_button(self):
         kinds = self.ev("Array.from(document.querySelectorAll('#montage select')).map(s => s.options[0].text.slice(0, 8)).join('|')")
         self.assertIn("No music", kinds)

@@ -1888,6 +1888,107 @@ class TightenGaps(Fixtures):
 
 
 @NEED
+class ThreeD(Fixtures):
+    """The card flip between pieces (not into the first piece, not out of the last) and the swaying card look: measured on a bright square, since both turn the picture about its vertical axis."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        ff("-f", "lavfi", "-i", "color=c=0x101010:s=640x360,drawbox=x=200:y=60:w=240:h=240:color=white:t=fill", "-frames:v", "1", str(cls.fx / "box.jpg"))
+
+    def clips(self, n=2):
+        return [{"media": "box.jpg", "move": "still", "hold": 3} for _ in range(n)]
+
+    def plan(self, **kw):
+        return montage.plan_for(recipe(self.clips(), template="punchy", **kw), self.root)
+
+    def square(self, path, at, w=216, h=384):
+        d = frame(path, at, w, h)
+        row = h // 2
+        xs = [x for x in range(w) if d[(row * w + x) * 3] > 200 and d[(row * w + x) * 3 + 1] > 200]
+        return (xs[-1] - xs[0] + 1) if xs else 0
+
+    def made(self, **kw):
+        if not getattr(self, "_box", False):                  # the same file cannot be uploaded twice
+            self.add("box.jpg")
+            self._box = True
+        job, out = self.render(recipe(self.clips(), template="punchy", **kw))
+        self.assertEqual(job["state"], "done", job["error"])
+        return out
+
+    # ---------------------------------------------------------------- the recipe
+    def test_the_words_are_checked(self):
+        self.add("box.jpg")
+        for kw, why in (({"depth": "sphere"}, "depth"), ({"depth": True}, "depth"), ({"transition": "cube"}, "transition")):
+            with self.subTest(kw=kw):
+                with self.assertRaises(montage.RecipeError) as ctx:
+                    self.plan(**kw)
+                self.assertIn(why, str(ctx.exception))
+        p = self.plan(transition="flip", depth="card")
+        self.assertEqual((p["transition"], p["depth"]), ("flip", "card"))
+        self.assertIsNone(self.plan()["depth"])
+
+    def test_flip_and_depth_never_change_a_timing(self):
+        self.add("box.jpg")
+        a, b = self.plan(), self.plan(transition="flip", depth="card")
+        self.assertEqual([(s["start"], s["duration"]) for s in a["segments"]], [(s["start"], s["duration"]) for s in b["segments"]])
+        self.assertEqual(a["total"], b["total"])
+
+    def test_the_flip_does_not_turn_the_first_piece_in_or_the_last_one_out(self):
+        enter_only = montage._flip_fragment("[a]", "[b]", 30, 3.0, True, False)
+        leave_only = montage._flip_fragment("[a]", "[b]", 30, 3.0, False, True)
+        self.assertEqual(montage._flip_fragment("[a]", "[b]", 30, 3.0, False, False), "", "a lone piece has nothing to flip")
+        self.assertIn("pow(1-min(1,", enter_only)
+        self.assertNotIn("pow(max(0,", enter_only)
+        self.assertIn("pow(max(0,", leave_only)
+        self.assertNotIn("pow(1-min(1,", leave_only)
+
+    # ---------------------------------------------------------------- what it does to the picture
+    def test_flip_swings_each_piece_in_and_out_and_leaves_the_middle_alone(self):
+        out = self.made(transition="flip")
+        end = self.plan()["total"]
+        first = self.plan()["segments"][1]["start"]
+        first_start, first_mid, first_end = (self.square(out, t) for t in (0.0, first / 2, first - 0.05))
+        second_start, second_mid, second_end = (self.square(out, t) for t in (first, (first + end) / 2, end - 0.07))
+        self.assertGreater(first_start, 0.9 * first_mid, "the first piece is just there: nothing to flip in from")
+        self.assertLess(first_end, 0.5 * first_mid, "it swings away before the cut")
+        self.assertLess(second_start, 0.5 * second_mid, "and the next one swings in")
+        self.assertAlmostEqual(second_mid / first_mid, 1.0, delta=0.05)
+        self.assertGreater(second_end, 0.9 * second_mid, "the last piece stays: the video does not end on a sliver")
+
+    def test_without_flip_the_cut_is_a_cut(self):
+        out = self.made()
+        first = self.plan()["segments"][1]["start"]
+        a, b, c = (self.square(out, t) for t in (first - 0.05, first, first + 1.5))
+        self.assertAlmostEqual(a / c, 1.0, delta=0.03)
+        self.assertAlmostEqual(b / c, 1.0, delta=0.03)
+
+    def test_a_card_is_smaller_than_the_frame_and_sways(self):
+        base = self.square(self.made(), 1.5)
+        self.root_clean()
+        out = self.made(depth="card")
+        rest, swayed = self.square(out, 0.05), self.square(out, 0.75)
+        self.assertAlmostEqual(rest / base, 0.8, delta=0.06, msg=f"{rest} vs {base}")
+        self.assertLess(swayed, 0.95 * rest, "turned a quarter of the way through its sway")
+
+    def root_clean(self):
+        for p in (self.root / "exports").glob("*"):
+            p.unlink()
+
+    def test_card_and_flip_together_and_every_look_and_format_render(self):
+        self.add("box.jpg", "land.jpg")
+        clips = [{"media": "box.jpg", "caption": "Hi"}, {"media": "land.jpg"}, {"quote": "A quote"}, {"countdown": 2}]
+        for tpl in montage.TEMPLATES:
+            with self.subTest(template=tpl):
+                job, out = self.render(recipe(clips, template=tpl, transition="flip", depth="card", quality="draft"))
+                self.assertEqual(job["state"], "done", f"{tpl}: {job['error']}")
+        for fmt, size in (("square", 324), ("wide", 576)):
+            with mock.patch.dict(montage.FORMATS[fmt], width=size, height=324):
+                job, out = self.render(recipe(clips, format=fmt, transition="flip", depth="card", quality="draft"))
+            self.assertEqual(job["state"], "done", f"{fmt}: {job['error']}")
+
+
+@NEED
 class SoundEffects(Fixtures):
     """Sound effects on cuts and words: where they land, how loud, and that nothing else changes."""
 

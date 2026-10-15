@@ -750,6 +750,16 @@ renders the same video.
   paper collage's own pieces, or audiograms. The page has a "Cuts between pictures and clips" choice. Measured on a bright square:
   the settle starts at 1.12x and is back to 1.0 by the end of the piece. Limit: the picture is upscaled by up to 12% at the peak,
   so a photo is composed at double size first to keep it sharp, but a clip is a little soft for 0.3 s.
+- **3D, honestly named.** Two options, both timing-neutral, photo and video pieces only (cards, the paper collage and audiograms are
+  left flat), both ffmpeg's `perspective` filter. There is **no depth model**, so nothing parallaxes: a flat picture is turned in
+  perspective, not rebuilt in 3D. (1) `"transition": "flip"`: each piece swings out around its vertical axis in 0.4 s and the next
+  swings in, through black (the first piece is not turned in and the last is not turned out, so the video neither starts nor ends on a
+  sliver). It suits hard cuts; on a crossfading look the two overlap and it reads as a mess. (2) `"depth": "card"`: each picture is an
+  80% card that sways about 25 degrees in perspective (one sway per 2.4 s or the piece, whichever is longer) over a darkened, blurred
+  copy of itself; it works alone or together with `flip`. The perspective filter smears edge pixels into the empty space, so the same
+  turn is applied to a white mask and the two are multiplied. Measured on a bright square: 80% wide at rest, 10% narrower a quarter of
+  the way into a sway, and a flip is under half width 0.05 s either side of the cut. Costs more CPU per piece than a zoom cut (two
+  perspective passes per frame); not timed on the Air. The page has "3D card flip" in the cuts list and a "3D cards that sway" tick.
 - **Audiogram** (`{"audiogram": "song.mp3", "image": "photo.jpg", "caption": "Dr Madihah", "start": 0, "hold": 8}`): a song or voice
   file drawn as a moving waveform (ffmpeg `showwaves`), solid in the accent colour, over the picture darkened by 30% (or on the
   look's colour if there is no `image`), with the caption under it. **Its sound is always heard** (it is added to the soundtrack
