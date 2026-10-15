@@ -104,6 +104,10 @@ class Card(unittest.TestCase):
         self.assertIn("Plain cuts", card)
         self.assertIn("zoom cuts", self.run_js("zoomcut")["view"]["plan"], "the choice reached the server and came back in the plan")
 
+    def test_sound_effects_on_cuts_are_offered_and_reach_the_plan(self):
+        self.assertIn("Whoosh on every cut", self.run_js("card")["view"]["card"])
+        self.assertRegex(self.run_js("sfx")["view"]["plan"], r"\d+ sound effects")
+
     def test_a_typed_tempo_cuts_to_that_grid_without_audio(self):
         plan = self.run_js("tempo")["view"]["plan"]
         self.assertIn("75 BPM grid", plan)

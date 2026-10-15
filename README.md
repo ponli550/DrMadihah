@@ -719,6 +719,17 @@ renders the same video.
 - **Everything is composed over a blurred copy of itself**, so a portrait photo in a 9:16 frame is never cropped
   and a landscape one never loses its sides. (ffprobe does not report an EXIF-rotated photo's true shape, so
   composing the same way every time is also simpler than detecting it.) Photos get a slow zoom; clips can be slowed.
+- **Sound effects** (`sfx.py`; recipe `"sfx": {"cuts": "whoosh"|"pop"|"hit", "words": "tick"|"pop", "level": -12}`, all optional; the page has "Sound
+  effects" and a tick). **Synthesised by ffmpeg**, no files and no licences: a whoosh is a noise swell (it starts 0.25 s before the
+  cut so its body lands on it), a pop a falling chirp, a hit a low thump, a tick a very short high click. **Cuts:** one on every cut
+  but the first (on a crossfading look, the middle of the overlap). **Words:** one on every word line the kinetic look pops in (the
+  same times as the picture, so on the beat when cut to a tempo) and on every countdown number in any look. `level` is in dB
+  (default -12, range -30 to 0): the effects sit under the music and speech. They are mixed into the same soundtrack step as kept
+  clip sound and music, **never change a timing**, and a video with no music gets a soundtrack of just the effects. Effects-only
+  audio is **limited, not loudness-normalised**: normalising a few sparse effects up to -16 LUFS made them deafening, so only a mix
+  with music or speech is normalised, and the judge does not hold an effects-only soundtrack to the -16 target. Tests measure
+  loudness in windows around the cuts and the word pops in real renders. **Not done:** choosing a sound per cut, whooshes that
+  follow a zoom, and I have not listened to any of it (levels and timing were measured, taste was not).
 - **Jump cuts: cut the dead air out of talking clips** (`"tighten": "gaps"` for every video clip, or `"tighten": true|false` on one; the page tick
   "Cut the dead air out of talking clips", **off by default**). It takes the speech detector's phrases, keeps each with 0.12 s before and
   0.22 s after (so first and last words are not clipped), joins phrases a short pause apart (silences up to about 0.8 s are natural and

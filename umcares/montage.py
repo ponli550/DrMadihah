@@ -36,7 +36,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import beats, captions, judge, kinetic, prepare, speech, textcards, textimg, uploads
+from . import beats, captions, judge, kinetic, prepare, sfx, speech, textcards, textimg, uploads
 from .layout import kind_of
 
 FORMATS = {
@@ -98,7 +98,7 @@ DUCK_IN, DUCK_OUT = 0.25, 0.4  # seconds the music takes to dip before a phrase 
 NICE = prepare.NICE
 THREADS = prepare.THREADS
 ALLOWED_TOP = {"kind", "version", "title", "format", "template", "clips", "captions", "title_card", "end_card", "music",
-               "max_seconds", "note", "quality", "speech", "clip_sound", "transition", "tighten"}
+               "max_seconds", "note", "quality", "speech", "clip_sound", "transition", "tighten", "sfx"}
 ALLOWED_CLIP = {"media", "caption", "hold", "speed", "start", "zoom", "move", "quote", "by", "announce", "countdown", "audiogram", "image", "tighten"}
 ALLOWED_ANNOUNCE = {"title", "date", "time", "place", "note"}
 CONTENT_KINDS = ("photo", "video", "quote", "announce", "countdown", "audiogram")      # what counts as a clip of the video (cards at the ends do not)
@@ -320,6 +320,19 @@ def validate(recipe, root) -> dict:
         cards[key] = card
     if recipe.get("speech") not in (None, "follow"):
         problems.append('speech: must be "follow" (start clips where people speak) or left out')
+    spec = recipe.get("sfx")
+    if spec is not None:
+        if not isinstance(spec, dict):
+            problems.append('sfx: must be like {"cuts": "whoosh", "words": "tick", "level": -12} or left out')
+        else:
+            for k in sorted(set(spec) - {"cuts", "words", "level"}):
+                problems.append(f"sfx.{k}: unknown field (allowed: cuts, words, level)")
+            if spec.get("cuts") not in (None, *sfx.CUT_SOUNDS):
+                problems.append(f"sfx.cuts: must be one of {', '.join(sfx.CUT_SOUNDS)} or left out")
+            if spec.get("words") not in (None, *sfx.WORD_SOUNDS):
+                problems.append(f"sfx.words: must be one of {', '.join(sfx.WORD_SOUNDS)} or left out")
+            if "level" in spec and not _num(spec["level"], *sfx.LEVEL_RANGE):
+                problems.append(f"sfx.level: a number of dB from {sfx.LEVEL_RANGE[0]:g} to {sfx.LEVEL_RANGE[1]:g}")
     if recipe.get("tighten") not in (None, "gaps"):
         problems.append('tighten: must be "gaps" (cut the dead air out of talking clips) or left out')
     if recipe.get("transition") not in (None, *TRANSITIONS):
@@ -352,7 +365,7 @@ def validate(recipe, root) -> dict:
         raise RecipeError(problems)
     return {"kind": "montage", "version": 1, "title": title.strip(), "format": fmt, "template": tpl,
             "captions": recipe.get("captions", True), "max_seconds": max_s, "clips": clips, "cards": cards,
-            "quality": recipe.get("quality", "final"), "speech": recipe.get("speech"), "clip_sound": recipe.get("clip_sound"), "transition": recipe.get("transition"), "tighten": recipe.get("tighten"), "tempo": tempo,
+            "quality": recipe.get("quality", "final"), "speech": recipe.get("speech"), "clip_sound": recipe.get("clip_sound"), "transition": recipe.get("transition"), "tighten": recipe.get("tighten"), "sfx": recipe.get("sfx"), "tempo": tempo,
             "music": None if music_item is None else {**music, "_item": music_item}, "note": recipe.get("note")}
 
 
@@ -515,6 +528,12 @@ def resolve(validated: dict, root) -> dict:
         t += s["duration"] - fade
     total = round(sum(s["duration"] for s in segs) - fade * max(0, len(segs) - 1), 3)
     duck = _settle_sound(r, segs)
+    sfx_plan = None
+    spec = r.get("sfx") or {}
+    if spec.get("cuts") or spec.get("words"):
+        ev = sfx.events(segs, total, fade, spec, tpl.get("style") == "kinetic", 60.0 / sync["bpm"] if sync else None)
+        if ev:
+            sfx_plan = {"cuts": spec.get("cuts"), "words": spec.get("words"), "level": float(spec.get("level", sfx.DEFAULT_LEVEL)), "events": ev}
     music = None
     if r["music"]:
         m = r["music"]
@@ -534,7 +553,7 @@ def resolve(validated: dict, root) -> dict:
     width, height = (even(fmt["width"] * DRAFT_SCALE), even(fmt["height"] * DRAFT_SCALE)) if draft else (fmt["width"], fmt["height"])
     return {"title": r["title"], "format": r["format"], "template": r["template"], "quality": "draft" if draft else "final",
             "width": width, "height": height,
-            "fps": fmt["fps"], "fade": round(fade, 3), "total": total, "transition": r.get("transition"), "segments": segs, "duck": duck, "music": music, "sync": None if not sync else {k: v for k, v in sync.items() if k != "music_start"},
+            "fps": fmt["fps"], "fade": round(fade, 3), "total": total, "transition": r.get("transition"), "sfx": sfx_plan, "segments": segs, "duck": duck, "music": music, "sync": None if not sync else {k: v for k, v in sync.items() if k != "music_start"},
             "warnings": warnings,
             "recipe": {k: v for k, v in r.items() if k not in ("clips", "cards", "music")}}
 
@@ -981,7 +1000,7 @@ def render(plan: dict, root, out: Path, ctl: Control, on_pct=lambda p: None) -> 
             vgraph, vmap, venc, n_in = "", "0:v", ["-c:v", "copy"], 1
         m = plan["music"]
         aenc = ["-an"]
-        if any(s.get("sound") for s in segs):
+        if any(s.get("sound") for s in segs) or (plan.get("sfx") or {}).get("events"):
             cmd += ["-i", str(_audio_mix(ffmpeg, plan, root, work, ctl))]
             aenc = ["-map", f"{n_in}:a:0", "-c:a", "aac", "-b:a", "192k", "-ar", "48000"]
         elif m:
@@ -1010,30 +1029,61 @@ def _duck_gain(windows: list) -> str:
 
 
 def _audio_mix(ffmpeg, plan: dict, root: Path, work: Path, ctl: Control) -> Path:
-    """The soundtrack when some clips keep their own sound: those clips' audio placed on the timeline, the music (if any)
-    dipping under their speech, then loudness-normalised. Written as a WAV beside the pieces."""
+    """The soundtrack when something besides the music needs placing: clips that keep their own sound (the music dipping under their
+    speech) and/or sound effects on cuts and words. Everything is put on the timeline, mixed, loudness-normalised (unless it is
+    effects alone: normalising a few sparse whooshes up to -16 LUFS would make them deafening, so they are only limited) and written
+    as a WAV beside the pieces."""
     kept = [s for s in plan["segments"] if s.get("sound")]
-    cmd, chains, labels = _base(ffmpeg), [], []
-    for n, s in enumerate(kept):
+    cmd, chains, mixed, n_in = _base(ffmpeg), [], [], 0
+    labels = []
+    for s in kept:
         cmd += ["-ss", str(s["src_start"]), "-t", str(s["src_used"]), "-i", str(root / s["rel"])]
         ms, d = int(round(s["start"] * 1000)), s["duration"]
-        f = f"[{n}:a:0]aresample=48000,aformat=channel_layouts=stereo"
+        f = f"[{n_in}:a:0]aresample=48000,aformat=channel_layouts=stereo"
         if abs(s["speed"] - 1) > 1e-3:
             f += f",atempo={s['speed']}"
-        chains.append(f + f",atrim=0:{d:g},afade=t=in:d=0.03,afade=t=out:st={max(0, d - 0.03):g}:d=0.03,adelay={ms}|{ms}[v{n}]")
-        labels.append(f"[v{n}]")
-    chains.append("".join(labels) + f"amix=inputs={len(kept)}:normalize=0:duration=longest[voice]")
+        chains.append(f + f",atrim=0:{d:g},afade=t=in:d=0.03,afade=t=out:st={max(0, d - 0.03):g}:d=0.03,adelay={ms}|{ms}[v{n_in}]")
+        labels.append(f"[v{n_in}]")
+        n_in += 1
+    if kept:
+        chains.append("".join(labels) + f"amix=inputs={len(kept)}:normalize=0:duration=longest[voice]")
+        mixed.append("[voice]")
     m, total = plan["music"], plan["total"]
-    tail = f"loudnorm=I=-16:LRA=11:TP=-1.5,apad=whole_dur={total:g},atrim=0:{total:g}[mix]"         # as long as the video, not as long as the last talking clip
     if m:
         cmd += ["-ss", str(m["start"]), "-t", str(total), "-i", str(root / m["rel"])]
         fo = m["fade_out"]
         dip = f",volume='{_duck_gain(plan['duck'])}':eval=frame" if plan.get("duck") else ""
-        chains.append(f"[{len(kept)}:a:0]aresample=48000,aformat=channel_layouts=stereo,afade=t=in:st=0:d=0.6,"
+        chains.append(f"[{n_in}:a:0]aresample=48000,aformat=channel_layouts=stereo,afade=t=in:st=0:d=0.6,"
                       f"afade=t=out:st={max(0, total - fo):g}:d={fo:g}{dip}[music]")
-        chains.append("[voice][music]amix=inputs=2:normalize=0:duration=longest," + tail)
+        mixed.append("[music]")
+        n_in += 1
+    fx = plan.get("sfx")
+    if fx and fx.get("events"):
+        by = {}
+        for e in fx["events"]:
+            by.setdefault(e["sound"], []).append(e)
+        pieces = []
+        for name, evs in by.items():
+            sfx.render_wav(name, work / f"sfx-{name}.wav")
+            cmd += ["-i", str(work / f"sfx-{name}.wav")]
+            idx, k = n_in, len(evs)
+            n_in += 1
+            if k > 1:
+                chains.append(f"[{idx}:a:0]asplit={k}" + "".join(f"[x{idx}_{j}]" for j in range(k)))
+            for j, e in enumerate(evs):
+                src = f"[x{idx}_{j}]" if k > 1 else f"[{idx}:a:0]"
+                at = max(0, int(round((e["t"] - sfx.lead(name)) * 1000)))
+                chains.append(f"{src}adelay={at}|{at},volume={fx['level']:g}dB[e{idx}_{j}]")
+                pieces.append(f"[e{idx}_{j}]")
+        chains.append("".join(pieces) + (f"amix=inputs={len(pieces)}:normalize=0:duration=longest[sfx]" if len(pieces) > 1 else "anull[sfx]"))
+        mixed.append("[sfx]")
+    if len(mixed) > 1:
+        chains.append("".join(mixed) + f"amix=inputs={len(mixed)}:normalize=0:duration=longest[pre]")
+        head = "[pre]"
     else:
-        chains.append("[voice]" + tail)
+        head = mixed[0]
+    level = "loudnorm=I=-16:LRA=11:TP=-1.5" if (kept or m) else "alimiter=limit=0.89:level=disabled"
+    chains.append(f"{head}{level},apad=whole_dur={total:g},atrim=0:{total:g}[mix]")                 # as long as the video, not as long as the last effect
     out = work / "mix.wav"
     cmd += ["-filter_complex", ";".join(chains), "-map", "[mix]", "-c:a", "pcm_s16le", "-ar", "48000", str(out)]
     _run(cmd, total, ctl, lambda f: None)
@@ -1408,6 +1458,8 @@ def brief(root, project_name: str = "") -> str:
               "- `music`: `{file, start?, fade_out?, sync?}` or null. `\"sync\": \"beat\"` finds the song's beat, makes every piece a whole number of beats long and starts the song on a beat, so every cut lands on one (hard cuts; the plan reports the BPM, or warns when the song has no steady beat). Use only royalty-free music; a commercial song gets a posted video muted or blocked.",
               "- `music: {\"bpm\": 75}` (no file) cuts to that tempo with NO audio: every piece is a whole number of beats from the first frame, so a song added later in the app (a trending sound that cannot be downloaded) lines up if it is started on a beat. Use it when the song's BPM is known and its file is not.",
               "- `clip_sound`: `\"speech\"` keeps the own sound of a video clip whose excerpt has speech (others stay muted, so crowd noise does not leak in) and dips the music about 14 dB under the speech.",
+              "- `sfx`: `{\"cuts\": \"whoosh\"|\"pop\"|\"hit\", \"words\": \"tick\"|\"pop\", \"level\": -12}`, all optional: synthesised sound effects, a short sound on every cut and/or a tick on every word the kinetic look pops in and every countdown number. "
+              "They are mixed under the music and speech, never change a timing, and give a video that has no music a soundtrack of just the effects.",
               "- `tighten`: `\"gaps\"` cuts the dead air out of talking video clips: each phrase is kept with a little either side, pauses up to about 0.8 s stay, longer silences are cut and the phrases joined (jump cuts), and the clip keeps its own sound. A clip can opt in or out with `\"tighten\": true|false`. It finds speech-like sound, not words, so it cannot remove a repeated take.",
               "- `transition`: `\"zoom\"` (punch in at the end of a piece and settle at the start of the next, a zoom cut), `\"zoom_in\"` or `\"zoom_out\"` (just one half). Applies to photos and clips, never changes any timing. "
               "A video clip can also take `move`: `\"in\"` or `\"out\"` to zoom slowly over its whole length.",

@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from umcares import captions, kinetic, montage, prepare, projects, textimg, uploads
+from umcares import captions, kinetic, montage, prepare, projects, sfx, textimg, uploads
 from tests.test_prepare import make_conformant, put
 
 FF, FP = prepare.find_tool("ffmpeg"), prepare.find_tool("ffprobe")
@@ -1863,12 +1863,143 @@ class TightenGaps(Fixtures):
         long_silences = [float(x) for x in re.findall(r"silence_duration: ([\d.]+)", log)]
         self.assertEqual([d for d in long_silences if d < 5], [], f"no silence of 1.2 s or more is left inside the video: {long_silences}")
 
+    def test_a_talking_clip_with_its_own_sound_and_effects_in_one_mix(self):
+        self.add("gappy.mp4", "land.jpg")
+        rec = recipe([{"media": "gappy.mp4", "hold": 15}, {"media": "land.jpg", "hold": 3, "move": "still"}], template="punchy", tighten="gaps",
+                     sfx={"cuts": "hit"}, quality="draft", max_seconds=60)
+        p = montage.plan_for(rec, self.root)
+        cut = p["segments"][1]["start"]
+        job, out = self.render(rec)
+        self.assertEqual(job["state"], "done", job["error"])
+
+        def level(a, b):
+            r = subprocess.run([FF, "-hide_banner", "-ss", str(a), "-t", str(b - a), "-i", str(out), "-af", "volumedetect", "-f", "null", "-"], capture_output=True, text=True).stderr
+            return float(re.search(r"mean_volume: (-?[\d.]+)", r).group(1))
+        self.assertGreater(level(0.3, 2.0), -40, "the speech is still heard")
+        self.assertGreater(level(cut, cut + 0.4), -50, "and so is the hit at the cut")
+        self.assertLess(level(cut + 0.8, cut + 2.5), -60, "and nothing else after the clip: the effects were not given a normalised boost")
+
     def test_a_tightened_clip_in_every_look_renders(self):
         self.add("gappy.mp4")
         for tpl in montage.TEMPLATES:
             with self.subTest(template=tpl):
                 job, out = self.render(recipe([{"media": "gappy.mp4", "hold": 15}], template=tpl, tighten="gaps", quality="draft", max_seconds=60))
                 self.assertEqual(job["state"], "done", f"{tpl}: {job['error']}")
+
+
+@NEED
+class SoundEffects(Fixtures):
+    """Sound effects on cuts and words: where they land, how loud, and that nothing else changes."""
+
+    def plan(self, clips, **kw):
+        return montage.plan_for(recipe(clips, template=kw.pop("template", "punchy"), **kw), self.root)
+
+    def level(self, path, a, b, key="mean_volume"):
+        r = subprocess.run([FF, "-hide_banner", "-ss", str(a), "-t", str(b - a), "-i", str(path), "-af", "volumedetect", "-f", "null", "-"], capture_output=True, text=True).stderr
+        m = re.search(key + r": (-?[\d.]+)", r)
+        return float(m.group(1)) if m else -91.0
+
+    def made(self, clips, **kw):
+        job, out = self.render(recipe(clips, template=kw.pop("template", "punchy"), **kw))
+        self.assertEqual(job["state"], "done", job["error"])
+        return out
+
+    # ---------------------------------------------------------------- validation and the plan
+    def test_the_spec_is_checked(self):
+        self.add("land.jpg")
+        for bad, why in (("loud", "sfx"), ({"cuts": "laser"}, "sfx.cuts"), ({"words": "whoosh"}, "sfx.words"), ({"level": 5}, "sfx.level"), ({"level": "x"}, "sfx.level"),
+                         ({"volume": 3}, "unknown field")):
+            with self.subTest(bad=bad):
+                with self.assertRaises(montage.RecipeError) as ctx:
+                    self.plan([{"media": "land.jpg"}], sfx=bad)
+                self.assertIn(why, str(ctx.exception))
+
+    def test_the_plan_lists_the_events_and_an_unrequested_plan_has_none(self):
+        self.add("land.jpg", "port.jpg")
+        clips = [{"media": "land.jpg", "hold": 2}, {"media": "port.jpg", "hold": 2}, {"countdown": 2}]
+        self.assertIsNone(self.plan(clips)["sfx"])
+        p = self.plan(clips, sfx={"cuts": "whoosh", "words": "tick", "level": -9})
+        self.assertEqual(p["sfx"]["level"], -9.0)
+        kinds = [(e["kind"], e["sound"]) for e in p["sfx"]["events"]]
+        self.assertIn(("cut", "whoosh"), kinds)
+        self.assertIn(("word", "tick"), kinds, "a countdown ticks in every look")
+        self.assertEqual(self.plan(clips, sfx={"cuts": "pop"})["sfx"]["level"], sfx.DEFAULT_LEVEL)
+
+    def test_effects_never_change_a_timing(self):
+        self.add("land.jpg", "port.jpg")
+        clips = [{"media": "land.jpg"}, {"media": "port.jpg"}, {"countdown": 3}]
+        a, b = self.plan(clips), self.plan(clips, sfx={"cuts": "hit", "words": "tick"})
+        self.assertEqual([(x["start"], x["duration"]) for x in a["segments"]], [(x["start"], x["duration"]) for x in b["segments"]])
+        self.assertEqual(a["total"], b["total"])
+
+    # ---------------------------------------------------------------- what is heard
+    def test_a_hit_lands_on_the_cut_and_there_is_silence_elsewhere(self):
+        self.add("land.jpg", "port.jpg")
+        out = self.made([{"media": "land.jpg", "hold": 2, "move": "still"}, {"media": "port.jpg", "hold": 2, "move": "still"}], sfx={"cuts": "hit"})
+        self.assertEqual(stats(out)["audio"], "aac", "effects alone give the video a soundtrack")
+        on_cut, elsewhere = self.level(out, 1.98, 2.4), self.level(out, 0.2, 1.6)
+        self.assertGreater(on_cut, -45, "the hit is audible at the cut")
+        self.assertLess(elsewhere, -65, "and it is silent before it")
+        self.assertGreater(on_cut - elsewhere, 25)
+
+    def test_a_whoosh_swells_into_the_cut_so_it_is_louder_before_the_cut_than_just_after_its_tail(self):
+        self.add("land.jpg", "port.jpg")
+        out = self.made([{"media": "land.jpg", "hold": 3, "move": "still"}, {"media": "port.jpg", "hold": 3, "move": "still"}], sfx={"cuts": "whoosh"})
+        body = self.level(out, 2.8, 3.1)                               # its middle is on the cut at 3.0
+        before, after = self.level(out, 2.76, 2.9), self.level(out, 3.35, 3.9)
+        self.assertGreater(body, -40)
+        self.assertGreater(before, after + 12, "the swell comes before the cut and is gone shortly after it")
+        self.assertLess(self.level(out, 0.3, 2.4), -65)
+
+    def test_the_word_ticks_pop_with_the_words_on_the_kinetic_look_only(self):
+        self.add("land.jpg")
+        captions.set_detail(self.root, self.sha("land.jpg"), "Satu dua tiga")
+        out = self.made([{"media": "land.jpg", "hold": 3, "move": "still"}], template="kinetic", sfx={"words": "tick"})
+        for t in (0.08, 0.58, 1.08):                                   # the schedule of three lines in a 3 s piece
+            self.assertGreater(self.level(out, t - 0.01, t + 0.07), self.level(out, t + 0.2, t + 0.4) + 15, f"a tick at {t}")
+        plain = self.render(recipe([{"media": "land.jpg", "hold": 3}], template="punchy", sfx={"words": "tick"}))[1]
+        self.assertIsNone(stats(plain)["audio"], "no word pops on this look, so no word ticks, so no soundtrack")
+
+    def test_a_countdown_ticks_on_each_number_in_any_look(self):
+        out = self.made([{"countdown": 3}], template="clean", sfx={"words": "pop"})
+        for t in (0.0, 0.8, 1.6):
+            self.assertGreater(self.level(out, t, t + 0.12), self.level(out, t + 0.3, t + 0.7) + 15, f"a pop at {t}")
+
+    def test_the_level_is_the_loudness_of_the_effects_and_they_are_limited_not_normalised_up(self):
+        self.add("land.jpg", "port.jpg")
+        clips = [{"media": "land.jpg", "hold": 2, "move": "still"}, {"media": "port.jpg", "hold": 2, "move": "still"}]
+        quiet = self.level(self.made(clips, sfx={"cuts": "hit", "level": -30}), 1.98, 2.4, "max_volume")
+        loud = self.level(self.made(clips, sfx={"cuts": "hit", "level": -12}), 1.98, 2.4, "max_volume")
+        self.assertAlmostEqual(loud - quiet, 18, delta=3, msg=f"{quiet} dB vs {loud} dB")
+        self.assertLess(loud, -3, "a few sparse effects are not boosted toward -16 LUFS")
+
+    def test_with_music_the_effects_ride_on_top_of_it_in_one_normalised_mix(self):
+        self.add("land.jpg", "port.jpg", music=["song.m4a"])
+        out = self.made([{"media": "land.jpg", "hold": 2}, {"media": "port.jpg", "hold": 2}], music={"file": "song.m4a"}, sfx={"cuts": "hit"})
+        from umcares import judge
+        r = judge.judge(out, json.loads(out.with_suffix(".json").read_text())["plan"])
+        self.assertAlmostEqual(r["stats"]["lufs"], -16, delta=2.5, msg="the music is still at the target loudness")
+        self.assertEqual(next(c["level"] for c in r["checks"] if c["id"] == "audio-present"), "ok")
+
+    def test_the_judge_knows_an_effects_only_video_is_meant_to_have_sound(self):
+        self.add("land.jpg", "port.jpg")
+        out = self.made([{"media": "land.jpg", "hold": 2}, {"media": "port.jpg", "hold": 2}], sfx={"cuts": "pop"})
+        from umcares import judge
+        r = judge.judge(out, json.loads(out.with_suffix(".json").read_text())["plan"])
+        self.assertEqual(next(c["level"] for c in r["checks"] if c["id"] == "audio-present"), "ok")
+        self.assertNotEqual(r["verdict"], "fail", [c for c in r["checks"] if c["level"] == "fail"])
+
+    def test_every_look_and_format_renders_with_both_kinds_of_effect(self):
+        self.add("land.jpg", "port.jpg")
+        clips = [{"media": "land.jpg", "caption": "Hi there"}, {"media": "port.jpg"}, {"quote": "Q"}, {"countdown": 2}]
+        for tpl in montage.TEMPLATES:
+            with self.subTest(template=tpl):
+                job, out = self.render(recipe(clips, template=tpl, sfx={"cuts": "whoosh", "words": "tick"}, quality="draft"))
+                self.assertEqual(job["state"], "done", f"{tpl}: {job['error']}")
+        for fmt, size in (("square", 324), ("wide", 576)):
+            with mock.patch.dict(montage.FORMATS[fmt], width=size, height=324):
+                job, out = self.render(recipe(clips, format=fmt, sfx={"cuts": "hit"}, quality="draft"))
+            self.assertEqual(job["state"], "done", f"{fmt}: {job['error']}")
 
 
 def gray_frame(path, at):
