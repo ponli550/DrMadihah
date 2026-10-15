@@ -646,6 +646,15 @@ restarts regardless. An app too old to have `/api/busy` is judged by whether an 
 at all does not block a deploy (that deploy may be the fix). Uploads are not counted: they resume. Measured on the Air:
 refused during a real render, and `--wait` deployed about 90 s later once the render had finished, with the video intact.
 
+**A restart no longer loses renders.** Each project keeps its unfinished renders in `.umcares/queue.json` (written when a
+render is queued, counted when it starts, removed when it ends, however it ends), and the app queues them again when it
+starts. A render that was running starts again **from the beginning** (ffmpeg cannot resume), under the same job id. A render
+the app has already started twice without finishing (it keeps killing the app: out of memory, a crash) is not tried a third
+time: it is listed as failed with "press Make to try once more", so it cannot restart-loop. A recipe whose picture was deleted
+meanwhile is listed as failed with the reason, and the others still run. Measured on the Air: `web deploy --force` in the middle
+of a real render, the same job came back, ran about 90 s and finished, with no queue file or `.part` file left. Not covered: clip
+*prepare* jobs and in-flight uploads (uploads resume by themselves; prepare is pressed again), and a job's progress bar restarts at 0.
+
 Never start the server by hand over ssh: a leftover instance keeps the port, the
 restart then dies with "Address already in use", and the old server keeps answering,
 which looks like a flaky proxy. `tailscale serve` mounts by path prefix, so do not

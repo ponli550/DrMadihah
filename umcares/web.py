@@ -961,6 +961,9 @@ def run(home, owner: str = "", port: int = DEFAULT_PORT, awake: bool = True) -> 
                          "only this machine can reach the page\n")
     Path(home).mkdir(parents=True, exist_ok=True)
     srv = make_server(home, owner, port)
+    again = montage.RENDERER.restore([p["path"] for p in projects.list_projects(home) if not p.get("missing")])
+    if again["queued"] or again["failed"]:
+        sys.stderr.write(f"web: renders left unfinished by the last run: {again['queued']} queued again, {again['failed']} given up on\n")
     if awake:
         keep_awake()
     sys.stderr.write(f"web: projects in {home} on http://127.0.0.1:{port}\n")
