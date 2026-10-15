@@ -1925,6 +1925,16 @@ class SoundEffects(Fixtures):
         self.assertIn(("word", "tick"), kinds, "a countdown ticks in every look")
         self.assertEqual(self.plan(clips, sfx={"cuts": "pop"})["sfx"]["level"], sfx.DEFAULT_LEVEL)
 
+    def test_many_effects_do_not_cut_the_soundtrack_short(self):
+        """Regression: with ~20 delayed effects the mix ended at the last effect, leaving the last seconds of the picture silent."""
+        self.add("land.jpg", "port.jpg")
+        clips = [{"countdown": 5}, {"countdown": 5}, {"media": "land.jpg", "hold": 3}, {"media": "port.jpg", "hold": 3}]
+        out = self.made(clips, sfx={"cuts": "whoosh", "words": "tick"})
+        plan = self.plan(clips, sfx={"cuts": "whoosh", "words": "tick"})
+        self.assertGreaterEqual(len(plan["sfx"]["events"]), 10)
+        r = subprocess.run([FP, "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=duration", "-of", "csv=p=0", str(out)], capture_output=True, text=True)
+        self.assertAlmostEqual(float(r.stdout.strip()), plan["total"], delta=0.25)
+
     def test_effects_never_change_a_timing(self):
         self.add("land.jpg", "port.jpg")
         clips = [{"media": "land.jpg"}, {"media": "port.jpg"}, {"countdown": 3}]

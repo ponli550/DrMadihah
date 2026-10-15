@@ -1077,13 +1077,14 @@ def _audio_mix(ffmpeg, plan: dict, root: Path, work: Path, ctl: Control) -> Path
                 pieces.append(f"[e{idx}_{j}]")
         chains.append("".join(pieces) + (f"amix=inputs={len(pieces)}:normalize=0:duration=longest[sfx]" if len(pieces) > 1 else "anull[sfx]"))
         mixed.append("[sfx]")
-    if len(mixed) > 1:
-        chains.append("".join(mixed) + f"amix=inputs={len(mixed)}:normalize=0:duration=longest[pre]")
-        head = "[pre]"
-    else:
-        head = mixed[0]
+    # a silent bed as long as the video: the mix is then as long as the video, not as long as the last effect (apad alone proved
+    # unreliable behind many delayed inputs: the result ended at the last event)
+    cmd += ["-f", "lavfi", "-t", f"{total:g}", "-i", "anullsrc=r=48000:cl=stereo"]
+    mixed.append(f"[{n_in}:a:0]")
+    n_in += 1
+    chains.append("".join(mixed) + f"amix=inputs={len(mixed)}:normalize=0:duration=longest[pre]")
     level = "loudnorm=I=-16:LRA=11:TP=-1.5" if (kept or m) else "alimiter=limit=0.89:level=disabled"
-    chains.append(f"{head}{level},apad=whole_dur={total:g},atrim=0:{total:g}[mix]")                 # as long as the video, not as long as the last effect
+    chains.append(f"[pre]{level},apad=whole_dur={total:g},atrim=0:{total:g}[mix]")
     out = work / "mix.wav"
     cmd += ["-filter_complex", ";".join(chains), "-map", "[mix]", "-c:a", "pcm_s16le", "-ar", "48000", str(out)]
     _run(cmd, total, ctl, lambda f: None)
