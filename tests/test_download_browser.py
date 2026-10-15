@@ -109,7 +109,46 @@ class Download(unittest.TestCase):
         self.ev(f"T.start({json.dumps(name)}, {size})")
         self.wait(name, "done")
         self.assertEqual(self.stored_sha(name), want)
-        self.assertGreaterEqual(min(self.px.log), got_before, "nothing already stored was fetched again")
+        self.assertEqual(len(set(self.px.log)), 12 - got_before // CHUNK, "exactly the pieces that were missing were fetched, none already stored")
+
+    def test_pieces_come_in_parallel_so_a_link_that_is_slow_per_request_is_not_slow_overall(self):
+        size = 12 * CHUNK
+        self.px.opts["delay"] = 0.3                                          # every request costs 0.3 s, whatever its size
+        took = {}
+        for label, kw in (("serial", {"parallel": 1}), ("parallel", {})):
+            name = f"demo-reels-20261014-0000{'1' if label == 'serial' else '2'}0.mp4"
+            want = make_export(self.root, name, size)
+            self.downloader(**kw)
+            t = time.time()
+            self.ev(f"T.start({json.dumps(name)}, {size})")
+            self.wait(name, "done", seconds=60)
+            took[label] = time.time() - t
+            self.assertEqual(self.stored_sha(name), want, f"{label}: byte-for-byte")
+        self.assertGreater(took["serial"], 12 * 0.3 * 0.9, "the control really is one request at a time")
+        self.assertLess(took["parallel"], 0.5 * took["serial"], f"4 at a time is at least twice as fast: {took}")
+
+    def test_a_resume_with_gaps_fetches_only_the_missing_pieces(self):
+        """Pieces arrive out of order now, so what is stored need not be a prefix: pieces 3 and 4 are there, 0-2 and 5-9 are not."""
+        name = "demo-reels-20261014-000099.mp4"
+        size = 10 * CHUNK
+        want = make_export(self.root, name, size)
+        self.downloader()
+        key = f"/umcares/p/demo|{name}"
+        self.ev(f"""(async () => {{
+          const db = await new Promise((res, rej) => {{ const r = indexedDB.open('umcares-dl', 1);
+            r.onupgradeneeded = () => {{ r.result.createObjectStore('meta'); r.result.createObjectStore('chunks'); }}; r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }});
+          const put = (store, k, v) => new Promise(res => {{ const t = db.transaction(store, 'readwrite'); t.objectStore(store).put(v, k); t.oncomplete = res; }});
+          for (const i of [3, 4]) {{
+            const r = await fetch('/umcares/p/demo/exports/{name}', {{headers: {{Range: 'bytes=' + i * {CHUNK} + '-' + ((i + 1) * {CHUNK} - 1)}}}});
+            await put('chunks', {json.dumps(key)} + '#' + i, await r.arrayBuffer());
+          }}
+          await put('meta', {json.dumps(key)}, {{key: {json.dumps(key)}, base: '/umcares/p/demo', name: {json.dumps(name)}, size: {size}, next: 0, state: 'paused', startedAt: 1}});
+          return true; }})()""")
+        self.px.log.clear()
+        self.ev(f"T.start({json.dumps(name)}, {size})")
+        self.wait(name, "done")
+        self.assertEqual(self.stored_sha(name), want)
+        self.assertEqual(sorted(set(self.px.log)), [i * CHUNK for i in range(10) if i not in (3, 4)], "everything missing, nothing already stored")
 
     def test_a_piece_that_arrives_damaged_is_caught_by_the_hash_and_the_file_is_fetched_again(self):
         name = "demo-reels-20261014-000003.mp4"
@@ -124,9 +163,9 @@ class Download(unittest.TestCase):
 
     def test_a_video_deleted_on_the_server_is_dropped_with_a_clear_message_and_its_stored_pieces_freed(self):
         name = "demo-reels-20261014-000004.mp4"
-        size = 8 * CHUNK
+        size = 40 * CHUNK
         make_export(self.root, name, size)
-        self.px.opts["delay"] = 0.25                                         # a slow link, so the video can be deleted part-way
+        self.px.opts["delay"] = 0.4                                         # a slow link, so the video can be deleted part-way
         self.downloader()
         self.ev(f"T.start({json.dumps(name)}, {size})")
         end = time.time() + 20

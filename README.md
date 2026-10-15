@@ -941,16 +941,20 @@ Each clip is probed and gets the least work that makes it safe:
   rotation counts as frozen.
 - **Download to this phone** (`downloader.js`): each finished video has a **Download to this phone** button, and by default a
   new final video that appears while the page is open starts downloading by itself (drafts and videos that were already there
-  do not; a tick turns the automatic part off). It fetches the file in **128 KB pieces with Range requests** and keeps each piece
-  in the browser's IndexedDB as it arrives, so a dropped connection only costs the piece in flight (retried with a growing wait,
+  do not; a tick turns the automatic part off). It fetches the file in **128 KB pieces with Range requests, four at a time**, and keeps each piece
+  in the browser's IndexedDB (by piece number, in whatever order they arrive) as it arrives, so a dropped connection only costs the pieces in flight (retried with a growing wait,
   and paused while the browser is offline), a reload or a closed tab resumes from the stored pieces (and a paused one stays
   paused), and the page shows real progress and an estimate. When the last piece arrives the file is rebuilt, its size and its
   **SHA-256** are checked against the server (`GET .../api/montage/hash?name=`, cached beside the video as `<name>.sha256`), and
   only then is **Save to phone** offered, which hands the browser the whole file under its own name; a damaged copy is thrown away
   and fetched again, a video replaced on the server restarts instead of mixing two files, a deleted one loses its phone copy.
   The stored copy stays until **Remove copy**. It asks the browser for persistent storage and for room first, and holds a
-  screen wake lock while downloading. **It does not make the link faster** (12 MB at 7-25 kB/s is still many minutes), it makes
-  it start earlier and survive drops; a normal page download pauses when the tab is closed or the phone sleeps, and Android
+  screen wake lock while downloading. **Parallel pieces** help when each request is slow but the link has room (a test proxy that
+  delays every request: 12 pieces take under half the time of one at a time) and are no help when the link itself is the limit. **On the
+  real link the gain is not demonstrated:** three 5 MB videos on 16 Oct gave 74, 155 and 250 kB/s (parallel, one at a time, parallel), but the
+  link itself swings about 3x between runs, so that says nothing about speed; it does show parallel downloads arrive intact (all three SHA-256
+  checks passed). A single 1 MB request measured 7 kB/s a few minutes before 168 kB/s. It still mostly makes a download start earlier and
+  survive drops; a normal page download pauses when the tab is closed or the phone sleeps, and Android
   Chrome's Background Fetch (keeps going with the tab closed) is **not** used yet. Tested in real headless Chrome through a proxy
   that drops connections mid-body and corrupts a piece (`tests/test_download_browser.py`).
 - **A poster for each video:** next to every export is a small first-frame JPEG (`<name>.jpg`, about 15 KB), made when the
