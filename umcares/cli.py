@@ -1127,6 +1127,7 @@ def build_parser() -> argparse.ArgumentParser:
     dr.add_argument("--no-images", action="store_true", help="send only names and captions (no pictures leave this machine)")
     dr.add_argument("--model", help="model for the single call (default: your Claude Code default)")
     dr.add_argument("--budget", type=float, default=draft_mod.DEFAULT_BUDGET, help="safety cap in dollars for the single call")
+    dr.add_argument("--from", dest="revise", metavar="RECIPE", help="revise a saved recipe instead of drafting a new one (a name, or 'latest'); the original is kept")
     dr.add_argument("--dry-run", action="store_true", help="check the draft and print it, but do not save it")
     dr.set_defaults(func=cmd_draft)
 
@@ -1155,12 +1156,12 @@ def cmd_draft(args, cfg):
         site = draft_mod.Site(url)
         with spinner.spin("Claude is looking at the pictures", 240):
             res = draft_mod.draft(site, args.project, " ".join(args.request), max_images=args.images, images=not args.no_images,
-                                  budget=args.budget, model=args.model, save=not args.dry_run)
+                                  budget=args.budget, model=args.model, save=not args.dry_run, revise=args.revise)
     except draft_mod.DraftError as e:
         log.err(str(e))
         return 2
     plan = res["plan"]
-    log.ok(f"drafted a {plan['total']} s video of {len(plan['segments'])} pieces ({plan['template']}, {plan['format']}); "
+    log.ok(f"{'revised' if res.get('revised') else 'drafted'} a {plan['total']} s video of {len(plan['segments'])} pieces ({plan['template']}, {plan['format']}); "
            f"Claude saw {res['images']} picture(s), {res['attempts']} attempt(s)")
     for w in plan.get("warnings", []):
         log.warn(w)

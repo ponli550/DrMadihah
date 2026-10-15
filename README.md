@@ -580,6 +580,8 @@ export UMC_WEB_URL=https://<machine>.<tailnet>.ts.net/umcares      # or --url, o
 umcares draft cyberdsa "a 20 second upbeat reel for Instagram, hook first, keep the captions short"
 umcares draft cyberdsa "..." --dry-run          # check and print it, save nothing
 umcares draft cyberdsa "..." --no-images        # names and captions only: no pictures leave this machine
+umcares draft cyberdsa "faster, and drop the third photo" --from latest   # revise the newest draft instead of starting again
+umcares draft cyberdsa "add zoom cuts" --from my-recipe                  # ... or any saved recipe by name
 ```
 
 It runs `claude -p` **on the machine you type it on** (where Claude Code is logged in), not on the Premiere machine, which has
