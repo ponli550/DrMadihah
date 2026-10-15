@@ -719,6 +719,14 @@ renders the same video.
 - **Everything is composed over a blurred copy of itself**, so a portrait photo in a 9:16 frame is never cropped
   and a landscape one never loses its sides. (ffprobe does not report an EXIF-rotated photo's true shape, so
   composing the same way every time is also simpler than detecting it.) Photos get a slow zoom; clips can be slowed.
+- **Zoom in and zoom out.** Two things, both timing-neutral. (1) A **video clip** can zoom over its whole length: `"move": "in"` or
+  `"out"` (before, only photos had moves; panning and still are still photo-only). The amount is the look's zoom (at least 6%).
+  (2) A recipe-level **`transition`** adds a zoom cut: `"zoom_out"` starts a piece 12% bigger and settles in 0.3 s (ease-out),
+  `"zoom_in"` pushes in during the last 0.3 s, `"zoom"` does both, so a hard cut reads as zooming through. It is a time-varying
+  scale-and-crop (ffmpeg `scale` with `eval=frame`), applied to photo and video pieces (kinetic included); **not** to cards, the
+  paper collage's own pieces, or audiograms. The page has a "Cuts between pictures and clips" choice. Measured on a bright square:
+  the settle starts at 1.12x and is back to 1.0 by the end of the piece. Limit: the picture is upscaled by up to 12% at the peak,
+  so a photo is composed at double size first to keep it sharp, but a clip is a little soft for 0.3 s.
 - **Audiogram** (`{"audiogram": "song.mp3", "image": "photo.jpg", "caption": "Dr Madihah", "start": 0, "hold": 8}`): a song or voice
   file drawn as a moving waveform (ffmpeg `showwaves`), solid in the accent colour, over the picture darkened by 30% (or on the
   look's colour if there is no `image`), with the caption under it. **Its sound is always heard** (it is added to the soundtrack

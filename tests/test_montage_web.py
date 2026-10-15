@@ -125,6 +125,11 @@ class Routes(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertIn("countdown", " ".join(d["problems"]))
 
+    def test_the_preview_says_which_zoom_cut_was_chosen(self):
+        d = self.post({"recipe": recipe([{"media": "land.jpg"}], transition="zoom_in"), "dry_run": True})[1]
+        self.assertEqual(d["plan"]["transition"], "zoom_in")
+        self.assertEqual(self.post({"recipe": recipe([{"media": "land.jpg"}], transition="spin"), "dry_run": True})[0], 400)
+
     def test_the_preview_carries_the_beat_and_speech_facts_the_page_shows(self):
         d = self.post({"recipe": recipe([{"media": "land.jpg"}, {"media": "clip.mp4"}], music={"bpm": 75}, speech="follow"), "dry_run": True})[1]
         p = d["plan"]

@@ -78,6 +78,10 @@ TEMPLATES = {
 # How the camera moves over a photo (the words a recipe can use). Every move is eased (smoothstep), because a linear
 # move reads as mechanical: the movement starts slowly, is fastest in the middle, and settles.
 MOVES = ("in", "out", "pan_left", "pan_right", "still")
+VIDEO_MOVES = ("in", "out")                       # a video clip can zoom over its whole length; panning is for photos
+TRANSITIONS = ("zoom", "zoom_in", "zoom_out")     # zoom cuts: push in at the end of a piece (zoom_in), settle at its start (zoom_out), or both (zoom)
+PUNCH = 0.12                                      # how much bigger a piece is at the peak of a zoom cut
+PUNCH_TIME = 0.3                                  # seconds a zoom cut takes (at most a third of a short piece)
 
 # A draft is the same video at half size, without the slow finishing (grain, vignette) and with a fast encode. Its timings
 # are exactly the final's, so what you preview is what you will get; only the pixels are cheaper.
@@ -94,7 +98,7 @@ DUCK_IN, DUCK_OUT = 0.25, 0.4  # seconds the music takes to dip before a phrase 
 NICE = prepare.NICE
 THREADS = prepare.THREADS
 ALLOWED_TOP = {"kind", "version", "title", "format", "template", "clips", "captions", "title_card", "end_card", "music",
-               "max_seconds", "note", "quality", "speech", "clip_sound"}
+               "max_seconds", "note", "quality", "speech", "clip_sound", "transition"}
 ALLOWED_CLIP = {"media", "caption", "hold", "speed", "start", "zoom", "move", "quote", "by", "announce", "countdown", "audiogram", "image"}
 ALLOWED_ANNOUNCE = {"title", "date", "time", "place", "note"}
 CONTENT_KINDS = ("photo", "video", "quote", "announce", "countdown", "audiogram")      # what counts as a clip of the video (cards at the ends do not)
@@ -292,8 +296,8 @@ def validate(recipe, root) -> dict:
         if item:
             if item["kind"] == "image" and ("speed" in c or "start" in c):
                 problems.append(f"{w}: speed and start apply to videos, not to a photo")
-            if item["kind"] == "video" and "move" in c:
-                problems.append(f"{w}: move applies to photos; a video keeps its own camera movement")
+            if item["kind"] == "video" and "move" in c and c["move"] not in VIDEO_MOVES:
+                problems.append(f"{w}.move: a video clip can zoom (in or out); panning and still are for photos")
             clips.append({**c, "_item": item})
     cards = {}
     for key in ("title_card", "end_card"):
@@ -312,6 +316,8 @@ def validate(recipe, root) -> dict:
         cards[key] = card
     if recipe.get("speech") not in (None, "follow"):
         problems.append('speech: must be "follow" (start clips where people speak) or left out')
+    if recipe.get("transition") not in (None, *TRANSITIONS):
+        problems.append(f"transition: must be one of {', '.join(TRANSITIONS)} (a zoom cut between pieces) or left out")
     if recipe.get("clip_sound") not in (None, "speech"):
         problems.append('clip_sound: must be "speech" (keep the sound of clips where people speak) or left out')
     music = recipe.get("music")
@@ -340,7 +346,7 @@ def validate(recipe, root) -> dict:
         raise RecipeError(problems)
     return {"kind": "montage", "version": 1, "title": title.strip(), "format": fmt, "template": tpl,
             "captions": recipe.get("captions", True), "max_seconds": max_s, "clips": clips, "cards": cards,
-            "quality": recipe.get("quality", "final"), "speech": recipe.get("speech"), "clip_sound": recipe.get("clip_sound"), "tempo": tempo,
+            "quality": recipe.get("quality", "final"), "speech": recipe.get("speech"), "clip_sound": recipe.get("clip_sound"), "transition": recipe.get("transition"), "tempo": tempo,
             "music": None if music_item is None else {**music, "_item": music_item}, "note": recipe.get("note")}
 
 
@@ -457,6 +463,8 @@ def resolve(validated: dict, root) -> dict:
         used = min(avail, want_out * speed)
         seg = {**base, "kind": "video", "src_start": start, "src_used": round(used, 3), "speed": speed,
                "duration": round(used / speed, 3)}
+        if c.get("move"):
+            seg["move"] = c["move"]                                                     # a zoom over the whole clip
         if spans is not None:
             seg["speech"] = round(speech.covered(spans, start, start + used), 1)     # seconds of speech in the part used
             seg["_spans"] = spans                                                    # settled after cuts are placed (see _settle_sound)
@@ -514,7 +522,7 @@ def resolve(validated: dict, root) -> dict:
     width, height = (even(fmt["width"] * DRAFT_SCALE), even(fmt["height"] * DRAFT_SCALE)) if draft else (fmt["width"], fmt["height"])
     return {"title": r["title"], "format": r["format"], "template": r["template"], "quality": "draft" if draft else "final",
             "width": width, "height": height,
-            "fps": fmt["fps"], "fade": round(fade, 3), "total": total, "segments": segs, "duck": duck, "music": music, "sync": None if not sync else {k: v for k, v in sync.items() if k != "music_start"},
+            "fps": fmt["fps"], "fade": round(fade, 3), "total": total, "transition": r.get("transition"), "segments": segs, "duck": duck, "music": music, "sync": None if not sync else {k: v for k, v in sync.items() if k != "music_start"},
             "warnings": warnings,
             "recipe": {k: v for k, v in r.items() if k not in ("clips", "cards", "music")}}
 
@@ -686,6 +694,30 @@ def _look(tpl, draft=False) -> str:
     return ",".join(p for p in parts if p)
 
 
+def _zoom_filter(W: int, H: int, d: float, move=None, amount: float = 0.0, transition=None) -> str:
+    """Scale each frame by a time-varying factor and crop back to W x H; '' when nothing zooms.
+
+    move "in"/"out": eased zoom over the whole piece (by `amount`). transition: the zoom cut, a quick ease-out punch: "zoom_out" starts
+    PUNCH bigger and settles, "zoom_in" pushes in during the last moments, "zoom" does both. Timings are untouched."""
+    terms = []
+    u = f"min(1,t/{d:g})"
+    ease = f"(3*pow({u},2)-2*pow({u},3))"
+    if move == "in" and amount > 0:
+        terms.append(f"{amount:g}*{ease}")
+    elif move == "out" and amount > 0:
+        terms.append(f"{amount:g}*(1-{ease})")
+    if transition in TRANSITIONS:
+        T = min(PUNCH_TIME, d / 3)
+        if transition in ("zoom", "zoom_out"):
+            terms.append(f"{PUNCH:g}*pow(1-min(1,t/{T:g}),3)")
+        if transition in ("zoom", "zoom_in"):
+            terms.append(f"{PUNCH:g}*pow(max(0,(t-({d:g}-{T:g}))/{T:g}),3)")
+    if not terms:
+        return ""
+    z = "1+" + "+".join(terms)
+    return f"scale=w='trunc(iw*({z})/2)*2':h='trunc(ih*({z})/2)*2':eval=frame:flags=bicubic,crop={W}:{H}"
+
+
 def _text_png(workdir: Path, text, name, width, height, **kw) -> Path:
     out = workdir / f"{name}.png"
     textimg.render(text, out, width, height, **kw)
@@ -777,7 +809,8 @@ def _piece_command(ffmpeg, plan, seg, i, workdir: Path, out: Path):
         u = f"(on/{n})"
         ease = f"(3*pow({u},2)-2*pow({u},3))"                                      # smoothstep: slow, fast, slow
         comp = workdir / f"seg{i}-compose.jpg"
-        k = 1 if move == "still" else 2                                            # a moving shot is composed larger, then cropped
+        transition = plan.get("transition")
+        k = 1 if (move == "still" and not transition) else 2                       # a moving shot (or a zoom cut) is composed larger, then cropped
         steps.append((_base(ffmpeg) + ["-i", str(root_of(plan) / seg["rel"]), "-vf", _compose(W * k, H * k), "-frames:v", "1", "-q:v", "2", str(comp)], 0))
         centre_x, centre_y = "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"
         pan = max(zoom, 0.08)                                                      # a pan needs room to travel
@@ -788,14 +821,16 @@ def _piece_command(ffmpeg, plan, seg, i, workdir: Path, out: Path):
             "pan_right": f"zoompan=z='1+{pan}':x='(iw-iw/zoom)*{ease}':y='{centre_y}':d=1:s={W}x{H}:fps={fps}",
             "pan_left": f"zoompan=z='1+{pan}':x='(iw-iw/zoom)*(1-{ease})':y='{centre_y}':d=1:s={W}x{H}:fps={fps}",
         }[move]
-        chain = ",".join(p for p in (motion, look, "scale=out_range=tv", "format=yuv420p") if p)
+        punch = _zoom_filter(W, H, d, transition=transition)
+        chain = ",".join(p for p in (motion, punch, look, "scale=out_range=tv", "format=yuv420p") if p)
         graph = f"[0:v]{chain}[v]" + overlay_graph + (";[o]format=yuv420p[out]" if overlay_graph else "")
         steps.append((_base(ffmpeg) + ["-loop", "1", "-framerate", str(fps), "-t", str(d), "-i", str(comp)] + overlay_in +
                       ["-filter_complex", graph, "-map", out_label, "-t", str(d), "-r", str(fps)] + _encode_piece(plan) + [str(out)], d))
         return steps
     speed = seg["speed"]
     fps_f = f"fps={fps}" if speed >= 0.999 else f"framerate=fps={fps}"
-    chain = ",".join(p for p in (f"setpts=(PTS-STARTPTS)/{speed}", fps_f, look, "scale=out_range=tv", "format=yuv420p") if p)
+    zoom = _zoom_filter(W, H, d, move=seg.get("move"), amount=max(tpl["zoom"], 0.06), transition=plan.get("transition"))
+    chain = ",".join(p for p in (f"setpts=(PTS-STARTPTS)/{speed}", fps_f, zoom, look, "scale=out_range=tv", "format=yuv420p") if p)
     graph = f"[0:v]{_compose(W, H)},{chain}[v]" + overlay_graph + (";[o]format=yuv420p[out]" if overlay_graph else "")
     steps.append((_base(ffmpeg) + ["-ss", str(seg["src_start"]), "-t", str(seg["src_used"]), "-i", str(root_of(plan) / seg["rel"])] + overlay_in +
                   ["-filter_complex", graph, "-map", out_label, "-t", str(d), "-r", str(fps)] + _encode_piece(plan) + [str(out)], d))
@@ -1315,6 +1350,8 @@ def brief(root, project_name: str = "") -> str:
               "- `music`: `{file, start?, fade_out?, sync?}` or null. `\"sync\": \"beat\"` finds the song's beat, makes every piece a whole number of beats long and starts the song on a beat, so every cut lands on one (hard cuts; the plan reports the BPM, or warns when the song has no steady beat). Use only royalty-free music; a commercial song gets a posted video muted or blocked.",
               "- `music: {\"bpm\": 75}` (no file) cuts to that tempo with NO audio: every piece is a whole number of beats from the first frame, so a song added later in the app (a trending sound that cannot be downloaded) lines up if it is started on a beat. Use it when the song's BPM is known and its file is not.",
               "- `clip_sound`: `\"speech\"` keeps the own sound of a video clip whose excerpt has speech (others stay muted, so crowd noise does not leak in) and dips the music about 14 dB under the speech.",
+              "- `transition`: `\"zoom\"` (punch in at the end of a piece and settle at the start of the next, a zoom cut), `\"zoom_in\"` or `\"zoom_out\"` (just one half). Applies to photos and clips, never changes any timing. "
+              "A video clip can also take `move`: `\"in\"` or `\"out\"` to zoom slowly over its whole length.",
               "- `speech`: `\"follow\"` starts each video clip (that has no explicit `start`) where people speak, so a long clip's excerpt holds the words, not dead air. It finds speech-like sound, not words.",
               f"- `max_seconds`: up to {MAX_SECONDS_LIMIT} (default {DEFAULT_SECONDS}); clips beyond it are dropped from the end.",
               "", "## Example", "", "```json", json.dumps(EXAMPLE, indent=2), "```", "",

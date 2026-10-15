@@ -105,6 +105,10 @@ const check = (i, v) => { all(card(), n => n.tag === "input" && n.type === "chec
     music.value = "";
     if (music._l.change) await music._l.change();
     out.afterRemoval = { disabled: !!sync.disabled, checked: !!sync.checked };
+  } else if (scenario === "zoomcut") {
+    selects()[4].value = "zoom";                                       // [0] format, [1] look, [2] music, [3] length, [4] cut style
+    await press(button("Preview plan"));
+    out.view = view();
   } else if (scenario === "tempo") {
     all(card(), n => n.tag === "input" && n.type === "text")[1].value = "75";          // [0] is the title card, [1] the BPM box
     selects()[1].value = "punchy";

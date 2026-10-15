@@ -603,9 +603,12 @@ class Motion(Fixtures):
         with self.assertRaises(montage.RecipeError) as cm:
             montage.validate({"clips": [{"media": "land.jpg", "move": "spin"}]}, self.root)
         self.assertIn("move: must be one of in, out, pan_left, pan_right, still", cm.exception.problems[0])
-        with self.assertRaises(montage.RecipeError) as cm:
-            montage.validate({"clips": [{"media": "clip.mp4", "move": "in"}]}, self.root)
-        self.assertIn("move applies to photos", cm.exception.problems[0])
+        for mv in montage.VIDEO_MOVES:
+            self.assertEqual(montage.validate({"clips": [{"media": "clip.mp4", "move": mv}]}, self.root)["clips"][0]["move"], mv, "a clip can zoom in or out")
+        for mv in ("pan_left", "pan_right", "still"):
+            with self.assertRaises(montage.RecipeError) as cm:
+                montage.validate({"clips": [{"media": "clip.mp4", "move": mv}]}, self.root)
+            self.assertIn("panning and still are for photos", cm.exception.problems[0])
 
     def test_neighbouring_photos_get_different_moves_unless_told_otherwise(self):
         self.add("land.jpg", "port.jpg", "square.jpg", "clip.mp4")
@@ -1617,6 +1620,118 @@ class Audiogram(Fixtures):
         final = montage.plan_for(recipe(clips, template="kinetic"), self.root)
         draft = montage.plan_for(recipe(clips, template="kinetic", quality="draft"), self.root)
         self.assertEqual([(x["start"], x["duration"]) for x in final["segments"]], [(x["start"], x["duration"]) for x in draft["segments"]])
+
+
+@NEED
+class Zoom(Fixtures):
+    """Zoom in and out: a video clip's own move, and the zoom cut between pieces. Measured on a bright square."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        box = "color=c=0x101010:s=640x360,drawbox=x=200:y=60:w=240:h=240:color=white:t=fill"
+        ff("-f", "lavfi", "-i", box, "-frames:v", "1", str(cls.fx / "box.jpg"))
+        ff("-f", "lavfi", "-i", box.replace("color=c=0x101010:s=640x360", "color=c=0x101010:s=640x360:r=30:d=4"), "-c:v", "libx264", "-pix_fmt", "yuv420p", str(cls.fx / "boxclip.mp4"))
+
+    def plan(self, clips, **kw):
+        return montage.plan_for(recipe(clips, template="clean", **kw), self.root)
+
+    def square(self, path, at, w=216, h=384):
+        """Width in pixels of the bright square on the middle row of the frame at `at` seconds."""
+        d = frame(path, at, w, h)
+        row = h // 2
+        xs = [x for x in range(w) if d[(row * w + x) * 3] > 200 and d[(row * w + x) * 3 + 1] > 200]
+        return (xs[-1] - xs[0] + 1) if xs else 0
+
+    def render_one(self, clip, **kw):
+        job, out = self.render(recipe([clip], template="clean", **kw))
+        self.assertEqual(job["state"], "done", job["error"])
+        return job, out
+
+    # ---------------------------------------------------------------- validation and the plan
+    def test_transition_must_be_one_of_the_three_and_a_video_move_is_kept_in_the_plan(self):
+        self.add("box.jpg", "boxclip.mp4")
+        with self.assertRaises(montage.RecipeError) as ctx:
+            self.plan([{"media": "box.jpg"}], transition="spin")
+        self.assertIn("transition", str(ctx.exception))
+        for t in montage.TRANSITIONS:
+            self.assertEqual(self.plan([{"media": "box.jpg"}], transition=t)["transition"], t)
+        self.assertIsNone(self.plan([{"media": "box.jpg"}])["transition"])
+        p = self.plan([{"media": "boxclip.mp4", "move": "in"}, {"media": "boxclip.mp4"}])
+        self.assertEqual(p["segments"][0]["move"], "in")
+        self.assertNotIn("move", p["segments"][1])
+
+    def test_a_zoom_cut_never_changes_a_timing(self):
+        self.add("box.jpg", "boxclip.mp4")
+        clips = [{"media": "box.jpg"}, {"media": "boxclip.mp4", "move": "out"}, {"media": "box.jpg"}]
+        plain = self.plan(clips)
+        for t in montage.TRANSITIONS:
+            zoomed = self.plan(clips, transition=t)
+            self.assertEqual([(s["start"], s["duration"]) for s in plain["segments"]], [(s["start"], s["duration"]) for s in zoomed["segments"]])
+
+    # ---------------------------------------------------------------- what it does to the picture
+    def test_without_a_transition_a_still_photo_does_not_change_size(self):
+        self.add("box.jpg")
+        job, out = self.render_one({"media": "box.jpg", "move": "still", "hold": 3})
+        a, b, c = (self.square(out, t) for t in (0.03, 1.5, 2.9))
+        self.assertGreater(a, 20)
+        self.assertAlmostEqual(a / b, 1.0, delta=0.03)
+        self.assertAlmostEqual(c / b, 1.0, delta=0.03)
+
+    def test_zoom_out_starts_bigger_and_settles(self):
+        self.add("box.jpg")
+        job, out = self.render_one({"media": "box.jpg", "move": "still", "hold": 3}, transition="zoom_out")
+        start, mid, end = (self.square(out, t) for t in (0.0, 1.5, 2.9))
+        self.assertAlmostEqual(start / mid, 1 + montage.PUNCH, delta=0.03, msg=f"{start} vs {mid}")
+        self.assertAlmostEqual(end / mid, 1.0, delta=0.03, msg="it settled and stays settled")
+
+    def test_zoom_in_pushes_in_at_the_end_only(self):
+        self.add("box.jpg")
+        job, out = self.render_one({"media": "box.jpg", "move": "still", "hold": 3}, transition="zoom_in")
+        start, mid, end = (self.square(out, t) for t in (0.0, 1.5, 2.95))
+        self.assertAlmostEqual(start / mid, 1.0, delta=0.03)
+        self.assertGreater(end / mid, 1.05, "pushing in as the piece ends (0.25 s before the cut it is at 58% of its push)")
+
+    def test_zoom_does_both(self):
+        self.add("box.jpg")
+        job, out = self.render_one({"media": "box.jpg", "move": "still", "hold": 3}, transition="zoom")
+        start, mid, end = (self.square(out, t) for t in (0.0, 1.5, 2.95))
+        self.assertGreater(start / mid, 1.08)
+        self.assertGreater(end / mid, 1.05)
+
+    def test_a_video_clip_can_zoom_in_or_out_over_its_whole_length(self):
+        self.add("boxclip.mp4")
+        job, out = self.render_one({"media": "boxclip.mp4", "move": "in", "hold": 3.5})
+        a, b = self.square(out, 0.1), self.square(out, 3.3)
+        self.assertGreater(b / a, 1.04, f"{a} -> {b}: zooming in")
+        self.assertLess(b / a, 1.09, "by about the look's zoom amount, not more")
+        self.root_clean()
+        job, out = self.render_one({"media": "boxclip.mp4", "move": "out", "hold": 3.5})
+        a, b = self.square(out, 0.1), self.square(out, 3.3)
+        self.assertLess(b / a, 0.96, f"{a} -> {b}: zooming out")
+
+    def root_clean(self):
+        for p in (self.root / "exports").glob("*"):
+            p.unlink()
+
+    def test_a_video_clip_with_no_move_does_not_zoom_and_a_cut_still_applies_to_it(self):
+        self.add("boxclip.mp4")
+        job, out = self.render_one({"media": "boxclip.mp4", "hold": 3}, transition="zoom_out")
+        start, mid, end = (self.square(out, t) for t in (0.0, 1.5, 2.8))
+        self.assertGreater(start / mid, 1.08)
+        self.assertAlmostEqual(end / mid, 1.0, delta=0.03)
+
+    def test_every_look_and_format_renders_with_a_zoom_cut_and_a_draft_matches(self):
+        self.add("box.jpg", "boxclip.mp4")
+        clips = [{"media": "box.jpg", "caption": "Hi"}, {"media": "boxclip.mp4", "move": "in"}, {"quote": "A quote"}, {"countdown": 2}]
+        for tpl in montage.TEMPLATES:
+            with self.subTest(template=tpl):
+                job, out = self.render(recipe(clips, template=tpl, transition="zoom", quality="draft"))
+                self.assertEqual(job["state"], "done", f"{tpl}: {job['error']}")
+        for fmt, size in (("square", 324), ("wide", 576)):
+            with mock.patch.dict(montage.FORMATS[fmt], width=size, height=324):
+                job, out = self.render(recipe(clips, format=fmt, transition="zoom", quality="draft"))
+            self.assertEqual(job["state"], "done", f"{fmt}: {job['error']}")
 
 
 def gray_frame(path, at):

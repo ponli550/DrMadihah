@@ -97,6 +97,12 @@ class Card(unittest.TestCase):
         self.assertIn("Add a song", card, "and says where a song comes from")
         self.assertIn("numbers only", card, "the BPM box says it takes a number, because a browser silently drops letters typed into it")
 
+    def test_the_card_offers_a_cut_style_and_it_reaches_the_plan(self):
+        card = self.run_js("card")["view"]["card"]
+        self.assertIn("Zoom through", card)
+        self.assertIn("Plain cuts", card)
+        self.assertIn("zoom cuts", self.run_js("zoomcut")["view"]["plan"], "the choice reached the server and came back in the plan")
+
     def test_a_typed_tempo_cuts_to_that_grid_without_audio(self):
         plan = self.run_js("tempo")["view"]["plan"]
         self.assertIn("75 BPM grid", plan)
