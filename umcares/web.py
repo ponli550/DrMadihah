@@ -706,6 +706,9 @@ def make_handler(home, owner: str):
                 return self._page(HOME_PAGE, base=BASE)
             if path == "/api/projects":
                 return self._json(200, {"projects": [public(p) for p in projects.list_projects(home)]})
+            if path == "/api/busy":                          # what a restart would kill: `umcares web deploy` asks before it restarts
+                r, p = montage.RENDERER.counts(), prepare.PREPARER.counts()
+                return self._json(200, {"render": r, "prepare": p, "busy": bool(r["running"] + r["queued"] + p["running"] + p["queued"])})
             m = re.fullmatch(r"/p/([a-z0-9-]+)(/.*)?", path)
             if m:
                 return self._project_get(m.group(1), m.group(2) or "/", query)

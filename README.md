@@ -639,6 +639,13 @@ plist only if it changed, lets launchd (re)start it, and fails unless the servic
 answers. It also registers the existing project folder, without moving it. It does
 not publish to the tailnet by itself.
 
+**A deploy restarts the app, which kills a running render and empties the queue** (jobs are in memory only), so before it
+pushes anything `deploy` asks the running app (`GET /api/busy`: running and queued renders and clip-prepare jobs). If any,
+it refuses with exit code 2 and changes nothing: `--wait SECONDS` waits for them to finish (checked every 10 s), `--force`
+restarts regardless. An app too old to have `/api/busy` is judged by whether an ffmpeg is running; an app that does not answer
+at all does not block a deploy (that deploy may be the fix). Uploads are not counted: they resume. Measured on the Air:
+refused during a real render, and `--wait` deployed about 90 s later once the render had finished, with the video intact.
+
 Never start the server by hand over ssh: a leftover instance keeps the port, the
 restart then dies with "Address already in use", and the old server keeps answering,
 which looks like a flaky proxy. `tailscale serve` mounts by path prefix, so do not

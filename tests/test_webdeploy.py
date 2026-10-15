@@ -1,9 +1,14 @@
 import hashlib
+import json
 import plistlib
+import shutil
+import tempfile
+import threading
 import unittest
+import urllib.request
 from pathlib import Path
 
-from umcares import webdeploy
+from umcares import montage, prepare, projects, web, webdeploy
 from umcares.transport import Result
 
 ROOT = "/Users/me/Projects/DrMadihah"
@@ -16,7 +21,8 @@ def real_sums():
 
 class FakeTransport:
     """Records what the deploy does; answers like a healthy remote unless told otherwise."""
-    def __init__(self, sums=None, existing_plist=""):
+    def __init__(self, sums=None, existing_plist="", busy_answer="", ffmpeg=""):
+        self.busy_answer, self.ffmpeg = busy_answer, ffmpeg
         self.sums = sums if sums is not None else real_sums()
         self.existing_plist = existing_plist
         self.commands, self.pushed, self.scripts = [], [], []
@@ -29,6 +35,10 @@ class FakeTransport:
 
     def run(self, cmd, timeout=120):
         self.commands.append(cmd)
+        if "/api/busy" in cmd:
+            return Result(0 if self.busy_answer else 7, self.busy_answer)
+        if cmd.startswith("pgrep"):
+            return Result(0 if self.ffmpeg else 1, self.ffmpeg)
         if cmd.startswith("echo $HOME"):
             return Result(0, "/Users/me\n/usr/local/bin/python3\n501\n")
         if "shasum" in cmd:
@@ -112,6 +122,98 @@ class Deploy(unittest.TestCase):
             for mod in re.findall(r"^from \.(\w*) import|^from \. import (\w+)", (webdeploy.PACKAGE_DIR / n).read_text(), re.M):
                 name = mod[0] or mod[1]
                 self.assertTrue(not name or name in shipped, f"{n} imports {name}, which is not shipped")
+
+
+def answer(render=(0, 0), prepare_=(0, 0)):
+    r, p = {"running": render[0], "queued": render[1]}, {"running": prepare_[0], "queued": prepare_[1]}
+    return json.dumps({"render": r, "prepare": p, "busy": bool(sum(render) + sum(prepare_))})
+
+
+class BusyGuard(unittest.TestCase):
+    """A restart kills a running render and loses the queue, so a deploy asks first."""
+
+    def refused(self, t, **kw):
+        with self.assertRaises(webdeploy.BusyError) as cm:
+            webdeploy.deploy(t, ROOT, owner="me@x.com", **kw)
+        self.assertEqual((t.pushed, t.scripts), ([], []), "nothing was pushed and launchd was not touched")
+        self.assertFalse(any("launchctl" in c or "shasum" in c for c in t.commands))
+        return str(cm.exception)
+
+    def test_a_running_render_stops_the_deploy_before_anything_is_pushed(self):
+        msg = self.refused(FakeTransport(busy_answer=answer(render=(1, 2))))
+        self.assertIn("1 running and 2 queued render", msg)
+        self.assertIn("--force", msg)
+
+    def test_a_running_prepare_job_stops_it_too(self):
+        self.assertIn("prepare", self.refused(FakeTransport(busy_answer=answer(prepare_=(1, 0)))))
+
+    def test_an_idle_app_deploys(self):
+        t = FakeTransport(busy_answer=answer())
+        self.assertEqual(webdeploy.deploy(t, ROOT, owner="me@x.com")["http"], "200")
+
+    def test_force_deploys_anyway_and_does_not_even_ask(self):
+        t = FakeTransport(busy_answer=answer(render=(1, 0)))
+        self.assertEqual(webdeploy.deploy(t, ROOT, owner="me@x.com", force=True)["http"], "200")
+        self.assertFalse(any("/api/busy" in c for c in t.commands))
+
+    def test_wait_lets_a_render_finish_then_deploys(self):
+        t = FakeTransport(busy_answer=answer(render=(1, 0)))
+        answers = [answer(render=(1, 0)), answer(render=(0, 1)), answer()]
+        real = t.run
+        t.run = lambda cmd, timeout=120: (Result(0, answers.pop(0)) if "/api/busy" in cmd else real(cmd, timeout))
+        self.assertEqual(webdeploy.deploy(t, ROOT, owner="me@x.com", wait=60, poll=0)["http"], "200")
+        self.assertEqual(answers, [], "it asked until the remote was idle")
+
+    def test_wait_gives_up_when_the_render_does_not_finish(self):
+        self.refused(FakeTransport(busy_answer=answer(render=(1, 0))), wait=0.05, poll=0.01)
+
+    def test_an_older_app_without_the_endpoint_is_judged_by_a_running_ffmpeg(self):
+        self.assertIn("ffmpeg", self.refused(FakeTransport(busy_answer="not found", ffmpeg="4242\n")))
+        t = FakeTransport(busy_answer="not found")
+        self.assertEqual(webdeploy.deploy(t, ROOT, owner="me@x.com")["http"], "200", "no ffmpeg: nothing to kill")
+
+    def test_an_app_that_is_down_does_not_block_a_deploy_that_would_fix_it(self):
+        t = FakeTransport()
+        self.assertEqual(webdeploy.busy(t, 8733)["source"], "unknown")
+        self.assertEqual(webdeploy.deploy(t, ROOT, owner="me@x.com")["http"], "200")
+
+
+class BusyEndpoint(unittest.TestCase):
+    """The real app's answer, which is what the deploy reads on the remote."""
+
+    def setUp(self):
+        self.home = tempfile.mkdtemp()
+        self.srv = web.make_server(Path(self.home), "me@x.com", 0)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.srv.server_address[1]}/api/busy"
+
+    def tearDown(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+        shutil.rmtree(self.home, ignore_errors=True)
+
+    def get(self):
+        with urllib.request.urlopen(self.url) as r:
+            return json.load(r)
+
+    def test_it_counts_running_and_queued_work_of_both_kinds(self):
+        self.assertFalse(self.get()["busy"])
+        r, p = montage.RENDERER, prepare.PREPARER
+        r.jobs.append({"state": "running"}); r.jobs.append({"state": "queued"}); r.jobs.append({"state": "done"})
+        p.jobs.append({"state": "queued"})
+        try:
+            d = self.get()
+        finally:
+            r.jobs[:] = [j for j in r.jobs if j.get("state") not in ("running", "queued") or "root" in j]
+            p.jobs[:] = [j for j in p.jobs if "root" in j]
+        self.assertEqual((d["render"], d["prepare"], d["busy"]), ({"running": 1, "queued": 1}, {"running": 0, "queued": 1}, True))
+
+    def test_the_real_answer_is_what_the_deploy_understands(self):
+        class T:
+            def run(_, cmd, timeout=0):
+                with urllib.request.urlopen(self.url) as r:
+                    return Result(0, r.read().decode())
+        self.assertEqual(webdeploy.busy(T(), 0)["source"], "app")
 
 
 if __name__ == "__main__":
