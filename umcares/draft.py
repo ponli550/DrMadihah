@@ -126,7 +126,28 @@ are in the brief. Rules:
 """
 
 
-def build_input(ctx: dict, request: str, repair=None) -> str:
+REFINE = """You are REVISING the recipe below, not starting again. Apply the request to it and return the whole revised recipe.
+Change only what the request asks for; keep every other clip, caption, option and the order exactly as they are."""
+
+
+def base_recipe(ctx: dict, name: str) -> dict:
+    """A saved recipe of the project to revise: by name, or "latest" for the newest valid claude-draft-*."""
+    saved = [r for r in ctx["state"].get("recipes", []) if r.get("recipe")]
+    if name == "latest":                                        # only drafts carry a timestamp in their name, so only they can be ordered
+        drafts = sorted((r for r in saved if r["name"].startswith("claude-draft-")), key=lambda r: r["name"])
+        if not drafts:
+            raise DraftError("this project has no drafted recipe to revise: draft one first, or name a saved recipe with --from")
+        return drafts[-1]["recipe"]
+    for r in saved:
+        if r["name"] == name:
+            return r["recipe"]
+    bad = next((r for r in ctx["state"].get("recipes", []) if r["name"] == name), None)
+    if bad:
+        raise DraftError(f"recipe '{name}' is no longer valid ({'; '.join(bad.get('problems') or ['a file it uses is gone'])[:200]})")
+    raise DraftError(f"no saved recipe called '{name}' in this project")
+
+
+def build_input(ctx: dict, request: str, repair=None, base=None) -> str:
     """One stream-json line for `claude -p`: the pictures (each labelled) and the instructions."""
     content = []
     for item, jpeg in ctx["pics"]:
@@ -136,7 +157,10 @@ def build_input(ctx: dict, request: str, repair=None) -> str:
     shown = {p[0]["ref"] for p in ctx["pics"]}
     listing = "\n".join(f"- ref={i['ref']} name={i['name']} kind={i['kind']}" + (f" caption={i['caption']!r}" if i["caption"] else "")
                         + ("" if i["ref"] in shown else " (no picture shown)") for i in ctx["items"])
-    text = (RULES + "\n## Files in the project\n" + listing + "\n\n## Brief\n" + ctx["brief"] + "\n\n## Request\n" + request.strip())
+    text = (RULES + "\n## Files in the project\n" + listing + "\n\n## Brief\n" + ctx["brief"])
+    if base is not None:
+        text += "\n\n## Recipe to revise\n" + REFINE + "\n" + json.dumps(base)
+    text += "\n\n## Request\n" + request.strip()
     if repair:
         text += ("\n\n## Your previous answer was rejected\n" + repair["answer"] + "\n\nProblems found by the checker:\n"
                  + "\n".join(f"- {p}" for p in repair["problems"]) + "\n\nReturn the corrected recipe, JSON only.")
@@ -195,8 +219,9 @@ def extract_recipe(text: str) -> dict:
 
 # ------------------------------------------------------------------ the whole job
 def draft(site, slug: str, request: str, max_images: int = MAX_IMAGES, images: bool = True, budget: float = DEFAULT_BUDGET,
-          model=None, save: bool = True, ask=None, claude=None) -> dict:
-    """Draft, check, (repair once), and save a recipe. Returns {"name", "recipe", "plan", "attempts", "images"}."""
+          model=None, save: bool = True, ask=None, claude=None, revise=None) -> dict:
+    """Draft, check, (repair once), and save a recipe. With `revise` (a saved recipe's name, or "latest") the request is applied to that
+    recipe instead of drafting from scratch; the original is left as it is and the result is saved under a new name. Returns {"name", "recipe", "plan", "attempts", "images"}."""
     if not request or not request.strip():
         raise DraftError("say what you want, e.g. \"a 20 second reel of the opening, upbeat\"")
     if ask is None:
@@ -205,9 +230,10 @@ def draft(site, slug: str, request: str, max_images: int = MAX_IMAGES, images: b
             raise DraftError("Claude Code (`claude`) is not installed on this machine")
         ask = lambda line: ask_claude(line, budget=budget, model=model, claude=claude)
     ctx = gather(site, slug, max_images, images)
+    base = base_recipe(ctx, revise) if revise else None
     repair, last = None, None
     for attempt in (1, 2):
-        answer = ask(build_input(ctx, request, repair))
+        answer = ask(build_input(ctx, request, repair, base))
         try:
             recipe = extract_recipe(answer)
         except DraftError as e:
@@ -221,7 +247,7 @@ def draft(site, slug: str, request: str, max_images: int = MAX_IMAGES, images: b
                 code, s = site.call("POST", f"/p/{slug}/api/montage/recipes", {"name": name, "recipe": recipe})
                 if code != 200:
                     raise DraftError("the recipe is valid but could not be saved: " + str(s.get("error", code)))
-            return {"name": name, "recipe": recipe, "plan": d["plan"], "attempts": attempt, "images": len(ctx["pics"])}
+            return {"name": name, "recipe": recipe, "plan": d["plan"], "attempts": attempt, "images": len(ctx["pics"]), "revised": bool(base)}
         problems = d.get("problems") or [d.get("error", f"HTTP {code}")]
         repair, last = {"answer": json.dumps(recipe)[:4000], "problems": problems}, "; ".join(problems[:3])
     raise DraftError("Claude's recipe did not pass the checker after one correction: " + (last or "unknown problem"))

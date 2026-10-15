@@ -101,6 +101,50 @@ class Flow(unittest.TestCase):
         self.assertEqual((state["jobs"], state["exports"], state["active"]), ([], [], False), "a draft is never rendered")
         self.assertGreater(res["plan"]["total"], 2)
 
+    # -------------------------------------------------------------- revising a saved recipe
+    def save(self, name, **kw):
+        code, _ = self.site.call("POST", "/p/demo/api/montage/recipes", {"name": name, "recipe": json.loads(self.good(**kw))})
+        self.assertEqual(code, 200)
+
+    def test_a_request_can_revise_a_saved_recipe_which_is_shown_to_the_model_and_left_alone(self):
+        self.save("claude-draft-20260101-000000")
+        ask = Fake(self.good(transition="zoom"))
+        res = draft.draft(self.site, "demo", "add zoom cuts", ask=ask, revise="latest")
+        text = text_of(ask.asked[0])
+        self.assertIn("Recipe to revise", text)
+        self.assertIn("Selamat datang", text, "the current recipe is in the prompt")
+        self.assertTrue(res["revised"])
+        self.assertEqual(res["plan"]["transition"], "zoom")
+        recipes = {r["name"]: r for r in web.montage_state(self.root)["recipes"]}
+        self.assertEqual(len(recipes), 2, "saved as a new recipe")
+        self.assertNotIn("transition", recipes["claude-draft-20260101-000000"]["recipe"], "the original is untouched")
+
+    def test_a_recipe_can_be_revised_by_name_and_a_plain_draft_shows_no_recipe(self):
+        self.save("mine")
+        ask = Fake(self.good(), self.good())
+        draft.draft(self.site, "demo", "x", ask=ask, revise="mine")
+        draft.draft(self.site, "demo", "x", ask=ask)
+        self.assertIn("Recipe to revise", text_of(ask.asked[0]))
+        self.assertNotIn("Recipe to revise", text_of(ask.asked[1]))
+
+    def test_revising_something_that_is_not_there_is_refused_before_the_model_is_asked(self):
+        self.save("mine")
+        for name, why in (("ghost", "no saved recipe called"), ("latest", "no drafted recipe")):
+            with self.subTest(name=name):
+                ask = Fake(self.good())
+                with self.assertRaises(draft.DraftError) as ctx:
+                    draft.draft(self.site, "demo", "x", ask=ask, revise=name)
+                self.assertIn(why, str(ctx.exception))
+                self.assertEqual(ask.asked, [])
+
+    def test_a_revision_that_fails_the_checker_is_repaired_with_the_recipe_still_in_view(self):
+        self.save("mine")
+        bad = json.dumps({"kind": "montage", "title": "Demo", "template": "punchy", "clips": [{"media": "nope"}]})
+        ask = Fake(bad, self.good())
+        res = draft.draft(self.site, "demo", "x", ask=ask, revise="mine")
+        self.assertEqual(res["attempts"], 2)
+        self.assertIn("Recipe to revise", text_of(ask.asked[1]))
+
     def test_dry_run_checks_but_saves_nothing(self):
         res = draft.draft(self.site, "demo", "x", save=False, ask=Fake(self.good()))
         self.assertIsNone(res["name"])

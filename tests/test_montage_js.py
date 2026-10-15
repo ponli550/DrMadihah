@@ -87,6 +87,7 @@ class Card(unittest.TestCase):
         self.assertTrue(out["disabledAtStart"], "nothing to sync to without a song")
         self.assertTrue(out["speechDefault"], "starting clips where people speak is on by default")
         self.assertTrue(out["soundDefault"], "keeping a speaking clip's sound is on by default")
+        self.assertFalse(out["tightenDefault"], "cutting dead air changes what is said and when, so it is off until chosen")
         self.assertTrue(out["enabledAfterMusic"])
         self.assertIn("no steady beat", out["withSync"]["plan"], "the option was sent; a plain tone has no beat to cut to")
         self.assertEqual(out["afterRemoval"], {"disabled": True, "checked": False}, "removing the song clears the option")
@@ -96,6 +97,24 @@ class Card(unittest.TestCase):
         self.assertIn("pick a song from this list", card)
         self.assertIn("Add a song", card, "and says where a song comes from")
         self.assertIn("numbers only", card, "the BPM box says it takes a number, because a browser silently drops letters typed into it")
+
+    def test_the_card_offers_a_cut_style_and_it_reaches_the_plan(self):
+        card = self.run_js("card")["view"]["card"]
+        self.assertIn("Zoom through", card)
+        self.assertIn("Plain cuts", card)
+        self.assertIn("zoom cuts", self.run_js("zoomcut")["view"]["plan"], "the choice reached the server and came back in the plan")
+
+    def test_the_3d_choices_are_offered_and_reach_the_plan(self):
+        card = self.run_js("card")["view"]["card"]
+        self.assertIn("3D card flip", card)
+        self.assertIn("3D cards that sway", card)
+        plan = self.run_js("threed")["view"]["plan"]
+        self.assertIn("card flips", plan, "the flip reached the server and came back in the plan")
+        self.assertIn("tilted cards", plan, "and so did the card look")
+
+    def test_sound_effects_on_cuts_are_offered_and_reach_the_plan(self):
+        self.assertIn("Whoosh on every cut", self.run_js("card")["view"]["card"])
+        self.assertRegex(self.run_js("sfx")["view"]["plan"], r"\d+ sound effects")
 
     def test_a_typed_tempo_cuts_to_that_grid_without_audio(self):
         plan = self.run_js("tempo")["view"]["plan"]

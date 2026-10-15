@@ -36,7 +36,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import beats, captions, judge, kinetic, prepare, speech, textcards, textimg, uploads
+from . import beats, captions, judge, kinetic, prepare, sfx, speech, textcards, textimg, uploads
 from .layout import kind_of
 
 FORMATS = {
@@ -78,6 +78,17 @@ TEMPLATES = {
 # How the camera moves over a photo (the words a recipe can use). Every move is eased (smoothstep), because a linear
 # move reads as mechanical: the movement starts slowly, is fastest in the middle, and settles.
 MOVES = ("in", "out", "pan_left", "pan_right", "still")
+VIDEO_MOVES = ("in", "out")                       # a video clip can zoom over its whole length; panning is for photos
+ZOOM_TRANSITIONS = ("zoom", "zoom_in", "zoom_out")  # zoom cuts: push in at the end of a piece (zoom_in), settle at its start (zoom_out), or both (zoom)
+TRANSITIONS = ZOOM_TRANSITIONS + ("flip",)        # flip: a piece swings in around its vertical axis in perspective, and swings out before the next
+DEPTHS = ("card",)                                # card: each picture is a smaller card that sways in perspective over a blurred copy of itself
+FLIP_TIME = 0.4                                   # seconds a card flip takes, in and out (at most a third of a short piece)
+FLIP_EDGE = 0.94                                  # how far edge-on the card gets at the very start: 1 would be a line (the maths has no solution)
+FLIP_DEPTH = 0.22                                 # how much smaller the far edge is than the near edge: the perspective
+CARD_SIZE = 0.8                                   # the swaying card's width and height as a fraction of the frame
+CARD_SWAY = 0.28                                  # the sway, in fractions of a quarter turn (about 25 degrees)
+PUNCH = 0.12                                      # how much bigger a piece is at the peak of a zoom cut
+PUNCH_TIME = 0.3                                  # seconds a zoom cut takes (at most a third of a short piece)
 
 # A draft is the same video at half size, without the slow finishing (grain, vignette) and with a fast encode. Its timings
 # are exactly the final's, so what you preview is what you will get; only the pixels are cheaper.
@@ -94,8 +105,8 @@ DUCK_IN, DUCK_OUT = 0.25, 0.4  # seconds the music takes to dip before a phrase 
 NICE = prepare.NICE
 THREADS = prepare.THREADS
 ALLOWED_TOP = {"kind", "version", "title", "format", "template", "clips", "captions", "title_card", "end_card", "music",
-               "max_seconds", "note", "quality", "speech", "clip_sound"}
-ALLOWED_CLIP = {"media", "caption", "hold", "speed", "start", "zoom", "move", "quote", "by", "announce", "countdown", "audiogram", "image"}
+               "max_seconds", "note", "quality", "speech", "clip_sound", "transition", "tighten", "sfx", "depth"}
+ALLOWED_CLIP = {"media", "caption", "hold", "speed", "start", "zoom", "move", "quote", "by", "announce", "countdown", "audiogram", "image", "tighten"}
 ALLOWED_ANNOUNCE = {"title", "date", "time", "place", "note"}
 CONTENT_KINDS = ("photo", "video", "quote", "announce", "countdown", "audiogram")      # what counts as a clip of the video (cards at the ends do not)
 ALLOWED_CARD = {"text", "subtitle", "hold"}
@@ -278,6 +289,8 @@ def validate(recipe, root) -> dict:
             continue
         if "by" in c:
             problems.append(f"{w}.by: only a quote card has a 'by'")
+        if "tighten" in c and not isinstance(c["tighten"], bool):
+            problems.append(f"{w}.tighten: must be true or false")
         item = _find(items, c.get("media"), {"image", "video"}, f"{w}.media", problems)
         for k, lo, hi in (("hold", 0.5, 15), ("speed", 0.25, 2.0), ("start", 0, 3600)):
             if k in c and not _num(c[k], lo, hi):
@@ -290,10 +303,12 @@ def validate(recipe, root) -> dict:
         if "move" in c and c["move"] not in MOVES:
             problems.append(f"{w}.move: must be one of {', '.join(MOVES)}")
         if item:
+            if item["kind"] == "image" and "tighten" in c:
+                problems.append(f"{w}.tighten: applies to video clips (it cuts the dead air out of what is said)")
             if item["kind"] == "image" and ("speed" in c or "start" in c):
                 problems.append(f"{w}: speed and start apply to videos, not to a photo")
-            if item["kind"] == "video" and "move" in c:
-                problems.append(f"{w}: move applies to photos; a video keeps its own camera movement")
+            if item["kind"] == "video" and "move" in c and c["move"] not in VIDEO_MOVES:
+                problems.append(f"{w}.move: a video clip can zoom (in or out); panning and still are for photos")
             clips.append({**c, "_item": item})
     cards = {}
     for key in ("title_card", "end_card"):
@@ -312,6 +327,25 @@ def validate(recipe, root) -> dict:
         cards[key] = card
     if recipe.get("speech") not in (None, "follow"):
         problems.append('speech: must be "follow" (start clips where people speak) or left out')
+    spec = recipe.get("sfx")
+    if spec is not None:
+        if not isinstance(spec, dict):
+            problems.append('sfx: must be like {"cuts": "whoosh", "words": "tick", "level": -12} or left out')
+        else:
+            for k in sorted(set(spec) - {"cuts", "words", "level"}):
+                problems.append(f"sfx.{k}: unknown field (allowed: cuts, words, level)")
+            if spec.get("cuts") not in (None, *sfx.CUT_SOUNDS):
+                problems.append(f"sfx.cuts: must be one of {', '.join(sfx.CUT_SOUNDS)} or left out")
+            if spec.get("words") not in (None, *sfx.WORD_SOUNDS):
+                problems.append(f"sfx.words: must be one of {', '.join(sfx.WORD_SOUNDS)} or left out")
+            if "level" in spec and not _num(spec["level"], *sfx.LEVEL_RANGE):
+                problems.append(f"sfx.level: a number of dB from {sfx.LEVEL_RANGE[0]:g} to {sfx.LEVEL_RANGE[1]:g}")
+    if recipe.get("tighten") not in (None, "gaps"):
+        problems.append('tighten: must be "gaps" (cut the dead air out of talking clips) or left out')
+    if recipe.get("transition") not in (None, *TRANSITIONS):
+        problems.append(f"transition: must be one of {', '.join(TRANSITIONS)} (a zoom cut or a card flip between pieces) or left out")
+    if recipe.get("depth") not in (None, *DEPTHS):
+        problems.append(f"depth: must be {' or '.join(DEPTHS)} (pictures as swaying cards) or left out")
     if recipe.get("clip_sound") not in (None, "speech"):
         problems.append('clip_sound: must be "speech" (keep the sound of clips where people speak) or left out')
     music = recipe.get("music")
@@ -340,7 +374,7 @@ def validate(recipe, root) -> dict:
         raise RecipeError(problems)
     return {"kind": "montage", "version": 1, "title": title.strip(), "format": fmt, "template": tpl,
             "captions": recipe.get("captions", True), "max_seconds": max_s, "clips": clips, "cards": cards,
-            "quality": recipe.get("quality", "final"), "speech": recipe.get("speech"), "clip_sound": recipe.get("clip_sound"), "tempo": tempo,
+            "quality": recipe.get("quality", "final"), "speech": recipe.get("speech"), "clip_sound": recipe.get("clip_sound"), "transition": recipe.get("transition"), "depth": recipe.get("depth"), "tighten": recipe.get("tighten"), "sfx": recipe.get("sfx"), "tempo": tempo,
             "music": None if music_item is None else {**music, "_item": music_item}, "note": recipe.get("note")}
 
 
@@ -442,9 +476,10 @@ def resolve(validated: dict, root) -> dict:
         dur = quick_info(path)["duration"]
         start = float(c.get("start", 0))
         spans = None
-        if r.get("speech") == "follow" or r.get("clip_sound") == "speech":
+        tighten_on = bool(c.get("tighten", r.get("tighten") == "gaps"))
+        if r.get("speech") == "follow" or r.get("clip_sound") == "speech" or tighten_on:
             spans = _speech_spans(path, root, item["name"], warnings)
-            if spans and r.get("speech") == "follow" and "start" not in c:                              # an explicit start is the author's call
+            if spans and r.get("speech") == "follow" and "start" not in c and not tighten_on:                              # an explicit start is the author's call
                 want = float(c.get("hold", tpl["video_max"])) * float(c.get("speed", tpl["video_speed"]))
                 pick = speech.best_start(spans, dur, want)
                 if pick:
@@ -457,8 +492,15 @@ def resolve(validated: dict, root) -> dict:
         used = min(avail, want_out * speed)
         seg = {**base, "kind": "video", "src_start": start, "src_used": round(used, 3), "speed": speed,
                "duration": round(used / speed, 3)}
+        ranges = speech.tighten(spans, dur, start=start, budget=want_out * speed) if tighten_on and spans else []
+        if ranges:                                                                       # jump cuts: the phrases only, joined (built at render time)
+            total = round(sum(b - a for a, b in ranges), 3)
+            seg.update({"ranges": ranges, "tight_total": total, "src_start": 0.0, "src_used": total, "duration": round(total / speed, 3),
+                        "cuts": len(ranges) - 1, "trimmed": round(max(0.0, ranges[-1][1] - ranges[0][0] - total), 2)})
+        if c.get("move"):
+            seg["move"] = c["move"]                                                     # a zoom over the whole clip
         if spans is not None:
-            seg["speech"] = round(speech.covered(spans, start, start + used), 1)     # seconds of speech in the part used
+            seg["speech"] = round(sum(speech.covered(spans, a, b) for a, b in ranges) if ranges else speech.covered(spans, start, start + used), 1)
             seg["_spans"] = spans                                                    # settled after cuts are placed (see _settle_sound)
         segs.append(seg)
     if "end_card" in r["cards"]:
@@ -495,6 +537,12 @@ def resolve(validated: dict, root) -> dict:
         t += s["duration"] - fade
     total = round(sum(s["duration"] for s in segs) - fade * max(0, len(segs) - 1), 3)
     duck = _settle_sound(r, segs)
+    sfx_plan = None
+    spec = r.get("sfx") or {}
+    if spec.get("cuts") or spec.get("words"):
+        ev = sfx.events(segs, total, fade, spec, tpl.get("style") == "kinetic", 60.0 / sync["bpm"] if sync else None)
+        if ev:
+            sfx_plan = {"cuts": spec.get("cuts"), "words": spec.get("words"), "level": float(spec.get("level", sfx.DEFAULT_LEVEL)), "events": ev}
     music = None
     if r["music"]:
         m = r["music"]
@@ -514,7 +562,7 @@ def resolve(validated: dict, root) -> dict:
     width, height = (even(fmt["width"] * DRAFT_SCALE), even(fmt["height"] * DRAFT_SCALE)) if draft else (fmt["width"], fmt["height"])
     return {"title": r["title"], "format": r["format"], "template": r["template"], "quality": "draft" if draft else "final",
             "width": width, "height": height,
-            "fps": fmt["fps"], "fade": round(fade, 3), "total": total, "segments": segs, "duck": duck, "music": music, "sync": None if not sync else {k: v for k, v in sync.items() if k != "music_start"},
+            "fps": fmt["fps"], "fade": round(fade, 3), "total": total, "transition": r.get("transition"), "depth": r.get("depth"), "sfx": sfx_plan, "segments": segs, "duck": duck, "music": music, "sync": None if not sync else {k: v for k, v in sync.items() if k != "music_start"},
             "warnings": warnings,
             "recipe": {k: v for k, v in r.items() if k not in ("clips", "cards", "music")}}
 
@@ -531,6 +579,17 @@ def _settle_sound(r, segs: list) -> list:
         if spans is None:
             continue
         lo, hi = s["src_start"], s["src_start"] + s["src_used"]
+        if s.get("ranges"):                                             # tightened: map each phrase onto the joined clip's own timeline
+            pieces = [p for a, b, _ in spans for p in speech.to_tight(s["ranges"], a, b)]
+            heard = sum(max(0.0, min(e, hi) - max(b, lo)) for b, e in pieces)
+            s["speech"] = round(heard, 1)
+            if heard >= MIN_SOUND:                                      # a tightened talking clip is kept WITH its sound: that is the point of it
+                s["sound"] = True
+                for b, e in pieces:
+                    b, e = max(b, lo), min(e, hi)
+                    if e > b:
+                        windows.append([round(s["start"] + b / s["speed"], 3), round(min(s["start"] + e / s["speed"], s["start"] + s["duration"]), 3)])
+            continue
         s["speech"] = round(speech.covered(spans, lo, hi), 1)
         if r.get("clip_sound") == "speech" and speech.covered(spans, lo, hi) >= MIN_SOUND:
             s["sound"] = True
@@ -584,7 +643,7 @@ def _beat_sync(r, root: Path, segs: list, warnings: list, fps: int):
             if n * unit > avail + 1e-6:
                 n = max(1, math.floor(avail / unit + 1e-6))                # shorter than one cut: it still fills a cut and its sound just ends early
         if s["kind"] == "video":
-            avail = quick_info(root / s["rel"])["duration"] - s["src_start"]
+            avail = s["tight_total"] if s.get("ranges") else quick_info(root / s["rel"])["duration"] - s["src_start"]
             out_avail = avail / s["speed"]
             if n * unit > out_avail + 1e-6:
                 fit = math.floor(out_avail / unit + 1e-6)
@@ -686,6 +745,88 @@ def _look(tpl, draft=False) -> str:
     return ",".join(p for p in parts if p)
 
 
+def _zoom_filter(W: int, H: int, d: float, move=None, amount: float = 0.0, transition=None) -> str:
+    """Scale each frame by a time-varying factor and crop back to W x H; '' when nothing zooms.
+
+    move "in"/"out": eased zoom over the whole piece (by `amount`). transition: the zoom cut, a quick ease-out punch: "zoom_out" starts
+    PUNCH bigger and settles, "zoom_in" pushes in during the last moments, "zoom" does both. Timings are untouched."""
+    terms = []
+    u = f"min(1,t/{d:g})"
+    ease = f"(3*pow({u},2)-2*pow({u},3))"
+    if move == "in" and amount > 0:
+        terms.append(f"{amount:g}*{ease}")
+    elif move == "out" and amount > 0:
+        terms.append(f"{amount:g}*(1-{ease})")
+    if transition in ZOOM_TRANSITIONS:
+        T = min(PUNCH_TIME, d / 3)
+        if transition in ("zoom", "zoom_out"):
+            terms.append(f"{PUNCH:g}*pow(1-min(1,t/{T:g}),3)")
+        if transition in ("zoom", "zoom_in"):
+            terms.append(f"{PUNCH:g}*pow(max(0,(t-({d:g}-{T:g}))/{T:g}),3)")
+    if not terms:
+        return ""
+    z = "1+" + "+".join(terms)
+    return f"scale=w='trunc(iw*({z})/2)*2':h='trunc(ih*({z})/2)*2':eval=frame:flags=bicubic,crop={W}:{H}"
+
+
+def _quad(a: str, pin: str, pout: str) -> str:
+    """perspective= corner expressions for a card turned about its vertical axis by the quarter-turn fraction `a` (an expression).
+    `pin` and `pout` are expressions that are 1 where the left / right edge is the far (smaller) one."""
+    c, s = f"cos(PI/2*({a}))", f"sin(PI/2*({a}))"
+    fl, fr = f"(1-{FLIP_DEPTH}*abs({s})*({pin}))", f"(1-{FLIP_DEPTH}*abs({s})*({pout}))"
+    x0, x1 = f"W/2-W/2*{c}", f"W/2+W/2*{c}"
+    return (f"perspective=x0='{x0}':y0='H/2-H/2*{fl}':x1='{x1}':y1='H/2-H/2*{fr}':x2='{x0}':y2='H/2+H/2*{fl}':x3='{x1}':y3='H/2+H/2*{fr}'"
+            ":sense=destination:eval=frame:interpolation=cubic")
+
+
+def _on_black(src: str, out: str, quad: str) -> str:
+    """Graph fragment: the picture `src` put through `quad`, with everything the card does not cover black.
+
+    The perspective filter smears the picture's edge pixels over the empty space, so the same quad is applied to a white card on black
+    and the two are multiplied: that is the mask."""
+    n = out.strip("[]")
+    return (f"{src}format=gbrp,split[pa_{n}][pb_{n}];[pb_{n}]geq=r=255:g=255:b=255,drawbox=x=0:y=0:w=iw:h=ih:color=black:t=2[pm_{n}];"
+            f"[pa_{n}]{quad}[pq_{n}];[pm_{n}]format=gbrp,{quad}[pr_{n}];[pq_{n}][pr_{n}]blend=all_mode=multiply,format=yuv420p{out}")
+
+
+def _flip_fragment(src: str, out: str, fps: int, d: float, enter: bool, leave: bool) -> str:
+    """The card flip of one piece, as a graph fragment from label `src` to label `out`, or '' when this piece does not flip.
+    It swings in over FLIP_TIME (not the first piece) and out over FLIP_TIME (not the last): the timings never change."""
+    if not (enter or leave):
+        return ""
+    T = min(FLIP_TIME, d / 3)
+    t = f"(on/{fps})"
+    ein = f"pow(1-min(1,{t}/{T:g}),3)" if enter else "0"
+    eout = f"pow(max(0,({t}-({d:g}-{T:g}))/{T:g}),3)" if leave else "0"
+    quad = _quad(f"min({FLIP_EDGE},{ein}+{eout})", f"gte({ein},{eout})", f"gt({eout},{ein})")
+    return _on_black(src, out, quad)
+
+
+def _card_fragment(src: str, out: str, fps: int, d: float, W: int, H: int) -> str:
+    """The `depth: card` look: the picture shrunk to a card that sways in perspective, over a darkened, blurred copy of itself."""
+    cw, ch = int(W * CARD_SIZE) // 2 * 2, int(H * CARD_SIZE) // 2 * 2
+    period = max(2.4, d)
+    t = f"(on/{fps})"
+    sway = f"({CARD_SWAY}*sin(2*PI*{t}/{period:g}))"
+    quad = _quad(sway, f"gt({sway},0)", f"lt({sway},0)")
+    pad = f"pad={W}:{H}:{(W - cw) // 2}:{(H - ch) // 2}:color=black"
+    return (f"{src}split=3[ca][cb][cc];"
+            f"[ca]gblur=sigma={max(4, W // 25)},eq=brightness=-0.28:saturation=0.85,format=gbrp[cbg];"
+            f"[cb]scale={cw}:{ch},{pad},format=gbrp,{quad}[ccard];"
+            f"[cc]format=gbrp,geq=r=255:g=255:b=255,scale={cw}:{ch},{pad},format=gray,{quad.replace('interpolation=cubic', 'interpolation=linear')}[cmask];"
+            f"[cbg][ccard][cmask]maskedmerge,format=yuv420p{out}")
+
+
+def _finish_3d(plan, seg, i, graph: str, out_label: str, fps: int, d: float) -> str:
+    """Put the card flip after the last stage of a piece's graph (so the captions flip with the picture)."""
+    last = len(plan["segments"]) - 1
+    frag = _flip_fragment("[pre3d]", out_label, fps, d, i > 0, i < last) if plan.get("transition") == "flip" else ""
+    if not frag:
+        return graph
+    head, _, tail = graph.rpartition(out_label)
+    return head + "[pre3d]" + tail + ";" + frag
+
+
 def _text_png(workdir: Path, text, name, width, height, **kw) -> Path:
     out = workdir / f"{name}.png"
     textimg.render(text, out, width, height, **kw)
@@ -777,7 +918,8 @@ def _piece_command(ffmpeg, plan, seg, i, workdir: Path, out: Path):
         u = f"(on/{n})"
         ease = f"(3*pow({u},2)-2*pow({u},3))"                                      # smoothstep: slow, fast, slow
         comp = workdir / f"seg{i}-compose.jpg"
-        k = 1 if move == "still" else 2                                            # a moving shot is composed larger, then cropped
+        transition = plan.get("transition")
+        k = 1 if (move == "still" and transition not in ZOOM_TRANSITIONS) else 2                       # a moving shot (or a zoom cut) is composed larger, then cropped
         steps.append((_base(ffmpeg) + ["-i", str(root_of(plan) / seg["rel"]), "-vf", _compose(W * k, H * k), "-frames:v", "1", "-q:v", "2", str(comp)], 0))
         centre_x, centre_y = "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"
         pan = max(zoom, 0.08)                                                      # a pan needs room to travel
@@ -788,15 +930,23 @@ def _piece_command(ffmpeg, plan, seg, i, workdir: Path, out: Path):
             "pan_right": f"zoompan=z='1+{pan}':x='(iw-iw/zoom)*{ease}':y='{centre_y}':d=1:s={W}x{H}:fps={fps}",
             "pan_left": f"zoompan=z='1+{pan}':x='(iw-iw/zoom)*(1-{ease})':y='{centre_y}':d=1:s={W}x{H}:fps={fps}",
         }[move]
-        chain = ",".join(p for p in (motion, look, "scale=out_range=tv", "format=yuv420p") if p)
+        punch = _zoom_filter(W, H, d, transition=transition)
+        chain = ",".join(p for p in (motion, punch, look, "scale=out_range=tv", "format=yuv420p") if p)
         graph = f"[0:v]{chain}[v]" + overlay_graph + (";[o]format=yuv420p[out]" if overlay_graph else "")
+        if plan.get("depth") == "card":
+            graph = f"[0:v]{chain}[v0];" + _card_fragment("[v0]", "[v]", fps, d, W, H) + overlay_graph + (";[o]format=yuv420p[out]" if overlay_graph else "")
+        graph = _finish_3d(plan, seg, i, graph, out_label, fps, d)
         steps.append((_base(ffmpeg) + ["-loop", "1", "-framerate", str(fps), "-t", str(d), "-i", str(comp)] + overlay_in +
                       ["-filter_complex", graph, "-map", out_label, "-t", str(d), "-r", str(fps)] + _encode_piece(plan) + [str(out)], d))
         return steps
     speed = seg["speed"]
     fps_f = f"fps={fps}" if speed >= 0.999 else f"framerate=fps={fps}"
-    chain = ",".join(p for p in (f"setpts=(PTS-STARTPTS)/{speed}", fps_f, look, "scale=out_range=tv", "format=yuv420p") if p)
+    zoom = _zoom_filter(W, H, d, move=seg.get("move"), amount=max(tpl["zoom"], 0.06), transition=plan.get("transition"))
+    chain = ",".join(p for p in (f"setpts=(PTS-STARTPTS)/{speed}", fps_f, zoom, look, "scale=out_range=tv", "format=yuv420p") if p)
     graph = f"[0:v]{_compose(W, H)},{chain}[v]" + overlay_graph + (";[o]format=yuv420p[out]" if overlay_graph else "")
+    if plan.get("depth") == "card":
+        graph = f"[0:v]{_compose(W, H)},{chain}[v0];" + _card_fragment("[v0]", "[v]", fps, d, W, H) + overlay_graph + (";[o]format=yuv420p[out]" if overlay_graph else "")
+    graph = _finish_3d(plan, seg, i, graph, out_label, fps, d)
     steps.append((_base(ffmpeg) + ["-ss", str(seg["src_start"]), "-t", str(seg["src_used"]), "-i", str(root_of(plan) / seg["rel"])] + overlay_in +
                   ["-filter_complex", graph, "-map", out_label, "-t", str(d), "-r", str(fps)] + _encode_piece(plan) + [str(out)], d))
     return steps
@@ -845,6 +995,33 @@ def root_of(plan) -> Path:
     return Path(plan["_root"])
 
 
+def _tight_file(ffmpeg, root: Path, seg: dict, ctl: Control) -> Path:
+    """The jump-cut version of a clip: just the kept stretches, joined, picture and sound. Made once and kept in .umcares/tight/ (it is a
+    cache: nothing in it is irreplaceable, and it is not in git)."""
+    src = root / seg["rel"]
+    st = src.stat()
+    key = hashlib.sha1(json.dumps([str(src.resolve()), st.st_size, int(st.st_mtime), seg["ranges"]]).encode()).hexdigest()[:20]
+    out = root / ".umcares" / "tight" / f"{key}.mp4"
+    if out.is_file():
+        return out
+    out.parent.mkdir(parents=True, exist_ok=True)
+    n = len(seg["ranges"])
+    parts = []
+    for i, (a, b) in enumerate(seg["ranges"]):
+        parts.append(f"[0:v]trim=start={a}:end={b},setpts=PTS-STARTPTS[v{i}]")
+        parts.append(f"[0:a]atrim=start={a}:end={b},asetpts=PTS-STARTPTS[a{i}]")
+    graph = ";".join(parts) + ";" + "".join(f"[v{i}][a{i}]" for i in range(n)) + f"concat=n={n}:v=1:a=1[v][a]"
+    part = out.with_name(out.stem + ".part.mp4")
+    try:
+        _run(_base(ffmpeg) + ["-i", str(src), "-filter_complex", graph, "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-preset", "veryfast", "-crf", "14",
+                              "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-threads", THREADS, "-movflags", "+faststart", "-f", "mp4", str(part)],
+             seg["tight_total"], ctl, lambda f: None)
+        os.replace(part, out)
+    finally:
+        part.unlink(missing_ok=True)
+    return out
+
+
 def render(plan: dict, root, out: Path, ctl: Control, on_pct=lambda p: None) -> dict:
     """Render the plan to `out` (a .part file the caller moves into place). Returns what was made."""
     root = Path(root)
@@ -854,6 +1031,14 @@ def render(plan: dict, root, out: Path, ctl: Control, on_pct=lambda p: None) -> 
         raise MontageError("ffmpeg is not installed on this machine")
     work = Path(tempfile.mkdtemp(prefix="montage-", dir=_workroot(root)))
     try:
+        # a tightened clip is joined once, then everything after treats it as an ordinary clip (its own picture and sound, from 0)
+        joined = []
+        for seg in plan["segments"]:
+            if seg.get("ranges"):
+                tight = _tight_file(ffmpeg, root, seg, ctl)
+                seg = {**seg, "rel": str(tight.relative_to(root)), "src_start": 0.0}
+            joined.append(seg)
+        plan = {**plan, "segments": joined}
         segs, total_d = plan["segments"], sum(s["duration"] for s in plan["segments"])
         done_d, pieces = 0.0, []
         for i, seg in enumerate(segs):
@@ -888,7 +1073,7 @@ def render(plan: dict, root, out: Path, ctl: Control, on_pct=lambda p: None) -> 
             vgraph, vmap, venc, n_in = "", "0:v", ["-c:v", "copy"], 1
         m = plan["music"]
         aenc = ["-an"]
-        if any(s.get("sound") for s in segs):
+        if any(s.get("sound") for s in segs) or (plan.get("sfx") or {}).get("events"):
             cmd += ["-i", str(_audio_mix(ffmpeg, plan, root, work, ctl))]
             aenc = ["-map", f"{n_in}:a:0", "-c:a", "aac", "-b:a", "192k", "-ar", "48000"]
         elif m:
@@ -917,30 +1102,62 @@ def _duck_gain(windows: list) -> str:
 
 
 def _audio_mix(ffmpeg, plan: dict, root: Path, work: Path, ctl: Control) -> Path:
-    """The soundtrack when some clips keep their own sound: those clips' audio placed on the timeline, the music (if any)
-    dipping under their speech, then loudness-normalised. Written as a WAV beside the pieces."""
+    """The soundtrack when something besides the music needs placing: clips that keep their own sound (the music dipping under their
+    speech) and/or sound effects on cuts and words. Everything is put on the timeline, mixed, loudness-normalised (unless it is
+    effects alone: normalising a few sparse whooshes up to -16 LUFS would make them deafening, so they are only limited) and written
+    as a WAV beside the pieces."""
     kept = [s for s in plan["segments"] if s.get("sound")]
-    cmd, chains, labels = _base(ffmpeg), [], []
-    for n, s in enumerate(kept):
+    cmd, chains, mixed, n_in = _base(ffmpeg), [], [], 0
+    labels = []
+    for s in kept:
         cmd += ["-ss", str(s["src_start"]), "-t", str(s["src_used"]), "-i", str(root / s["rel"])]
         ms, d = int(round(s["start"] * 1000)), s["duration"]
-        f = f"[{n}:a:0]aresample=48000,aformat=channel_layouts=stereo"
+        f = f"[{n_in}:a:0]aresample=48000,aformat=channel_layouts=stereo"
         if abs(s["speed"] - 1) > 1e-3:
             f += f",atempo={s['speed']}"
-        chains.append(f + f",atrim=0:{d:g},afade=t=in:d=0.03,afade=t=out:st={max(0, d - 0.03):g}:d=0.03,adelay={ms}|{ms}[v{n}]")
-        labels.append(f"[v{n}]")
-    chains.append("".join(labels) + f"amix=inputs={len(kept)}:normalize=0:duration=longest[voice]")
+        chains.append(f + f",atrim=0:{d:g},afade=t=in:d=0.03,afade=t=out:st={max(0, d - 0.03):g}:d=0.03,adelay={ms}|{ms}[v{n_in}]")
+        labels.append(f"[v{n_in}]")
+        n_in += 1
+    if kept:
+        chains.append("".join(labels) + f"amix=inputs={len(kept)}:normalize=0:duration=longest[voice]")
+        mixed.append("[voice]")
     m, total = plan["music"], plan["total"]
-    tail = f"loudnorm=I=-16:LRA=11:TP=-1.5,apad=whole_dur={total:g},atrim=0:{total:g}[mix]"         # as long as the video, not as long as the last talking clip
     if m:
         cmd += ["-ss", str(m["start"]), "-t", str(total), "-i", str(root / m["rel"])]
         fo = m["fade_out"]
         dip = f",volume='{_duck_gain(plan['duck'])}':eval=frame" if plan.get("duck") else ""
-        chains.append(f"[{len(kept)}:a:0]aresample=48000,aformat=channel_layouts=stereo,afade=t=in:st=0:d=0.6,"
+        chains.append(f"[{n_in}:a:0]aresample=48000,aformat=channel_layouts=stereo,afade=t=in:st=0:d=0.6,"
                       f"afade=t=out:st={max(0, total - fo):g}:d={fo:g}{dip}[music]")
-        chains.append("[voice][music]amix=inputs=2:normalize=0:duration=longest," + tail)
-    else:
-        chains.append("[voice]" + tail)
+        mixed.append("[music]")
+        n_in += 1
+    fx = plan.get("sfx")
+    if fx and fx.get("events"):
+        by = {}
+        for e in fx["events"]:
+            by.setdefault(e["sound"], []).append(e)
+        pieces = []
+        for name, evs in by.items():
+            sfx.render_wav(name, work / f"sfx-{name}.wav")
+            cmd += ["-i", str(work / f"sfx-{name}.wav")]
+            idx, k = n_in, len(evs)
+            n_in += 1
+            if k > 1:
+                chains.append(f"[{idx}:a:0]asplit={k}" + "".join(f"[x{idx}_{j}]" for j in range(k)))
+            for j, e in enumerate(evs):
+                src = f"[x{idx}_{j}]" if k > 1 else f"[{idx}:a:0]"
+                at = max(0, int(round((e["t"] - sfx.lead(name)) * 1000)))
+                chains.append(f"{src}adelay={at}|{at},volume={fx['level']:g}dB[e{idx}_{j}]")
+                pieces.append(f"[e{idx}_{j}]")
+        chains.append("".join(pieces) + (f"amix=inputs={len(pieces)}:normalize=0:duration=longest[sfx]" if len(pieces) > 1 else "anull[sfx]"))
+        mixed.append("[sfx]")
+    # a silent bed as long as the video: the mix is then as long as the video, not as long as the last effect (apad alone proved
+    # unreliable behind many delayed inputs: the result ended at the last event)
+    cmd += ["-f", "lavfi", "-t", f"{total:g}", "-i", "anullsrc=r=48000:cl=stereo"]
+    mixed.append(f"[{n_in}:a:0]")
+    n_in += 1
+    chains.append("".join(mixed) + f"amix=inputs={len(mixed)}:normalize=0:duration=longest[pre]")
+    level = "loudnorm=I=-16:LRA=11:TP=-1.5" if (kept or m) else "alimiter=limit=0.89:level=disabled"
+    chains.append(f"[pre]{level},apad=whole_dur={total:g},atrim=0:{total:g}[mix]")
     out = work / "mix.wav"
     cmd += ["-filter_complex", ";".join(chains), "-map", "[mix]", "-c:a", "pcm_s16le", "-ar", "48000", str(out)]
     _run(cmd, total, ctl, lambda f: None)
@@ -1315,6 +1532,12 @@ def brief(root, project_name: str = "") -> str:
               "- `music`: `{file, start?, fade_out?, sync?}` or null. `\"sync\": \"beat\"` finds the song's beat, makes every piece a whole number of beats long and starts the song on a beat, so every cut lands on one (hard cuts; the plan reports the BPM, or warns when the song has no steady beat). Use only royalty-free music; a commercial song gets a posted video muted or blocked.",
               "- `music: {\"bpm\": 75}` (no file) cuts to that tempo with NO audio: every piece is a whole number of beats from the first frame, so a song added later in the app (a trending sound that cannot be downloaded) lines up if it is started on a beat. Use it when the song's BPM is known and its file is not.",
               "- `clip_sound`: `\"speech\"` keeps the own sound of a video clip whose excerpt has speech (others stay muted, so crowd noise does not leak in) and dips the music about 14 dB under the speech.",
+              "- `sfx`: `{\"cuts\": \"whoosh\"|\"pop\"|\"hit\", \"words\": \"tick\"|\"pop\", \"level\": -12}`, all optional: synthesised sound effects, a short sound on every cut and/or a tick on every word the kinetic look pops in and every countdown number. "
+              "They are mixed under the music and speech, never change a timing, and give a video that has no music a soundtrack of just the effects.",
+              "- `tighten`: `\"gaps\"` cuts the dead air out of talking video clips: each phrase is kept with a little either side, pauses up to about 0.8 s stay, longer silences are cut and the phrases joined (jump cuts), and the clip keeps its own sound. A clip can opt in or out with `\"tighten\": true|false`. It finds speech-like sound, not words, so it cannot remove a repeated take.",
+              "- `transition`: `\"zoom\"` (punch in at the end of a piece and settle at the start of the next, a zoom cut), `\"zoom_in\"` or `\"zoom_out\"` (just one half), or `\"flip\"` (a 3D card flip: each piece swings out around its vertical axis and the next swings in, through black; it suits hard cuts). Applies to photos and clips, never changes any timing. "
+              "A video clip can also take `move`: `\"in\"` or `\"out\"` to zoom slowly over its whole length.",
+              "- `depth`: `\"card\"` shows each photo and clip as a smaller card that sways in 3D perspective over a darkened, blurred copy of itself. It is a flat picture tilted, not a depth map, so nothing parallaxes. It also works with `transition`.",
               "- `speech`: `\"follow\"` starts each video clip (that has no explicit `start`) where people speak, so a long clip's excerpt holds the words, not dead air. It finds speech-like sound, not words.",
               f"- `max_seconds`: up to {MAX_SECONDS_LIMIT} (default {DEFAULT_SECONDS}); clips beyond it are dropped from the end.",
               "", "## Example", "", "```json", json.dumps(EXAMPLE, indent=2), "```", "",

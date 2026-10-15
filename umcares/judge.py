@@ -193,7 +193,7 @@ def judge(path, plan=None) -> dict:
 
     # --- sound
     segs = (plan or {}).get("segments", []) if plan else []
-    wants_audio = bool(plan and (plan.get("music") or any(s.get("sound") for s in segs)))
+    wants_audio = bool(plan and (plan.get("music") or any(s.get("sound") for s in segs) or (plan.get("sfx") or {}).get("events")))
     stats = {"width": w, "height": h, "fps": round(fps, 2), "duration": round(duration, 2), "size": size,
              "lufs": None, "true_peak": None, "has_audio": a is not None}
     if plan:
@@ -209,10 +209,13 @@ def judge(path, plan=None) -> dict:
         sound = _sound_scan(path)
         lufs, peak = sound["lufs"], sound["peak"]
         stats["lufs"], stats["true_peak"] = lufs, peak
+        effects_only = bool(plan and (plan.get("sfx") or {}).get("events") and not plan.get("music") and not any(x.get("sound") for x in segs))
         if lufs is None or lufs < SILENT_LUFS:
             add("fail" if wants_audio or not plan else "warn", "silent-audio", "the soundtrack is silent")
         else:
-            if LOUD_OK[0] <= lufs <= LOUD_OK[1]:
+            if effects_only:
+                add("ok", "loudness", f"{lufs:.1f} LUFS: sound effects only, so not held to the -16 target for a song or speech")
+            elif LOUD_OK[0] <= lufs <= LOUD_OK[1]:
                 add("ok", "loudness", f"{lufs:.1f} LUFS (the target is -16)")
             elif LOUD_WARN[0] <= lufs <= LOUD_WARN[1]:
                 add("warn", "loudness", f"{lufs:.1f} LUFS is {'too quiet' if lufs < LOUD_OK[0] else 'too loud'} (the target is -16)")

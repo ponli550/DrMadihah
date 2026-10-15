@@ -119,6 +119,15 @@ class Judging(unittest.TestCase):
         self.assertEqual(level_of(judge.judge(thin, pictures), "bitrate"), "warn", "but thin over mostly pictures still warns")
 
     # ---------------------------------------------------------------- sound
+    def test_an_effects_only_soundtrack_is_not_held_to_the_music_loudness_target(self):
+        quiet = self.make("fxonly.mp4", audio="sine=frequency=330:duration=4,volume=-12dB")                     # about -33 LUFS
+        only = plan(music=None, sfx={"events": [{"t": 1.0, "kind": "cut", "sound": "hit"}]})
+        r = judge.judge(quiet, only)
+        self.assertEqual(level_of(r, "loudness"), "ok")
+        self.assertIn("sound effects only", next(c["message"] for c in r["checks"] if c["id"] == "loudness"))
+        with_music = plan(music={"name": "song.m4a"}, sfx={"events": [{"t": 1.0, "kind": "cut", "sound": "hit"}]})
+        self.assertIn(level_of(judge.judge(quiet, with_music), "loudness"), ("warn", "fail"), "with music the target applies")
+
     def test_a_silent_soundtrack_fails_when_the_plan_wanted_sound(self):
         silent = self.make("silent.mp4", audio="anullsrc=r=48000:cl=mono")
         r = judge.judge(silent, plan())

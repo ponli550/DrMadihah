@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from umcares import captions, kinetic, montage, prepare, projects, textimg, uploads
+from umcares import captions, kinetic, montage, prepare, projects, sfx, textimg, uploads
 from tests.test_prepare import make_conformant, put
 
 FF, FP = prepare.find_tool("ffmpeg"), prepare.find_tool("ffprobe")
@@ -603,9 +603,12 @@ class Motion(Fixtures):
         with self.assertRaises(montage.RecipeError) as cm:
             montage.validate({"clips": [{"media": "land.jpg", "move": "spin"}]}, self.root)
         self.assertIn("move: must be one of in, out, pan_left, pan_right, still", cm.exception.problems[0])
-        with self.assertRaises(montage.RecipeError) as cm:
-            montage.validate({"clips": [{"media": "clip.mp4", "move": "in"}]}, self.root)
-        self.assertIn("move applies to photos", cm.exception.problems[0])
+        for mv in montage.VIDEO_MOVES:
+            self.assertEqual(montage.validate({"clips": [{"media": "clip.mp4", "move": mv}]}, self.root)["clips"][0]["move"], mv, "a clip can zoom in or out")
+        for mv in ("pan_left", "pan_right", "still"):
+            with self.assertRaises(montage.RecipeError) as cm:
+                montage.validate({"clips": [{"media": "clip.mp4", "move": mv}]}, self.root)
+            self.assertIn("panning and still are for photos", cm.exception.problems[0])
 
     def test_neighbouring_photos_get_different_moves_unless_told_otherwise(self):
         self.add("land.jpg", "port.jpg", "square.jpg", "clip.mp4")
@@ -1617,6 +1620,497 @@ class Audiogram(Fixtures):
         final = montage.plan_for(recipe(clips, template="kinetic"), self.root)
         draft = montage.plan_for(recipe(clips, template="kinetic", quality="draft"), self.root)
         self.assertEqual([(x["start"], x["duration"]) for x in final["segments"]], [(x["start"], x["duration"]) for x in draft["segments"]])
+
+
+@NEED
+class Zoom(Fixtures):
+    """Zoom in and out: a video clip's own move, and the zoom cut between pieces. Measured on a bright square."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        box = "color=c=0x101010:s=640x360,drawbox=x=200:y=60:w=240:h=240:color=white:t=fill"
+        ff("-f", "lavfi", "-i", box, "-frames:v", "1", str(cls.fx / "box.jpg"))
+        ff("-f", "lavfi", "-i", box.replace("color=c=0x101010:s=640x360", "color=c=0x101010:s=640x360:r=30:d=4"), "-c:v", "libx264", "-pix_fmt", "yuv420p", str(cls.fx / "boxclip.mp4"))
+
+    def plan(self, clips, **kw):
+        return montage.plan_for(recipe(clips, template="clean", **kw), self.root)
+
+    def square(self, path, at, w=216, h=384):
+        """Width in pixels of the bright square on the middle row of the frame at `at` seconds."""
+        d = frame(path, at, w, h)
+        row = h // 2
+        xs = [x for x in range(w) if d[(row * w + x) * 3] > 200 and d[(row * w + x) * 3 + 1] > 200]
+        return (xs[-1] - xs[0] + 1) if xs else 0
+
+    def render_one(self, clip, **kw):
+        job, out = self.render(recipe([clip], template="clean", **kw))
+        self.assertEqual(job["state"], "done", job["error"])
+        return job, out
+
+    # ---------------------------------------------------------------- validation and the plan
+    def test_transition_must_be_one_of_the_three_and_a_video_move_is_kept_in_the_plan(self):
+        self.add("box.jpg", "boxclip.mp4")
+        with self.assertRaises(montage.RecipeError) as ctx:
+            self.plan([{"media": "box.jpg"}], transition="spin")
+        self.assertIn("transition", str(ctx.exception))
+        for t in montage.TRANSITIONS:
+            self.assertEqual(self.plan([{"media": "box.jpg"}], transition=t)["transition"], t)
+        self.assertIsNone(self.plan([{"media": "box.jpg"}])["transition"])
+        p = self.plan([{"media": "boxclip.mp4", "move": "in"}, {"media": "boxclip.mp4"}])
+        self.assertEqual(p["segments"][0]["move"], "in")
+        self.assertNotIn("move", p["segments"][1])
+
+    def test_a_zoom_cut_never_changes_a_timing(self):
+        self.add("box.jpg", "boxclip.mp4")
+        clips = [{"media": "box.jpg"}, {"media": "boxclip.mp4", "move": "out"}, {"media": "box.jpg"}]
+        plain = self.plan(clips)
+        for t in montage.TRANSITIONS:
+            zoomed = self.plan(clips, transition=t)
+            self.assertEqual([(s["start"], s["duration"]) for s in plain["segments"]], [(s["start"], s["duration"]) for s in zoomed["segments"]])
+
+    # ---------------------------------------------------------------- what it does to the picture
+    def test_without_a_transition_a_still_photo_does_not_change_size(self):
+        self.add("box.jpg")
+        job, out = self.render_one({"media": "box.jpg", "move": "still", "hold": 3})
+        a, b, c = (self.square(out, t) for t in (0.03, 1.5, 2.9))
+        self.assertGreater(a, 20)
+        self.assertAlmostEqual(a / b, 1.0, delta=0.03)
+        self.assertAlmostEqual(c / b, 1.0, delta=0.03)
+
+    def test_zoom_out_starts_bigger_and_settles(self):
+        self.add("box.jpg")
+        job, out = self.render_one({"media": "box.jpg", "move": "still", "hold": 3}, transition="zoom_out")
+        start, mid, end = (self.square(out, t) for t in (0.0, 1.5, 2.9))
+        self.assertAlmostEqual(start / mid, 1 + montage.PUNCH, delta=0.03, msg=f"{start} vs {mid}")
+        self.assertAlmostEqual(end / mid, 1.0, delta=0.03, msg="it settled and stays settled")
+
+    def test_zoom_in_pushes_in_at_the_end_only(self):
+        self.add("box.jpg")
+        job, out = self.render_one({"media": "box.jpg", "move": "still", "hold": 3}, transition="zoom_in")
+        start, mid, end = (self.square(out, t) for t in (0.0, 1.5, 2.95))
+        self.assertAlmostEqual(start / mid, 1.0, delta=0.03)
+        self.assertGreater(end / mid, 1.05, "pushing in as the piece ends (0.25 s before the cut it is at 58% of its push)")
+
+    def test_zoom_does_both(self):
+        self.add("box.jpg")
+        job, out = self.render_one({"media": "box.jpg", "move": "still", "hold": 3}, transition="zoom")
+        start, mid, end = (self.square(out, t) for t in (0.0, 1.5, 2.95))
+        self.assertGreater(start / mid, 1.08)
+        self.assertGreater(end / mid, 1.05)
+
+    def test_a_video_clip_can_zoom_in_or_out_over_its_whole_length(self):
+        self.add("boxclip.mp4")
+        job, out = self.render_one({"media": "boxclip.mp4", "move": "in", "hold": 3.5})
+        a, b = self.square(out, 0.1), self.square(out, 3.3)
+        self.assertGreater(b / a, 1.04, f"{a} -> {b}: zooming in")
+        self.assertLess(b / a, 1.09, "by about the look's zoom amount, not more")
+        self.root_clean()
+        job, out = self.render_one({"media": "boxclip.mp4", "move": "out", "hold": 3.5})
+        a, b = self.square(out, 0.1), self.square(out, 3.3)
+        self.assertLess(b / a, 0.96, f"{a} -> {b}: zooming out")
+
+    def root_clean(self):
+        for p in (self.root / "exports").glob("*"):
+            p.unlink()
+
+    def test_a_video_clip_with_no_move_does_not_zoom_and_a_cut_still_applies_to_it(self):
+        self.add("boxclip.mp4")
+        job, out = self.render_one({"media": "boxclip.mp4", "hold": 3}, transition="zoom_out")
+        start, mid, end = (self.square(out, t) for t in (0.0, 1.5, 2.8))
+        self.assertGreater(start / mid, 1.08)
+        self.assertAlmostEqual(end / mid, 1.0, delta=0.03)
+
+    def test_every_look_and_format_renders_with_a_zoom_cut_and_a_draft_matches(self):
+        self.add("box.jpg", "boxclip.mp4")
+        clips = [{"media": "box.jpg", "caption": "Hi"}, {"media": "boxclip.mp4", "move": "in"}, {"quote": "A quote"}, {"countdown": 2}]
+        for tpl in montage.TEMPLATES:
+            with self.subTest(template=tpl):
+                job, out = self.render(recipe(clips, template=tpl, transition="zoom", quality="draft"))
+                self.assertEqual(job["state"], "done", f"{tpl}: {job['error']}")
+        for fmt, size in (("square", 324), ("wide", 576)):
+            with mock.patch.dict(montage.FORMATS[fmt], width=size, height=324):
+                job, out = self.render(recipe(clips, format=fmt, transition="zoom", quality="draft"))
+            self.assertEqual(job["state"], "done", f"{fmt}: {job['error']}")
+
+
+NEED_SAY2 = unittest.skipUnless(shutil.which("say"), "needs macOS `say` for real speech")
+
+
+@NEED
+@NEED_SAY2
+class TightenGaps(Fixtures):
+    """Jump cuts: the dead air cut out of a talking clip, with its sound and the music dip following."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        subprocess.run(["say", "-o", str(cls.fx / "ta.aiff"), "Selamat datang ke hari terbuka CyberDSA dua ribu dua puluh enam."], check=True)
+        subprocess.run(["say", "-o", str(cls.fx / "tb.aiff"), "Terima kasih kerana hadir hari ini."], check=True)
+        for n in ("ta", "tb"):
+            ff("-i", str(cls.fx / f"{n}.aiff"), "-ar", "48000", "-ac", "1", str(cls.fx / f"{n}.wav"))
+        ff("-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono", "-t", "3.5", str(cls.fx / "gap35.wav"))
+        ff("-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono", "-t", "2.5", str(cls.fx / "gap25.wav"))
+        ff("-i", str(cls.fx / "ta.wav"), "-i", str(cls.fx / "gap35.wav"), "-i", str(cls.fx / "tb.wav"), "-i", str(cls.fx / "gap25.wav"),
+           "-filter_complex", "concat=n=4:v=0:a=1", str(cls.fx / "gappy.wav"))
+        dur = float(subprocess.run([prepare.find_tool("ffprobe"), "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(cls.fx / "gappy.wav")],
+                                   capture_output=True, text=True).stdout)
+        cls.gappy_len = dur
+        ff("-f", "lavfi", "-i", f"testsrc2=size=640x360:rate=30:d={dur},noise=alls=30:allf=t", "-i", str(cls.fx / "gappy.wav"), "-c:v", "libx264", "-pix_fmt", "yuv420p",
+           "-c:a", "aac", "-shortest", str(cls.fx / "gappy.mp4"))
+
+    def plan(self, clips, **kw):
+        return montage.plan_for(recipe(clips, template="punchy", max_seconds=60, **kw), self.root)
+
+    # ---------------------------------------------------------------- validation
+    def test_tighten_is_gaps_or_nothing_and_a_clip_can_opt_out_but_a_photo_cannot_use_it(self):
+        self.add("gappy.mp4", "land.jpg")
+        with self.assertRaises(montage.RecipeError) as ctx:
+            self.plan([{"media": "gappy.mp4"}], tighten="all")
+        self.assertIn("tighten", str(ctx.exception))
+        with self.assertRaises(montage.RecipeError) as ctx:
+            self.plan([{"media": "gappy.mp4", "tighten": "yes"}])
+        self.assertIn("true or false", str(ctx.exception))
+        with self.assertRaises(montage.RecipeError) as ctx:
+            self.plan([{"media": "land.jpg", "tighten": True}])
+        self.assertIn("video clips", str(ctx.exception))
+
+    # ---------------------------------------------------------------- the plan
+    def test_the_dead_air_between_phrases_is_cut_and_the_plan_says_how_much(self):
+        self.add("gappy.mp4")
+        before = self.plan([{"media": "gappy.mp4", "hold": 15}])["segments"][0]
+        after = self.plan([{"media": "gappy.mp4", "hold": 15}], tighten="gaps")["segments"][0]
+        self.assertNotIn("ranges", before)
+        self.assertEqual(after["cuts"], 1, "two phrases: one jump cut")
+        self.assertGreater(after["trimmed"], 2.0, "most of the 3.5 s silence between them is gone")
+        self.assertLess(after["duration"], before["duration"] - 2.0)
+        self.assertAlmostEqual(after["duration"], sum(b - a for a, b in after["ranges"]) / after["speed"], delta=0.01)
+        (a1, b1), (a2, b2) = after["ranges"]
+        self.assertLess(b1, a2)
+        self.assertLessEqual(a1, 0.3, "the first phrase starts at the start of the clip")
+        self.assertGreater(after["speech"], 5.0)
+
+    def test_a_clip_can_opt_out_and_one_without_speech_is_left_alone(self):
+        self.add("gappy.mp4", "short.mp4", "clip.mp4")
+        p = self.plan([{"media": "gappy.mp4", "tighten": False}, {"media": "short.mp4"}, {"media": "clip.mp4"}], tighten="gaps")
+        for seg in p["segments"]:
+            self.assertNotIn("ranges", seg)
+        p = self.plan([{"media": "gappy.mp4", "hold": 15, "tighten": True}])
+        self.assertIn("ranges", p["segments"][0], "per clip, without the recipe-level switch")
+
+    def test_the_hold_still_caps_the_length_of_a_tightened_clip(self):
+        self.add("gappy.mp4")
+        seg = self.plan([{"media": "gappy.mp4", "hold": 4}], tighten="gaps")["segments"][0]
+        self.assertAlmostEqual(seg["duration"], 4.0, delta=0.05)
+        self.assertAlmostEqual(sum(b - a for a, b in seg["ranges"]), 4.0, delta=0.05)
+
+    def test_a_tightened_clip_keeps_its_sound_even_without_the_clip_sound_option(self):
+        self.add("gappy.mp4")
+        self.assertTrue(self.plan([{"media": "gappy.mp4", "hold": 15}], tighten="gaps")["segments"][0]["sound"])
+        self.assertNotIn("sound", self.plan([{"media": "gappy.mp4", "hold": 15}])["segments"][0])
+
+    def test_sound_and_the_music_dip_follow_the_joined_clip_not_the_original_timeline(self):
+        self.add("gappy.mp4", "land.jpg", music=["song.m4a"])
+        p = self.plan([{"media": "gappy.mp4", "hold": 15}, {"media": "land.jpg"}], tighten="gaps", clip_sound="speech", music={"file": "song.m4a"})
+        seg = p["segments"][0]
+        self.assertTrue(seg["sound"])
+        self.assertTrue(p["duck"])
+        for a, b in p["duck"]:
+            self.assertGreaterEqual(a, seg["start"] - 1e-6)
+            self.assertLessEqual(b, seg["start"] + seg["duration"] + 1e-6)
+        self.assertLessEqual(max(b for a, b in p["duck"]), seg["duration"] + 1e-6, "no dip beyond the end of the shortened clip")
+        self.assertTrue(all(a < b for a, b in p["duck"]), "every dip window is well-formed")
+        self.assertLessEqual(p["duck"][0][0], seg["start"] + 0.6, "the first dip starts where the first phrase does (the clip's own timeline, not the source's)")
+        self.assertGreater(sum(b - a for a, b in p["duck"]), seg["speech"] * 0.8, "and together they cover the speech that is heard")
+
+    def test_it_composes_with_a_tempo_and_never_slows_on_its_own(self):
+        self.add("gappy.mp4", "land.jpg")
+        p = self.plan([{"media": "gappy.mp4", "hold": 15}, {"media": "land.jpg"}], tighten="gaps", music={"bpm": 75})
+        unit = p["sync"]["cut_seconds"]
+        seg = p["segments"][0]
+        self.assertAlmostEqual(seg["duration"] / unit, round(seg["duration"] / unit), delta=0.03)
+        self.assertLessEqual(seg["src_used"], seg["tight_total"] + 1e-6)
+        self.assertEqual(seg["speed"], 1.0)
+
+    def test_a_zoom_move_and_a_zoom_cut_do_not_stop_it(self):
+        self.add("gappy.mp4")
+        seg = self.plan([{"media": "gappy.mp4", "hold": 15, "move": "in"}], tighten="gaps", transition="zoom")["segments"][0]
+        self.assertEqual((seg["move"], seg["cuts"]), ("in", 1))
+
+    # ---------------------------------------------------------------- the video it makes
+    def test_the_rendered_video_is_as_short_as_planned_with_its_sound_and_the_joined_file_is_cached(self):
+        self.add("gappy.mp4")
+        rec = recipe([{"media": "gappy.mp4", "hold": 15}], template="punchy", tighten="gaps", quality="draft", max_seconds=60)
+        planned = montage.plan_for(rec, self.root)["total"]
+        job, out = self.render(rec)
+        self.assertEqual(job["state"], "done", job["error"])
+        st = stats(out)
+        self.assertAlmostEqual(st["dur"], planned, delta=0.4)
+        self.assertLess(st["dur"], self.gappy_len - 2.0, "shorter than the clip by the dead air")
+        self.assertEqual(st["audio"], "aac", "the clip's own sound is kept without asking: a tightened talking clip is useless silent")
+        cached = list((self.root / ".umcares" / "tight").glob("*.mp4"))
+        self.assertEqual(len(cached), 1)
+        stamp = cached[0].stat().st_mtime_ns
+        job, out = self.render({**rec, "title": "again"})
+        self.assertEqual(job["state"], "done", job["error"])
+        self.assertEqual(cached[0].stat().st_mtime_ns, stamp, "the joined clip was reused, not made again")
+
+    def test_the_joined_clip_has_no_silent_gap_where_the_dead_air_was(self):
+        self.add("gappy.mp4")
+        job, out = self.render(recipe([{"media": "gappy.mp4", "hold": 15}], template="punchy", tighten="gaps", quality="draft", max_seconds=60))
+        self.assertEqual(job["state"], "done", job["error"])
+        log = subprocess.run([FF, "-hide_banner", "-i", str(out), "-af", "silencedetect=n=-45dB:d=1.2", "-f", "null", "-"], capture_output=True, text=True).stderr
+        long_silences = [float(x) for x in re.findall(r"silence_duration: ([\d.]+)", log)]
+        self.assertEqual([d for d in long_silences if d < 5], [], f"no silence of 1.2 s or more is left inside the video: {long_silences}")
+
+    def test_a_talking_clip_with_its_own_sound_and_effects_in_one_mix(self):
+        self.add("gappy.mp4", "land.jpg")
+        rec = recipe([{"media": "gappy.mp4", "hold": 15}, {"media": "land.jpg", "hold": 3, "move": "still"}], template="punchy", tighten="gaps",
+                     sfx={"cuts": "hit"}, quality="draft", max_seconds=60)
+        p = montage.plan_for(rec, self.root)
+        cut = p["segments"][1]["start"]
+        job, out = self.render(rec)
+        self.assertEqual(job["state"], "done", job["error"])
+
+        def level(a, b):
+            r = subprocess.run([FF, "-hide_banner", "-ss", str(a), "-t", str(b - a), "-i", str(out), "-af", "volumedetect", "-f", "null", "-"], capture_output=True, text=True).stderr
+            return float(re.search(r"mean_volume: (-?[\d.]+)", r).group(1))
+        self.assertGreater(level(0.3, 2.0), -40, "the speech is still heard")
+        self.assertGreater(level(cut, cut + 0.4), -50, "and so is the hit at the cut")
+        self.assertLess(level(cut + 0.8, cut + 2.5), -60, "and nothing else after the clip: the effects were not given a normalised boost")
+
+    def test_a_tightened_clip_in_every_look_renders(self):
+        self.add("gappy.mp4")
+        for tpl in montage.TEMPLATES:
+            with self.subTest(template=tpl):
+                job, out = self.render(recipe([{"media": "gappy.mp4", "hold": 15}], template=tpl, tighten="gaps", quality="draft", max_seconds=60))
+                self.assertEqual(job["state"], "done", f"{tpl}: {job['error']}")
+
+
+@NEED
+class ThreeD(Fixtures):
+    """The card flip between pieces (not into the first piece, not out of the last) and the swaying card look: measured on a bright square, since both turn the picture about its vertical axis."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        ff("-f", "lavfi", "-i", "color=c=0x101010:s=640x360,drawbox=x=200:y=60:w=240:h=240:color=white:t=fill", "-frames:v", "1", str(cls.fx / "box.jpg"))
+
+    def clips(self, n=2):
+        return [{"media": "box.jpg", "move": "still", "hold": 3} for _ in range(n)]
+
+    def plan(self, **kw):
+        return montage.plan_for(recipe(self.clips(), template="punchy", **kw), self.root)
+
+    def square(self, path, at, w=216, h=384):
+        d = frame(path, at, w, h)
+        row = h // 2
+        xs = [x for x in range(w) if d[(row * w + x) * 3] > 200 and d[(row * w + x) * 3 + 1] > 200]
+        return (xs[-1] - xs[0] + 1) if xs else 0
+
+    def made(self, **kw):
+        if not getattr(self, "_box", False):                  # the same file cannot be uploaded twice
+            self.add("box.jpg")
+            self._box = True
+        job, out = self.render(recipe(self.clips(), template="punchy", **kw))
+        self.assertEqual(job["state"], "done", job["error"])
+        return out
+
+    # ---------------------------------------------------------------- the recipe
+    def test_the_words_are_checked(self):
+        self.add("box.jpg")
+        for kw, why in (({"depth": "sphere"}, "depth"), ({"depth": True}, "depth"), ({"transition": "cube"}, "transition")):
+            with self.subTest(kw=kw):
+                with self.assertRaises(montage.RecipeError) as ctx:
+                    self.plan(**kw)
+                self.assertIn(why, str(ctx.exception))
+        p = self.plan(transition="flip", depth="card")
+        self.assertEqual((p["transition"], p["depth"]), ("flip", "card"))
+        self.assertIsNone(self.plan()["depth"])
+
+    def test_flip_and_depth_never_change_a_timing(self):
+        self.add("box.jpg")
+        a, b = self.plan(), self.plan(transition="flip", depth="card")
+        self.assertEqual([(s["start"], s["duration"]) for s in a["segments"]], [(s["start"], s["duration"]) for s in b["segments"]])
+        self.assertEqual(a["total"], b["total"])
+
+    def test_the_flip_does_not_turn_the_first_piece_in_or_the_last_one_out(self):
+        enter_only = montage._flip_fragment("[a]", "[b]", 30, 3.0, True, False)
+        leave_only = montage._flip_fragment("[a]", "[b]", 30, 3.0, False, True)
+        self.assertEqual(montage._flip_fragment("[a]", "[b]", 30, 3.0, False, False), "", "a lone piece has nothing to flip")
+        self.assertIn("pow(1-min(1,", enter_only)
+        self.assertNotIn("pow(max(0,", enter_only)
+        self.assertIn("pow(max(0,", leave_only)
+        self.assertNotIn("pow(1-min(1,", leave_only)
+
+    # ---------------------------------------------------------------- what it does to the picture
+    def test_flip_swings_each_piece_in_and_out_and_leaves_the_middle_alone(self):
+        out = self.made(transition="flip")
+        end = self.plan()["total"]
+        first = self.plan()["segments"][1]["start"]
+        first_start, first_mid, first_end = (self.square(out, t) for t in (0.0, first / 2, first - 0.05))
+        second_start, second_mid, second_end = (self.square(out, t) for t in (first, (first + end) / 2, end - 0.07))
+        self.assertGreater(first_start, 0.9 * first_mid, "the first piece is just there: nothing to flip in from")
+        self.assertLess(first_end, 0.5 * first_mid, "it swings away before the cut")
+        self.assertLess(second_start, 0.5 * second_mid, "and the next one swings in")
+        self.assertAlmostEqual(second_mid / first_mid, 1.0, delta=0.05)
+        self.assertGreater(second_end, 0.9 * second_mid, "the last piece stays: the video does not end on a sliver")
+
+    def test_without_flip_the_cut_is_a_cut(self):
+        out = self.made()
+        first = self.plan()["segments"][1]["start"]
+        a, b, c = (self.square(out, t) for t in (first - 0.05, first, first + 1.5))
+        self.assertAlmostEqual(a / c, 1.0, delta=0.03)
+        self.assertAlmostEqual(b / c, 1.0, delta=0.03)
+
+    def test_a_card_is_smaller_than_the_frame_and_sways(self):
+        base = self.square(self.made(), 1.5)
+        self.root_clean()
+        out = self.made(depth="card")
+        rest, swayed = self.square(out, 0.05), self.square(out, 0.75)
+        self.assertAlmostEqual(rest / base, 0.8, delta=0.06, msg=f"{rest} vs {base}")
+        self.assertLess(swayed, 0.95 * rest, "turned a quarter of the way through its sway")
+
+    def root_clean(self):
+        for p in (self.root / "exports").glob("*"):
+            p.unlink()
+
+    def test_card_and_flip_together_and_every_look_and_format_render(self):
+        self.add("box.jpg", "land.jpg")
+        clips = [{"media": "box.jpg", "caption": "Hi"}, {"media": "land.jpg"}, {"quote": "A quote"}, {"countdown": 2}]
+        for tpl in montage.TEMPLATES:
+            with self.subTest(template=tpl):
+                job, out = self.render(recipe(clips, template=tpl, transition="flip", depth="card", quality="draft"))
+                self.assertEqual(job["state"], "done", f"{tpl}: {job['error']}")
+        for fmt, size in (("square", 324), ("wide", 576)):
+            with mock.patch.dict(montage.FORMATS[fmt], width=size, height=324):
+                job, out = self.render(recipe(clips, format=fmt, transition="flip", depth="card", quality="draft"))
+            self.assertEqual(job["state"], "done", f"{fmt}: {job['error']}")
+
+
+@NEED
+class SoundEffects(Fixtures):
+    """Sound effects on cuts and words: where they land, how loud, and that nothing else changes."""
+
+    def plan(self, clips, **kw):
+        return montage.plan_for(recipe(clips, template=kw.pop("template", "punchy"), **kw), self.root)
+
+    def level(self, path, a, b, key="mean_volume"):
+        r = subprocess.run([FF, "-hide_banner", "-ss", str(a), "-t", str(b - a), "-i", str(path), "-af", "volumedetect", "-f", "null", "-"], capture_output=True, text=True).stderr
+        m = re.search(key + r": (-?[\d.]+)", r)
+        return float(m.group(1)) if m else -91.0
+
+    def made(self, clips, **kw):
+        job, out = self.render(recipe(clips, template=kw.pop("template", "punchy"), **kw))
+        self.assertEqual(job["state"], "done", job["error"])
+        return out
+
+    # ---------------------------------------------------------------- validation and the plan
+    def test_the_spec_is_checked(self):
+        self.add("land.jpg")
+        for bad, why in (("loud", "sfx"), ({"cuts": "laser"}, "sfx.cuts"), ({"words": "whoosh"}, "sfx.words"), ({"level": 5}, "sfx.level"), ({"level": "x"}, "sfx.level"),
+                         ({"volume": 3}, "unknown field")):
+            with self.subTest(bad=bad):
+                with self.assertRaises(montage.RecipeError) as ctx:
+                    self.plan([{"media": "land.jpg"}], sfx=bad)
+                self.assertIn(why, str(ctx.exception))
+
+    def test_the_plan_lists_the_events_and_an_unrequested_plan_has_none(self):
+        self.add("land.jpg", "port.jpg")
+        clips = [{"media": "land.jpg", "hold": 2}, {"media": "port.jpg", "hold": 2}, {"countdown": 2}]
+        self.assertIsNone(self.plan(clips)["sfx"])
+        p = self.plan(clips, sfx={"cuts": "whoosh", "words": "tick", "level": -9})
+        self.assertEqual(p["sfx"]["level"], -9.0)
+        kinds = [(e["kind"], e["sound"]) for e in p["sfx"]["events"]]
+        self.assertIn(("cut", "whoosh"), kinds)
+        self.assertIn(("word", "tick"), kinds, "a countdown ticks in every look")
+        self.assertEqual(self.plan(clips, sfx={"cuts": "pop"})["sfx"]["level"], sfx.DEFAULT_LEVEL)
+
+    def test_many_effects_do_not_cut_the_soundtrack_short(self):
+        """Regression: with ~20 delayed effects the mix ended at the last effect, leaving the last seconds of the picture silent."""
+        self.add("land.jpg", "port.jpg")
+        clips = [{"countdown": 5}, {"countdown": 5}, {"media": "land.jpg", "hold": 3}, {"media": "port.jpg", "hold": 3}]
+        out = self.made(clips, sfx={"cuts": "whoosh", "words": "tick"})
+        plan = self.plan(clips, sfx={"cuts": "whoosh", "words": "tick"})
+        self.assertGreaterEqual(len(plan["sfx"]["events"]), 10)
+        r = subprocess.run([FP, "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=duration", "-of", "csv=p=0", str(out)], capture_output=True, text=True)
+        self.assertAlmostEqual(float(r.stdout.strip()), plan["total"], delta=0.25)
+
+    def test_effects_never_change_a_timing(self):
+        self.add("land.jpg", "port.jpg")
+        clips = [{"media": "land.jpg"}, {"media": "port.jpg"}, {"countdown": 3}]
+        a, b = self.plan(clips), self.plan(clips, sfx={"cuts": "hit", "words": "tick"})
+        self.assertEqual([(x["start"], x["duration"]) for x in a["segments"]], [(x["start"], x["duration"]) for x in b["segments"]])
+        self.assertEqual(a["total"], b["total"])
+
+    # ---------------------------------------------------------------- what is heard
+    def test_a_hit_lands_on_the_cut_and_there_is_silence_elsewhere(self):
+        self.add("land.jpg", "port.jpg")
+        out = self.made([{"media": "land.jpg", "hold": 2, "move": "still"}, {"media": "port.jpg", "hold": 2, "move": "still"}], sfx={"cuts": "hit"})
+        self.assertEqual(stats(out)["audio"], "aac", "effects alone give the video a soundtrack")
+        on_cut, elsewhere = self.level(out, 1.98, 2.4), self.level(out, 0.2, 1.6)
+        self.assertGreater(on_cut, -45, "the hit is audible at the cut")
+        self.assertLess(elsewhere, -65, "and it is silent before it")
+        self.assertGreater(on_cut - elsewhere, 25)
+
+    def test_a_whoosh_swells_into_the_cut_so_it_is_louder_before_the_cut_than_just_after_its_tail(self):
+        self.add("land.jpg", "port.jpg")
+        out = self.made([{"media": "land.jpg", "hold": 3, "move": "still"}, {"media": "port.jpg", "hold": 3, "move": "still"}], sfx={"cuts": "whoosh"})
+        body = self.level(out, 2.8, 3.1)                               # its middle is on the cut at 3.0
+        before, after = self.level(out, 2.76, 2.9), self.level(out, 3.35, 3.9)
+        self.assertGreater(body, -40)
+        self.assertGreater(before, after + 12, "the swell comes before the cut and is gone shortly after it")
+        self.assertLess(self.level(out, 0.3, 2.4), -65)
+
+    def test_the_word_ticks_pop_with_the_words_on_the_kinetic_look_only(self):
+        self.add("land.jpg")
+        captions.set_detail(self.root, self.sha("land.jpg"), "Satu dua tiga")
+        out = self.made([{"media": "land.jpg", "hold": 3, "move": "still"}], template="kinetic", sfx={"words": "tick"})
+        for t in (0.08, 0.58, 1.08):                                   # the schedule of three lines in a 3 s piece
+            self.assertGreater(self.level(out, t - 0.01, t + 0.07), self.level(out, t + 0.2, t + 0.4) + 15, f"a tick at {t}")
+        plain = self.render(recipe([{"media": "land.jpg", "hold": 3}], template="punchy", sfx={"words": "tick"}))[1]
+        self.assertIsNone(stats(plain)["audio"], "no word pops on this look, so no word ticks, so no soundtrack")
+
+    def test_a_countdown_ticks_on_each_number_in_any_look(self):
+        out = self.made([{"countdown": 3}], template="clean", sfx={"words": "pop"})
+        for t in (0.0, 0.8, 1.6):
+            self.assertGreater(self.level(out, t, t + 0.12), self.level(out, t + 0.3, t + 0.7) + 15, f"a pop at {t}")
+
+    def test_the_level_is_the_loudness_of_the_effects_and_they_are_limited_not_normalised_up(self):
+        self.add("land.jpg", "port.jpg")
+        clips = [{"media": "land.jpg", "hold": 2, "move": "still"}, {"media": "port.jpg", "hold": 2, "move": "still"}]
+        quiet = self.level(self.made(clips, sfx={"cuts": "hit", "level": -30}), 1.98, 2.4, "max_volume")
+        loud = self.level(self.made(clips, sfx={"cuts": "hit", "level": -12}), 1.98, 2.4, "max_volume")
+        self.assertAlmostEqual(loud - quiet, 18, delta=3, msg=f"{quiet} dB vs {loud} dB")
+        self.assertLess(loud, -3, "a few sparse effects are not boosted toward -16 LUFS")
+
+    def test_with_music_the_effects_ride_on_top_of_it_in_one_normalised_mix(self):
+        self.add("land.jpg", "port.jpg", music=["song.m4a"])
+        out = self.made([{"media": "land.jpg", "hold": 2}, {"media": "port.jpg", "hold": 2}], music={"file": "song.m4a"}, sfx={"cuts": "hit"})
+        from umcares import judge
+        r = judge.judge(out, json.loads(out.with_suffix(".json").read_text())["plan"])
+        self.assertAlmostEqual(r["stats"]["lufs"], -16, delta=2.5, msg="the music is still at the target loudness")
+        self.assertEqual(next(c["level"] for c in r["checks"] if c["id"] == "audio-present"), "ok")
+
+    def test_the_judge_knows_an_effects_only_video_is_meant_to_have_sound(self):
+        self.add("land.jpg", "port.jpg")
+        out = self.made([{"media": "land.jpg", "hold": 2}, {"media": "port.jpg", "hold": 2}], sfx={"cuts": "pop"})
+        from umcares import judge
+        r = judge.judge(out, json.loads(out.with_suffix(".json").read_text())["plan"])
+        self.assertEqual(next(c["level"] for c in r["checks"] if c["id"] == "audio-present"), "ok")
+        self.assertNotEqual(r["verdict"], "fail", [c for c in r["checks"] if c["level"] == "fail"])
+
+    def test_every_look_and_format_renders_with_both_kinds_of_effect(self):
+        self.add("land.jpg", "port.jpg")
+        clips = [{"media": "land.jpg", "caption": "Hi there"}, {"media": "port.jpg"}, {"quote": "Q"}, {"countdown": 2}]
+        for tpl in montage.TEMPLATES:
+            with self.subTest(template=tpl):
+                job, out = self.render(recipe(clips, template=tpl, sfx={"cuts": "whoosh", "words": "tick"}, quality="draft"))
+                self.assertEqual(job["state"], "done", f"{tpl}: {job['error']}")
+        for fmt, size in (("square", 324), ("wide", 576)):
+            with mock.patch.dict(montage.FORMATS[fmt], width=size, height=324):
+                job, out = self.render(recipe(clips, format=fmt, sfx={"cuts": "hit"}, quality="draft"))
+            self.assertEqual(job["state"], "done", f"{fmt}: {job['error']}")
 
 
 def gray_frame(path, at):

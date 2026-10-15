@@ -580,6 +580,8 @@ export UMC_WEB_URL=https://<machine>.<tailnet>.ts.net/umcares      # or --url, o
 umcares draft cyberdsa "a 20 second upbeat reel for Instagram, hook first, keep the captions short"
 umcares draft cyberdsa "..." --dry-run          # check and print it, save nothing
 umcares draft cyberdsa "..." --no-images        # names and captions only: no pictures leave this machine
+umcares draft cyberdsa "faster, and drop the third photo" --from latest   # revise the newest draft instead of starting again
+umcares draft cyberdsa "add zoom cuts" --from my-recipe                  # ... or any saved recipe by name
 ```
 
 It runs `claude -p` **on the machine you type it on** (where Claude Code is logged in), not on the Premiere machine, which has
@@ -719,6 +721,45 @@ renders the same video.
 - **Everything is composed over a blurred copy of itself**, so a portrait photo in a 9:16 frame is never cropped
   and a landscape one never loses its sides. (ffprobe does not report an EXIF-rotated photo's true shape, so
   composing the same way every time is also simpler than detecting it.) Photos get a slow zoom; clips can be slowed.
+- **Sound effects** (`sfx.py`; recipe `"sfx": {"cuts": "whoosh"|"pop"|"hit", "words": "tick"|"pop", "level": -12}`, all optional; the page has "Sound
+  effects" and a tick). **Synthesised by ffmpeg**, no files and no licences: a whoosh is a noise swell (it starts 0.25 s before the
+  cut so its body lands on it), a pop a falling chirp, a hit a low thump, a tick a very short high click. **Cuts:** one on every cut
+  but the first (on a crossfading look, the middle of the overlap). **Words:** one on every word line the kinetic look pops in (the
+  same times as the picture, so on the beat when cut to a tempo) and on every countdown number in any look. `level` is in dB
+  (default -12, range -30 to 0): the effects sit under the music and speech. They are mixed into the same soundtrack step as kept
+  clip sound and music, **never change a timing**, and a video with no music gets a soundtrack of just the effects. Effects-only
+  audio is **limited, not loudness-normalised**: normalising a few sparse effects up to -16 LUFS made them deafening, so only a mix
+  with music or speech is normalised, and the judge does not hold an effects-only soundtrack to the -16 target. Tests measure
+  loudness in windows around the cuts and the word pops in real renders. **Not done:** choosing a sound per cut, whooshes that
+  follow a zoom, and I have not listened to any of it (levels and timing were measured, taste was not).
+- **Jump cuts: cut the dead air out of talking clips** (`"tighten": "gaps"` for every video clip, or `"tighten": true|false` on one; the page tick
+  "Cut the dead air out of talking clips", **off by default**). It takes the speech detector's phrases, keeps each with 0.12 s before and
+  0.22 s after (so first and last words are not clipped), joins phrases a short pause apart (silences up to about 0.8 s are natural and
+  stay) and cuts every longer silence, then joins what is left. The plan shows `✂ n jump cuts, x s of dead air removed`; the clip is
+  shorter by that much, `hold` still caps its length, the **clip keeps its own sound** (a silent tightened talking clip is useless)
+  and the music dips under the phrases on the *joined* timeline. At render time one joined file is made (picture and sound, re-encoded
+  once) and kept in `<project>/.umcares/tight/` (a cache, not in git, safe to delete), after which it is an ordinary clip, so zoom,
+  tempo and every look work with it. **It cannot remove a repeated take or a filler word**: it finds speech-like sound, not words,
+  and speech-to-text was not built. It also treats any speech-like sound as a phrase, so loud crowd chatter keeps its silences
+  short and may be kept whole. Real footage has not been judged by ear.
+- **Zoom in and zoom out.** Two things, both timing-neutral. (1) A **video clip** can zoom over its whole length: `"move": "in"` or
+  `"out"` (before, only photos had moves; panning and still are still photo-only). The amount is the look's zoom (at least 6%).
+  (2) A recipe-level **`transition`** adds a zoom cut: `"zoom_out"` starts a piece 12% bigger and settles in 0.3 s (ease-out),
+  `"zoom_in"` pushes in during the last 0.3 s, `"zoom"` does both, so a hard cut reads as zooming through. It is a time-varying
+  scale-and-crop (ffmpeg `scale` with `eval=frame`), applied to photo and video pieces (kinetic included); **not** to cards, the
+  paper collage's own pieces, or audiograms. The page has a "Cuts between pictures and clips" choice. Measured on a bright square:
+  the settle starts at 1.12x and is back to 1.0 by the end of the piece. Limit: the picture is upscaled by up to 12% at the peak,
+  so a photo is composed at double size first to keep it sharp, but a clip is a little soft for 0.3 s.
+- **3D, honestly named.** Two options, both timing-neutral, photo and video pieces only (cards, the paper collage and audiograms are
+  left flat), both ffmpeg's `perspective` filter. There is **no depth model**, so nothing parallaxes: a flat picture is turned in
+  perspective, not rebuilt in 3D. (1) `"transition": "flip"`: each piece swings out around its vertical axis in 0.4 s and the next
+  swings in, through black (the first piece is not turned in and the last is not turned out, so the video neither starts nor ends on a
+  sliver). It suits hard cuts; on a crossfading look the two overlap and it reads as a mess. (2) `"depth": "card"`: each picture is an
+  80% card that sways about 25 degrees in perspective (one sway per 2.4 s or the piece, whichever is longer) over a darkened, blurred
+  copy of itself; it works alone or together with `flip`. The perspective filter smears edge pixels into the empty space, so the same
+  turn is applied to a white mask and the two are multiplied. Measured on a bright square: 80% wide at rest, 10% narrower a quarter of
+  the way into a sway, and a flip is under half width 0.05 s either side of the cut. Costs more CPU per piece than a zoom cut (two
+  perspective passes per frame); not timed on the Air. The page has "3D card flip" in the cuts list and a "3D cards that sway" tick.
 - **Audiogram** (`{"audiogram": "song.mp3", "image": "photo.jpg", "caption": "Dr Madihah", "start": 0, "hold": 8}`): a song or voice
   file drawn as a moving waveform (ffmpeg `showwaves`), solid in the accent colour, over the picture darkened by 30% (or on the
   look's colour if there is no `image`), with the caption under it. **Its sound is always heard** (it is added to the soundtrack

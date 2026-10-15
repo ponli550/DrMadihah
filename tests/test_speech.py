@@ -132,5 +132,50 @@ class Choosing(unittest.TestCase):
         self.assertAlmostEqual(speech.covered(self.SPANS, 3.5, 9.0), 1.5)
 
 
+class Tightening(unittest.TestCase):
+    SPANS = [[1.0, 3.0, 0.7], [3.4, 5.0, 0.7], [9.0, 11.0, 0.7], [15.0, 16.0, 0.7]]
+
+    def test_each_phrase_is_kept_with_a_little_either_side_and_phrases_a_short_pause_apart_are_joined(self):
+        r = speech.tighten(self.SPANS, 20.0)
+        self.assertEqual(r[0], [round(1.0 - speech.LEAD, 3), round(5.0 + speech.TAIL, 3)], "1-3 s and 3.4-5 s are one stretch: a 0.4 s pause is natural")
+        self.assertEqual(r[1], [round(9.0 - speech.LEAD, 3), round(11.0 + speech.TAIL, 3)])
+        self.assertEqual(len(r), 3, "the long silences between 5 and 9 s, and 11 and 15 s are cut")
+
+    def test_the_kept_stretches_are_in_order_inside_the_clip_and_never_overlap(self):
+        r = speech.tighten(self.SPANS, 16.1)
+        self.assertEqual(r, sorted(r))
+        for (a, b), (c, d) in zip(r, r[1:]):
+            self.assertLess(b, c)
+        self.assertGreaterEqual(r[0][0], 0.0)
+        self.assertLessEqual(r[-1][1], 16.1)
+
+    def test_a_phrase_at_the_very_start_or_end_is_clamped_to_the_clip(self):
+        r = speech.tighten([[0.02, 1.0, 0.7], [19.9, 20.0, 0.7]], 20.0)
+        self.assertEqual(r[0][0], 0.0)
+        self.assertLessEqual(max(b for a, b in r), 20.0)
+
+    def test_start_skips_what_comes_before_it(self):
+        r = speech.tighten(self.SPANS, 20.0, start=8.0)
+        self.assertGreaterEqual(r[0][0], 8.0)
+        self.assertEqual(len(r), 2)
+
+    def test_a_budget_caps_the_total_and_shortens_the_last_stretch(self):
+        r = speech.tighten(self.SPANS, 20.0, budget=5.0)
+        self.assertAlmostEqual(sum(b - a for a, b in r), 5.0, delta=0.01)
+        r = speech.tighten(self.SPANS, 20.0, budget=100.0)
+        self.assertEqual(len(r), 3, "a big budget keeps everything")
+
+    def test_nothing_to_keep(self):
+        self.assertEqual(speech.tighten([], 10.0), [])
+        self.assertEqual(speech.tighten([[1.0, 1.1, 0.7]], 10.0, lead=0.0, tail=0.0), [], "a blip shorter than the minimum is dropped")
+
+    def test_to_tight_maps_a_source_interval_onto_the_joined_clip(self):
+        ranges = [[1.0, 3.0], [9.0, 11.0]]
+        self.assertEqual(speech.to_tight(ranges, 1.5, 2.5), [[0.5, 1.5]])
+        self.assertEqual(speech.to_tight(ranges, 9.5, 10.0), [[2.5, 3.0]], "the second stretch starts where the first ended: 2 s")
+        self.assertEqual(speech.to_tight(ranges, 4.0, 8.0), [], "silence that was cut has no place on the new timeline")
+        self.assertEqual(speech.to_tight(ranges, 2.0, 10.0), [[1.0, 2.0], [2.0, 3.0]], "an interval across the cut lands as two pieces")
+
+
 if __name__ == "__main__":
     unittest.main()

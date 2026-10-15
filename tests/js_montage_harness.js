@@ -62,7 +62,7 @@ const view = () => {
     saved: all(c, n => n.className === "urow" && n.parent === c).map(r => deepText(r)),
   };
 };
-const check = (i, v) => { all(card(), n => n.tag === "input" && n.type === "checkbox")[i + 4].checked = v; };   // [0] is "show captions", [1] "cut on the beat", [2] "start where people speak", [3] "keep the sound"
+const check = (i, v) => { all(card(), n => n.tag === "input" && n.type === "checkbox")[i + 7].checked = v; };   // [0] is "show captions", [1] "cut on the beat", [2] "start where people speak", [3] "keep the sound", [4] "cut the dead air", [5] "tick on each word", [6] "3D cards"
 
 (async () => {
   const page = await (await realFetch(`/umcares/p/${slug}/`)).text();
@@ -94,6 +94,7 @@ const check = (i, v) => { all(card(), n => n.tag === "input" && n.type === "chec
     out.disabledAtStart = !!sync.disabled;
     out.speechDefault = all(card(), n => n.tag === "input" && n.type === "checkbox")[2].checked;
     out.soundDefault = all(card(), n => n.tag === "input" && n.type === "checkbox")[3].checked;
+    out.tightenDefault = all(card(), n => n.tag === "input" && n.type === "checkbox")[4].checked;
     const music = selects()[2];
     music.value = "song.m4a";
     if (music._l.change) await music._l.change();
@@ -105,6 +106,19 @@ const check = (i, v) => { all(card(), n => n.tag === "input" && n.type === "chec
     music.value = "";
     if (music._l.change) await music._l.change();
     out.afterRemoval = { disabled: !!sync.disabled, checked: !!sync.checked };
+  } else if (scenario === "zoomcut") {
+    selects()[4].value = "zoom";                                       // [0] format, [1] look, [2] music, [3] length, [4] cut style
+    await press(button("Preview plan"));
+    out.view = view();
+  } else if (scenario === "threed") {
+    selects()[4].value = "flip";
+    all(card(), n => n.tag === "input" && n.type === "checkbox")[6].checked = true;
+    await press(button("Preview plan"));
+    out.view = view();
+  } else if (scenario === "sfx") {
+    selects()[5].value = "hit";                                        // [4] is the cut style, [5] the sound effects on cuts
+    await press(button("Preview plan"));
+    out.view = view();
   } else if (scenario === "tempo") {
     all(card(), n => n.tag === "input" && n.type === "text")[1].value = "75";          // [0] is the title card, [1] the BPM box
     selects()[1].value = "punchy";
