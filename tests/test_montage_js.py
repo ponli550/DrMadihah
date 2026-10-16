@@ -104,6 +104,12 @@ class Card(unittest.TestCase):
         self.assertIn("Plain cuts", card)
         self.assertIn("zoom cuts", self.run_js("zoomcut")["view"]["plan"], "the choice reached the server and came back in the plan")
 
+    def test_the_picture_effects_are_offered_and_reach_the_plan(self):
+        card = self.run_js("card")["view"]["card"]
+        for label in ("No picture effect", "Dither", "Glitch", "Neon"):
+            self.assertIn(label, card)
+        self.assertIn("glitch effect", self.run_js("effect")["view"]["plan"], "the choice reached the server and came back in the plan")
+
     def test_the_3d_choices_are_offered_and_reach_the_plan(self):
         card = self.run_js("card")["view"]["card"]
         self.assertIn("3D card flip", card)

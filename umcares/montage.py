@@ -81,6 +81,7 @@ MOVES = ("in", "out", "pan_left", "pan_right", "still")
 VIDEO_MOVES = ("in", "out")                       # a video clip can zoom over its whole length; panning is for photos
 ZOOM_TRANSITIONS = ("zoom", "zoom_in", "zoom_out")  # zoom cuts: push in at the end of a piece (zoom_in), settle at its start (zoom_out), or both (zoom)
 TRANSITIONS = ZOOM_TRANSITIONS + ("flip",)        # flip: a piece swings in around its vertical axis in perspective, and swings out before the next
+EFFECTS = ("dither", "glitch", "neon")             # picture effects, done in ffmpeg alone: ordered-dither pixels, glitch bursts, neon outlines
 DEPTHS = ("card",)                                # card: each picture is a smaller card that sways in perspective over a blurred copy of itself
 FLIP_TIME = 0.4                                   # seconds a card flip takes, in and out (at most a third of a short piece)
 FLIP_EDGE = 0.94                                  # how far edge-on the card gets at the very start: 1 would be a line (the maths has no solution)
@@ -105,7 +106,7 @@ DUCK_IN, DUCK_OUT = 0.25, 0.4  # seconds the music takes to dip before a phrase 
 NICE = prepare.NICE
 THREADS = prepare.THREADS
 ALLOWED_TOP = {"kind", "version", "title", "format", "template", "clips", "captions", "title_card", "end_card", "music",
-               "max_seconds", "note", "quality", "speech", "clip_sound", "transition", "tighten", "sfx", "depth"}
+               "max_seconds", "note", "quality", "speech", "clip_sound", "transition", "tighten", "sfx", "depth", "effect"}
 ALLOWED_CLIP = {"media", "caption", "hold", "speed", "start", "zoom", "move", "quote", "by", "announce", "countdown", "audiogram", "image", "tighten"}
 ALLOWED_ANNOUNCE = {"title", "date", "time", "place", "note"}
 CONTENT_KINDS = ("photo", "video", "quote", "announce", "countdown", "audiogram")      # what counts as a clip of the video (cards at the ends do not)
@@ -344,6 +345,8 @@ def validate(recipe, root) -> dict:
         problems.append('tighten: must be "gaps" (cut the dead air out of talking clips) or left out')
     if recipe.get("transition") not in (None, *TRANSITIONS):
         problems.append(f"transition: must be one of {', '.join(TRANSITIONS)} (a zoom cut or a card flip between pieces) or left out")
+    if recipe.get("effect") not in (None, *EFFECTS):
+        problems.append(f"effect: must be one of {', '.join(EFFECTS)} (a look for the pictures) or left out")
     if recipe.get("depth") not in (None, *DEPTHS):
         problems.append(f"depth: must be {' or '.join(DEPTHS)} (pictures as swaying cards) or left out")
     if recipe.get("clip_sound") not in (None, "speech"):
@@ -374,7 +377,7 @@ def validate(recipe, root) -> dict:
         raise RecipeError(problems)
     return {"kind": "montage", "version": 1, "title": title.strip(), "format": fmt, "template": tpl,
             "captions": recipe.get("captions", True), "max_seconds": max_s, "clips": clips, "cards": cards,
-            "quality": recipe.get("quality", "final"), "speech": recipe.get("speech"), "clip_sound": recipe.get("clip_sound"), "transition": recipe.get("transition"), "depth": recipe.get("depth"), "tighten": recipe.get("tighten"), "sfx": recipe.get("sfx"), "tempo": tempo,
+            "quality": recipe.get("quality", "final"), "speech": recipe.get("speech"), "clip_sound": recipe.get("clip_sound"), "transition": recipe.get("transition"), "depth": recipe.get("depth"), "effect": recipe.get("effect"), "tighten": recipe.get("tighten"), "sfx": recipe.get("sfx"), "tempo": tempo,
             "music": None if music_item is None else {**music, "_item": music_item}, "note": recipe.get("note")}
 
 
@@ -562,7 +565,7 @@ def resolve(validated: dict, root) -> dict:
     width, height = (even(fmt["width"] * DRAFT_SCALE), even(fmt["height"] * DRAFT_SCALE)) if draft else (fmt["width"], fmt["height"])
     return {"title": r["title"], "format": r["format"], "template": r["template"], "quality": "draft" if draft else "final",
             "width": width, "height": height,
-            "fps": fmt["fps"], "fade": round(fade, 3), "total": total, "transition": r.get("transition"), "depth": r.get("depth"), "sfx": sfx_plan, "segments": segs, "duck": duck, "music": music, "sync": None if not sync else {k: v for k, v in sync.items() if k != "music_start"},
+            "fps": fmt["fps"], "fade": round(fade, 3), "total": total, "transition": r.get("transition"), "depth": r.get("depth"), "effect": r.get("effect"), "sfx": sfx_plan, "segments": segs, "duck": duck, "music": music, "sync": None if not sync else {k: v for k, v in sync.items() if k != "music_start"},
             "warnings": warnings,
             "recipe": {k: v for k, v in r.items() if k not in ("clips", "cards", "music")}}
 
@@ -817,6 +820,60 @@ def _card_fragment(src: str, out: str, fps: int, d: float, W: int, H: int) -> st
             f"[cbg][ccard][cmask]maskedmerge,format=yuv420p{out}")
 
 
+DITHER_WIDTH = 180                                # the dither is drawn this many pixels across and enlarged, so the dots are big and chunky
+DITHER_LEVELS = 6                                 # levels per colour channel: 216 colours (4 looked noisy, with olive fringes on skin)
+BAYER = (0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5)    # a 4x4 ordered-dither matrix
+GLITCH_EVERY, GLITCH_FOR = 0.9, 0.14              # seconds between glitch bursts (one starts every piece) and how long each lasts
+
+
+def _effect_fragment(src: str, out: str, name: str, W: int, H: int) -> str:
+    """The picture effect as a graph fragment from label `src` to label `out`. Every stage that blends is held in gbrp: blending streams that
+    ffmpeg has silently converted to different pixel formats swaps colour planes (the first neon came out solid magenta)."""
+    G = "format=gbrp"
+    if name == "dither":
+        order = str(BAYER[0])
+        for k in range(1, 16):
+            order = f"if(eq(ld(0),{k}),{BAYER[k]},{order})"
+        L = DITHER_LEVELS
+        chan = lambda c: (f"{c}='st(0,mod(X,4)+4*mod(Y,4));st(1,{c}(X,Y)/255*{L - 1}+({order}+0.5)/16);"
+                          f"clip(floor(ld(1)),0,{L - 1})*255/{L - 1}'")
+        h = max(2, round(H * DITHER_WIDTH / W) // 2 * 2)
+        return (f"{src}scale={DITHER_WIDTH}:{h}:flags=area,{G},geq={chan('r')}:{chan('g')}:{chan('b')},"
+                f"scale={W}:{H}:flags=neighbor,format=yuv420p{out}")
+    if name == "glitch":
+        burst = f"lt(mod(t,{GLITCH_EVERY}),{GLITCH_FOR})"
+        band = "gt(mod(floor(Y/37),5),3)"                                   # some horizontal bands tear sideways
+        tear = f"if({band},{max(8, W // 8)},0)"
+        return (f"{src}rgbashift=rh={-max(2, W // 54)}:bh={max(2, W // 54)}:gv={max(1, W // 135)}:enable='{burst}',"
+                f"geq=lum='lum(mod(X+{tear},W),Y)':cb='cb(mod(X+{tear}/2,W/2),Y)':cr='cr(mod(X+{tear}/2,W/2),Y)':enable='{burst}',"
+                f"noise=alls=22:allf=t:enable='{burst}',format=yuv420p{out}")
+    if name == "neon":
+        boost = lambda k: f"lutrgb=r='clip(val*{k},0,255)':g='clip(val*{k},0,255)':b='clip(val*{k},0,255)'"
+        sigma = max(3, W // 70)
+        return (f"{src}{G},split=2[nb][ne];[nb]eq=brightness=-0.30:contrast=1.1:saturation=1.0,{G}[nd];"
+                f"[ne]edgedetect=mode=wires:high=0.12:low=0.03,{G},{boost(9)},split=2[nw1][nw2];"
+                f"[nw1]dilation,colorchannelmixer=rr=0.35:gg=1:bb=1,{G}[ncore];"
+                f"[nw2]gblur=sigma={sigma},{boost(6)},colorchannelmixer=rr=1:gg=0.15:bb=0.9,{G}[nglow];"
+                f"[nd][ncore]blend=all_mode=screen,{G}[nt];[nt][nglow]blend=all_mode=screen,format=yuv420p{out}")
+    return f"{src}null{out}"
+
+
+def _picture_graph(plan, head: str, fps: int, d: float, W: int, H: int) -> str:
+    """The graph of a photo or clip piece up to its label [v]: `head` (the source and the chain of plain filters, no output label), then the
+    picture effect, then the swaying card look, each as its own stage."""
+    stages = []
+    if plan.get("effect"):
+        stages.append(lambda a, b: _effect_fragment(a, b, plan["effect"], W, H))
+    if plan.get("depth") == "card":
+        stages.append(lambda a, b: _card_fragment(a, b, fps, d, W, H))
+    if not stages:
+        return f"{head}[v]"
+    graph = f"{head}[s0]"
+    for j, stage in enumerate(stages):
+        graph += ";" + stage(f"[s{j}]", "[v]" if j == len(stages) - 1 else f"[s{j + 1}]")
+    return graph
+
+
 def _finish_3d(plan, seg, i, graph: str, out_label: str, fps: int, d: float) -> str:
     """Put the card flip after the last stage of a piece's graph (so the captions flip with the picture)."""
     last = len(plan["segments"]) - 1
@@ -932,9 +989,7 @@ def _piece_command(ffmpeg, plan, seg, i, workdir: Path, out: Path):
         }[move]
         punch = _zoom_filter(W, H, d, transition=transition)
         chain = ",".join(p for p in (motion, punch, look, "scale=out_range=tv", "format=yuv420p") if p)
-        graph = f"[0:v]{chain}[v]" + overlay_graph + (";[o]format=yuv420p[out]" if overlay_graph else "")
-        if plan.get("depth") == "card":
-            graph = f"[0:v]{chain}[v0];" + _card_fragment("[v0]", "[v]", fps, d, W, H) + overlay_graph + (";[o]format=yuv420p[out]" if overlay_graph else "")
+        graph = _picture_graph(plan, f"[0:v]{chain}", fps, d, W, H) + overlay_graph + (";[o]format=yuv420p[out]" if overlay_graph else "")
         graph = _finish_3d(plan, seg, i, graph, out_label, fps, d)
         steps.append((_base(ffmpeg) + ["-loop", "1", "-framerate", str(fps), "-t", str(d), "-i", str(comp)] + overlay_in +
                       ["-filter_complex", graph, "-map", out_label, "-t", str(d), "-r", str(fps)] + _encode_piece(plan) + [str(out)], d))
@@ -943,9 +998,7 @@ def _piece_command(ffmpeg, plan, seg, i, workdir: Path, out: Path):
     fps_f = f"fps={fps}" if speed >= 0.999 else f"framerate=fps={fps}"
     zoom = _zoom_filter(W, H, d, move=seg.get("move"), amount=max(tpl["zoom"], 0.06), transition=plan.get("transition"))
     chain = ",".join(p for p in (f"setpts=(PTS-STARTPTS)/{speed}", fps_f, zoom, look, "scale=out_range=tv", "format=yuv420p") if p)
-    graph = f"[0:v]{_compose(W, H)},{chain}[v]" + overlay_graph + (";[o]format=yuv420p[out]" if overlay_graph else "")
-    if plan.get("depth") == "card":
-        graph = f"[0:v]{_compose(W, H)},{chain}[v0];" + _card_fragment("[v0]", "[v]", fps, d, W, H) + overlay_graph + (";[o]format=yuv420p[out]" if overlay_graph else "")
+    graph = _picture_graph(plan, f"[0:v]{_compose(W, H)},{chain}", fps, d, W, H) + overlay_graph + (";[o]format=yuv420p[out]" if overlay_graph else "")
     graph = _finish_3d(plan, seg, i, graph, out_label, fps, d)
     steps.append((_base(ffmpeg) + ["-ss", str(seg["src_start"]), "-t", str(seg["src_used"]), "-i", str(root_of(plan) / seg["rel"])] + overlay_in +
                   ["-filter_complex", graph, "-map", out_label, "-t", str(d), "-r", str(fps)] + _encode_piece(plan) + [str(out)], d))
@@ -1537,6 +1590,7 @@ def brief(root, project_name: str = "") -> str:
               "- `tighten`: `\"gaps\"` cuts the dead air out of talking video clips: each phrase is kept with a little either side, pauses up to about 0.8 s stay, longer silences are cut and the phrases joined (jump cuts), and the clip keeps its own sound. A clip can opt in or out with `\"tighten\": true|false`. It finds speech-like sound, not words, so it cannot remove a repeated take.",
               "- `transition`: `\"zoom\"` (punch in at the end of a piece and settle at the start of the next, a zoom cut), `\"zoom_in\"` or `\"zoom_out\"` (just one half), or `\"flip\"` (a 3D card flip: each piece swings out around its vertical axis and the next swings in, through black; it suits hard cuts). Applies to photos and clips, never changes any timing. "
               "A video clip can also take `move`: `\"in\"` or `\"out\"` to zoom slowly over its whole length.",
+              "- `effect`: `\"dither\"` (chunky ordered-dither pixels, 216 colours), `\"glitch\"` (a short burst of colour split, sideways tearing and noise as every piece starts and about every 0.9 s) or `\"neon\"` (glowing outlines over a darkened picture). Applies to photos and clips, works with any look, never changes any timing; captions stay clean and on top.",
               "- `depth`: `\"card\"` shows each photo and clip as a smaller card that sways in 3D perspective over a darkened, blurred copy of itself. It is a flat picture tilted, not a depth map, so nothing parallaxes. It also works with `transition`.",
               "- `speech`: `\"follow\"` starts each video clip (that has no explicit `start`) where people speak, so a long clip's excerpt holds the words, not dead air. It finds speech-like sound, not words.",
               f"- `max_seconds`: up to {MAX_SECONDS_LIMIT} (default {DEFAULT_SECONDS}); clips beyond it are dropped from the end.",
