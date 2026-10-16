@@ -74,7 +74,7 @@ class Card(unittest.TestCase):
         self.assertEqual(len(v["templates"]), len(montage.TEMPLATES), "every look the server knows is offered")
         self.assertTrue(any(t.startswith("Slow motion") for t in v["templates"]))
         self.assertTrue(any(t.startswith("Paper collage (Vox style)") for t in v["templates"]))
-        self.assertEqual(v["music"], ["No music (add a track in the app when you post)", "song.m4a"])
+        self.assertEqual(v["music"], ["No music (add one when you post)", "song.m4a"])
         self.assertEqual([r["text"] for r in v["rows"]], [" 🖼 The dean opening the event", " 🖼 port.jpg", " 🎞 clip.mp4"])
         self.assertEqual(v["rows"][0]["sub"], "land.jpg", "the filename sits under a caption")
         self.assertTrue(all(r["checked"] for r in v["rows"]))

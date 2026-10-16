@@ -721,6 +721,21 @@ rule: **the person, template or model writing the recipe declares intent and nev
 The renderer measures the real clips and works out every duration, overlap and offset, so a recipe always
 renders the same video.
 
+**How the page is laid out** (a redesign driven by rules from the UX notes saved in sekerinshotto: define the tokens first, give every
+element one job and one level, make the primary action look primary, fewer choices at once, phone first, and the accessibility checklist).
+- *A design system* (`web.STYLE`): colour, type, spacing and radius tokens, light and dark, and components that only use them. Every control
+  is at least 44 px tall, every interactive element shows a focus ring, and **every text and background pair is contrast-tested at 4.5:1 in
+  both modes** (`tests/test_web.py`).
+- *The Make a video card* shows what most videos need first (format, look with its description under it, title, captions, music), then the
+  pictures, and folds the rest into **More options** (beat timing, speech and sound, motion and effects, length); the fold's summary lists
+  what is switched on, so closed it hides nothing. **Make video** and **Preview plan** sit in a bar that stays at the bottom of the screen
+  while you edit (and settles into place when you scroll past it); the other actions (Quick draft, Save recipe, Copy brief) are behind **⋯**.
+- *The library* draws a card only for folders that hold something; empty folders are one line at the end.
+- *Tests find the page's controls by name* (`data-ctl="template"`, `data-part="plan"`), never by position, so the layout can change without
+  breaking them; every form control has a label a screen reader can read.
+- Measured on demo data at phone width, the page went from 3,558 px tall (old design) to 3,502 px: the bigger tap targets cost height and the
+  folding gives most of it back, so this is **not** a big reduction. The finished-videos list and the photo tiles are unchanged (next phase).
+
 ```json
 {"kind": "montage", "title": "CyberDSA", "format": "reels", "template": "slowmo",
  "clips": [{"media": "a1b2c3d4e5f6", "caption": "Opening speech"}, {"media": "IMG_204.jpg", "hold": 3}],

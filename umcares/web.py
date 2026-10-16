@@ -391,6 +391,28 @@ progress::-webkit-progress-bar{background:var(--surface2)}
 progress::-webkit-progress-value{background:var(--acc);border-radius:99px}
 progress::-moz-progress-bar{background:var(--acc);border-radius:99px}
 video{width:100%;border-radius:var(--r-sm);background:#000}
+.field{display:block;margin:var(--s3) 0 var(--s1)}
+.field>.dim{display:block;margin-bottom:0}
+.hint{margin:var(--s1) 0 0;line-height:1.35}
+.urow>.row{flex-wrap:nowrap;align-items:flex-start}.urow>.row>.pickline{flex:1;min-width:0;overflow-wrap:anywhere;display:block;min-height:var(--tap);padding:10px 0;cursor:pointer}.urow>.row>span:first-child{flex:1;min-width:0;overflow-wrap:anywhere}.urow>.row>span:last-child{flex:none;white-space:nowrap}
+section.empties{background:none;border-style:dashed;padding:var(--s3) var(--s4)}
+.group{margin:var(--s4) 0}
+.group-title{font-size:13px;font-weight:650;letter-spacing:.04em;text-transform:uppercase;color:var(--dim);margin:0 0 var(--s2)}
+details.opts{border:1px solid var(--line);border-radius:var(--r-sm);margin:var(--s4) 0;background:var(--surface)}
+details.opts>summary{min-height:var(--tap);padding:var(--s3);font-weight:650;cursor:pointer;list-style:none;display:flex;align-items:center;gap:var(--s2);overflow-wrap:anywhere}
+details.opts>summary::-webkit-details-marker{display:none}
+details.opts>summary::before{content:"";flex:none;width:8px;height:8px;border-right:2px solid var(--dim);border-bottom:2px solid var(--dim);transform:rotate(-45deg);transition:transform .15s}
+details.opts[open]>summary::before{transform:rotate(45deg)}
+details.opts>:not(summary){margin-left:var(--s3);margin-right:var(--s3)}
+details.opts[open]{padding-bottom:var(--s2)}
+.bar{position:sticky;bottom:0;z-index:5;margin:var(--s4) calc(-1*var(--s4)) calc(-1*var(--s4));padding:var(--s3) var(--s4) max(var(--s3),env(safe-area-inset-bottom));background:var(--surface);border-top:1px solid var(--line);border-radius:0 0 var(--r) var(--r);box-shadow:0 -8px 20px -12px rgba(0,0,0,.35)}
+.bar .notice{margin:0 0 var(--s2)}.bar .notice:empty{display:none}
+.bar .btns{flex-wrap:nowrap}.bar .btns>button{min-width:0;white-space:nowrap;padding-left:var(--s2);padding-right:var(--s2)}.bar .btns button:first-child{flex:1.4}.bar .btns>button.alt{flex:1}
+details.more{position:relative;flex:none}
+details.more>summary{display:grid;place-items:center;width:var(--tap);min-height:var(--tap);border-radius:var(--r-sm);border:1px solid var(--line);background:var(--surface2);color:var(--acc);font-size:22px;font-weight:700;line-height:1;cursor:pointer;list-style:none}
+details.more>summary::-webkit-details-marker{display:none}
+details.more>.pop{position:absolute;right:0;bottom:calc(100% + var(--s2));z-index:6;width:min(280px,calc(100vw - 2*var(--s4)));padding:var(--s2);background:var(--surface);border:1px solid var(--line);border-radius:var(--r-sm);box-shadow:0 10px 28px rgba(0,0,0,.4)}
+details.more>.pop button{margin:var(--s1) 0}
 @media (prefers-reduced-motion:no-preference){button,.mv{transition:filter .12s,transform .08s}button:not(:disabled):active{transform:scale(.98)}button:not(:disabled):hover{filter:brightness(1.08)}}
 @media (min-width:700px){section,.card{padding:var(--s5)}}
 """
@@ -527,13 +549,20 @@ function loadLibrary(){
     const lib = document.getElementById("lib");
     lib.replaceChildren(); tiles = {};
     let n = 0, bytes = 0;
+    const empties = [];
     d.folders.forEach(g => {
       n += g.files.length; g.files.forEach(f => bytes += f.size);
+      if (!g.files.length) { empties.push(g); return; }                       // a folder with nothing in it is one line at the end, not a card
       const grid = el("div", {className:"grid"});
       g.files.forEach(f => grid.append(tile(f, g)));
-      if (!g.files.length) grid.append(el("div", {className:"dim"}, g.exists ? "empty" : "folder missing"));
       lib.append(el("section", {}, el("h2", {}, el("span", {}, g.label), el("span", {className:"dim"}, plural(g.files.length, "file"))), grid));
     });
+    if (empties.length) {
+      const missing = empties.filter(g => !g.exists);
+      const note = el("section", {className: "empties"}, el("div", {className: "dim"}, "Empty folders: " + empties.map(g => g.label).join(", ") + "."
+        + (missing.length ? " Not created yet: " + missing.map(g => g.label).join(", ") + "." : "")));
+      lib.append(note);
+    }
     document.getElementById("status").textContent = plural(n, "file") + " · " + mb(bytes);
     fillThumbs(d.folders.filter(g => g.files.some(f => f.kind === "video" || f.kind === "image")).map(g => g.folder));
     const now = d.folders.flatMap(g => g.files).map(f => f.sha).filter(Boolean);
