@@ -599,7 +599,7 @@ function createDownloader(opts) {
           try { r = await fetch(urlOf(name), {headers: {Range: "bytes=" + a + "-" + b}, signal: ctl.signal, cache: "no-store"}); }
           finally { clearTimeout(timer); t.ctls.delete(ctl); }
           if (t.stop) return;
-          if (r.status === 404) { t.stop = true; s.state = "failed"; s.note = "the video is no longer on the server"; await abortAll(t); await dropChunks(keyOf(name)); await op("meta", "readwrite", x => x.delete(keyOf(name))); changed(name); return; }
+          if (r.status === 404) { t.gone = true; t.stop = true; await abortAll(t); return; }               // cleaned up in run() once every worker has stopped
           if (r.status !== 206) throw new Error("the server answered " + r.status + " to a range request");
           const total = Number(((r.headers.get("Content-Range") || "").split("/")[1]) || 0);
           if (total && total !== size) { changedOnServer = true; newSize = total; return; }
@@ -625,6 +625,11 @@ function createDownloader(opts) {
     // A worker stops when nothing is pending, but another worker's piece in flight can still fail and come back: so go round again
     // until every piece is stored.
     while (!t.stop && have.size < n && !changedOnServer) await Promise.all(Array.from({length: Math.min(PARALLEL, Math.max(1, pending.length))}, worker));
+    if (t.gone) {                                                  // deleted on the server: only now, with no piece still in flight to write over this
+      s.state = "failed"; s.note = "the video is no longer on the server"; s.rate = 0;
+      await dropChunks(keyOf(name)); await op("meta", "readwrite", x => x.delete(keyOf(name))); changed(name);
+      return;
+    }
     if (t.stop) return;
     if (changedOnServer) { m.size = newSize; s.size = newSize; await restart(name, m, "the video changed on the server; starting over"); return run(name); }
     return finish(name, m);
