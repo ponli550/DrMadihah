@@ -10,7 +10,7 @@ function mk(tag) {
     tag, children: [], textContent: "", hidden: false, value: "", className: "", disabled: false, checked: false, _l: {}, files: [], title: "", src: "", href: "",
     append(...k) { for (const x of k) { if (typeof x === "string") this.textContent += x; else if (x) { x.parent = this; this.children.push(x); } } },
     replaceChildren(...k) { this.children = []; this.textContent = ""; this.append(...k); },
-    replaceWith() {}, addEventListener(ev, f) { this._l[ev] = f; }, removeAttribute() {},
+    replaceWith() {}, addEventListener(ev, f) { this._l[ev] = f; }, removeAttribute() {}, setAttribute(k, v) { (this.attrs = this.attrs || {})[k] = v; },
     remove() { if (this.parent) this.parent.children = this.parent.children.filter(c => c !== this); },
     click() { return this._l.click && this._l.click(); },
   };
@@ -40,29 +40,30 @@ const press = async b => { if (b._l.click) await b._l.click(); if (b.onclick) aw
 
 const card = () => ids.montage.children[0] || null;
 const button = text => card() && all(card(), n => n.tag === "button" && n.textContent === text)[0];
-const selects = () => all(card(), n => n.tag === "select");
+const named = (kind, name) => all(card(), n => n.attrs && n.attrs["data-" + kind] === name);
+const ctlOf = name => named("ctl", name)[0];                    // controls and parts are found by name, never by position: the layout is free to change
+const partOf = name => named("part", name)[0];
+const pickBoxes = () => named("ctl", "pick");
 const labels = s => s.children.map(o => o.textContent);
 const view = () => {
   const c = card();
   if (!c) return { open: false };
-  const [fmt, tpl, music, max] = selects();
-  const err = all(c, n => (n.className || "").split(" ").includes("notice"))[0];
-  const at = c.children.indexOf(err);
-  const rowsBox = c.children[c.children.indexOf(err) - 1];
+  const [fmt, tpl, music, max] = ["format", "template", "music", "max"].map(ctlOf);
+  const err = partOf("notice"), rowsBox = partOf("list");
   return {
-    open: true, title: c.children[0].children[0].textContent,
+    open: true, title: partOf("title").textContent,
     formats: labels(fmt), templates: labels(tpl), music: labels(music), lengths: labels(max),
     values: { format: fmt.value, template: tpl.value, music: music.value, max: max.value },
     rows: rowsBox.children.map(r => ({ text: r.children[0].children[0].textContent, checked: r.children[0].children[0].children[0].checked, sub: r.children[1] && r.children[1].textContent || "" })),
-    card: deepText(c), notice: deepText(err), noticeClass: err.className, plan: deepText(c.children[at + 1]), jobs: deepText(c.children[c.children.length - 1]),
+    card: deepText(c), notice: deepText(err), noticeClass: err.className, plan: deepText(partOf("plan")), jobs: deepText(partOf("jobs")),
     video: (all(c, n => n.tag === "video")[0] || {}).src || null,
     poster: (all(c, n => n.tag === "video")[0] || {}).poster || null, preload: (all(c, n => n.tag === "video")[0] || {}).preload || null,
     links: all(c, n => n.tag === "a").map(a => a.href),
     buttons: all(c, n => n.tag === "button").map(b => b.textContent).filter(t => !["↑", "↓"].includes(t)),
-    saved: all(c, n => n.className === "urow" && n.parent === c).map(r => deepText(r)),
+    saved: all(partOf("saved") || {}, n => n.className === "urow").map(r => deepText(r)),
   };
 };
-const check = (i, v) => { all(card(), n => n.tag === "input" && n.type === "checkbox")[i + 7].checked = v; };   // [0] is "show captions", [1] "cut on the beat", [2] "start where people speak", [3] "keep the sound", [4] "cut the dead air", [5] "tick on each word", [6] "3D cards"
+const check = (i, v) => { pickBoxes()[i].checked = v; };
 
 (async () => {
   const page = await (await realFetch(`/umcares/p/${slug}/`)).text();
@@ -84,48 +85,48 @@ const check = (i, v) => { all(card(), n => n.tag === "input" && n.type === "chec
     await press(button("Preview plan"));
     out.view = view();
   } else if (scenario === "preview") {
-    const [fmt, tpl] = selects();
+    const fmt = ctlOf("format"), tpl = ctlOf("template");
     tpl.value = "punchy"; fmt.value = "square";
-    all(card(), n => n.tag === "input" && n.type === "text")[0].value = "Hello CyberDSA";
+    ctlOf("title").value = "Hello CyberDSA";
     await press(button("Preview plan"));
     out.view = view();
   } else if (scenario === "sync") {
-    const sync = all(card(), n => n.tag === "input" && n.type === "checkbox")[1];
+    const sync = ctlOf("sync");
     out.disabledAtStart = !!sync.disabled;
-    out.speechDefault = all(card(), n => n.tag === "input" && n.type === "checkbox")[2].checked;
-    out.soundDefault = all(card(), n => n.tag === "input" && n.type === "checkbox")[3].checked;
-    out.tightenDefault = all(card(), n => n.tag === "input" && n.type === "checkbox")[4].checked;
-    const music = selects()[2];
+    out.speechDefault = ctlOf("speech").checked;
+    out.soundDefault = ctlOf("sound").checked;
+    out.tightenDefault = ctlOf("tighten").checked;
+    const music = ctlOf("music");
     music.value = "song.m4a";
     if (music._l.change) await music._l.change();
     out.enabledAfterMusic = !sync.disabled;
     sync.checked = true;
-    selects()[1].value = "punchy";
+    ctlOf("template").value = "punchy";
     await press(button("Preview plan"));
     out.withSync = view();
     music.value = "";
     if (music._l.change) await music._l.change();
     out.afterRemoval = { disabled: !!sync.disabled, checked: !!sync.checked };
   } else if (scenario === "zoomcut") {
-    selects()[4].value = "zoom";                                       // [0] format, [1] look, [2] music, [3] length, [4] cut style
+    ctlOf("cut").value = "zoom";
     await press(button("Preview plan"));
     out.view = view();
   } else if (scenario === "threed") {
-    selects()[4].value = "flip";
-    all(card(), n => n.tag === "input" && n.type === "checkbox")[6].checked = true;
+    ctlOf("cut").value = "flip";
+    ctlOf("depth").checked = true;
     await press(button("Preview plan"));
     out.view = view();
   } else if (scenario === "sfx") {
-    selects()[5].value = "hit";                                        // [4] is the cut style, [5] the sound effects on cuts
+    ctlOf("fxcuts").value = "hit";
     await press(button("Preview plan"));
     out.view = view();
   } else if (scenario === "tempo") {
-    all(card(), n => n.tag === "input" && n.type === "text")[1].value = "75";          // [0] is the title card, [1] the BPM box
-    selects()[1].value = "punchy";
+    ctlOf("bpm").value = "75";
+    ctlOf("template").value = "punchy";
     await press(button("Preview plan"));
     out.view = view();
   } else if (scenario === "make") {
-    selects()[1].value = "punchy";
+    ctlOf("template").value = "punchy";
     await press(button("Make video"));
     out.during = view();                                            // right after pressing Make, before it finishes
     await press(button("Rendering…") || { _l: {}, onclick: null });  // a second press must do nothing
@@ -134,7 +135,7 @@ const check = (i, v) => { all(card(), n => n.tag === "input" && n.type === "chec
     await sleep(400);
     out.view = view();
   } else if (scenario === "delete") {
-    selects()[1].value = "punchy";
+    ctlOf("template").value = "punchy";
     await press(button("Make video"));
     const t0 = Date.now();
     while (Date.now() - t0 < 120000) { const v = view(); if (v.video) break; await sleep(150); }
@@ -159,10 +160,10 @@ const check = (i, v) => { all(card(), n => n.tag === "input" && n.type === "chec
     await press(button("Make video"));
     out.view = view();
   } else if (scenario === "save") {
-    selects()[1].value = "melancholy";
+    ctlOf("template").value = "melancholy";
     await press(button("Save recipe…"));
     out.saved = view();
-    selects()[1].value = "clean";                                   // change it, then load the saved one back
+    ctlOf("template").value = "clean";                                   // change it, then load the saved one back
     const use = all(card(), n => n.tag === "button" && n.textContent === "Use")[0];
     await press(use);
     out.used = view();

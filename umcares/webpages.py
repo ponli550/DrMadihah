@@ -811,6 +811,7 @@ function createMontage(opts) {
     listBox.replaceChildren(...order.map((ref, idx) => {
       const i = byRef[ref];
       const check = el("input", {type: "checkbox", checked: picked.has(ref)});
+      check.setAttribute("data-ctl", "pick");
       rows.push({ref, check});
       const up = el("button", {type: "button", className: "mv", title: "Move earlier"}, "↑");
       const down = el("button", {type: "button", className: "mv", title: "Move later"}, "↓");
@@ -984,6 +985,7 @@ function createMontage(opts) {
       cut: select([["", "Plain cuts"], ["zoom", "Zoom through (punch in, then settle)"], ["zoom_in", "Zoom in at the end of each piece"], ["zoom_out", "Settle in at the start of each piece"], ["flip", "3D card flip (best on hard cuts)"]], form.transition),
       max: select([["15", "up to 15 s"], ["30", "up to 30 s"], ["45", "up to 45 s"], ["60", "up to 60 s"], ["90", "up to 90 s"]], form.max),
     };
+    Object.keys(ctl).forEach(k => { if (ctl[k] && ctl[k].setAttribute) ctl[k].setAttribute("data-ctl", k); });     // controls are found by name (tests, and anything that styles them), not by position
     // a plain text box that keeps only digits and a dot: a number box lets "e" in, and then refuses everything typed after it
     ctl.bpm.addEventListener("input", () => { const v = ctl.bpm.value.replace(/[^0-9.]/g, ""); if (v !== ctl.bpm.value) ctl.bpm.value = v; });
     ctl.music.addEventListener("change", () => {
@@ -1002,6 +1004,7 @@ function createMontage(opts) {
       if (b) ctl.bpm.value = String(b);
     });
     listBox = el("div", {}); planBox = el("div", {}); noticeBox = el("div", {className: "notice ok"}); jobsBox = el("div", {});
+    listBox.setAttribute("data-part", "list"); planBox.setAttribute("data-part", "plan"); noticeBox.setAttribute("data-part", "notice"); jobsBox.setAttribute("data-part", "jobs");
     const go = el("button", {type: "button"}, "Make video");
     goBtn = go; runBtns = [];
     const draft = el("button", {type: "button", className: "alt"}, "Quick draft (half size, fast)");
@@ -1020,8 +1023,10 @@ function createMontage(opts) {
         r.valid ? el("span", {}, use, run) : el("span", {className: "dim"}, "needs fixing")),
         ...(r.valid ? [] : r.problems.map(p => el("div", {className: "dim"}, "• " + p))));
     });
+    const cardTitle = el("span", {}, "Make a video"); cardTitle.setAttribute("data-part", "title");
+    const savedBox = el("div", {}, ...saved); savedBox.setAttribute("data-part", "saved");
     mount.replaceChildren(el("section", {className: "card"},
-      el("h2", {}, el("span", {}, "Make a video"), el("span", {className: "dim"}, "for Instagram, Reels, TikTok")),
+      el("h2", {}, cardTitle, el("span", {className: "dim"}, "for Instagram, Reels, TikTok")),
       el("div", {className: "dim"}, "Pick the look and the pictures; every timing is worked out for you."),
       el("div", {className: "dim"}, "Format"), ctl.format, el("div", {className: "dim"}, "Look"), ctl.template,
       ctl.title, el("label", {className: "row"}, el("span", {}, ctl.captions, " Show captions on screen")),
@@ -1038,12 +1043,12 @@ function createMontage(opts) {
       el("div", {className: "dim"}, "Sound effects"), ctl.fxcuts,
       el("div", {className: "dim"}, "Pictures and clips, in order (tick to include)"), listBox,
       noticeBox, planBox, go, draft, look, keep, ask,
-      ...(saved.length ? [el("div", {className: "dim"}, "Saved recipes")].concat(saved) : []),
+      ...(saved.length ? [el("div", {className: "dim"}, "Saved recipes"), savedBox] : []),
       jobsBox));
     renderList(); renderJobs();
   }
   async function refresh() {
-    try { syncForm(); await load(); render(); if (st.active) schedule(1500); } catch (e) { /* the card just stays as it was */ }
+    try { syncForm(); await load(); render(); if (st.active) schedule(1500); } catch (e) { console.error("make-a-video card:", e); /* the card just stays as it was */ }
   }
   return {refresh};
 }
