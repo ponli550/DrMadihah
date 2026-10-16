@@ -38,6 +38,7 @@ PEAK_WARN, PEAK_FAIL = -1.0, 0.0          # true peak, dBTP
 DURATION_WARN, DURATION_FAIL = 0.25, 1.0  # seconds away from the planned length
 AV_WARN, AV_FAIL = 0.3, 1.0               # seconds the audio and video lengths may differ
 BPP = (0.03, 0.5)                         # bits per pixel per frame: below is soft and blocky, above is unusually heavy
+BPP_SHARE_MIN = 0.01                      # a share copy is made smaller on purpose; a photo reel at CRF 23 measured 0.016 and looked the same as the final
 BLACK_WARN, BLACK_FAIL = 0.6, 1.5         # seconds of black over a picture or clip (the fail also needs most of the piece)
 FREEZE_WARN = 1.5                         # seconds a clip may sit frozen
 SILENCE_GAP = 1.5                         # seconds of near-silence that is worth saying under a song
@@ -182,12 +183,13 @@ def judge(path, plan=None) -> dict:
         if not vbits:                                                  # no per-stream rate: the whole file minus the sound track
             vbits = max(0.0, size * 8 / duration - float((a or {}).get("bit_rate") or 0))
         bpp = vbits / (w * h * fps)
-        level = "ok" if BPP[0] <= bpp <= BPP[1] else "warn"
+        floor = BPP_SHARE_MIN if (plan or {}).get("quality") == "share" else BPP[0]
+        level = "ok" if floor <= bpp <= BPP[1] else "warn"
         pictured = sum(float(x.get("duration", 0)) for x in ((plan or {}).get("segments") or []) if x.get("kind") in PICTURE_KINDS)
-        if level == "warn" and bpp < BPP[0] and plan and plan.get("segments") and pictured < 0.5 * duration:
+        if level == "warn" and bpp < floor and plan and plan.get("segments") and pictured < 0.5 * duration:
             level = "ok"                                              # mostly flat text cards: a low rate is natural there and still crisp
-        msg = (f"video {vbits / 1e6:.1f} Mbit/s" + (" (low because most of it is flat text cards)" if bpp < BPP[0] else "")) if level == "ok" else (
-            f"video {vbits / 1e6:.2f} Mbit/s is thin for this size: it will look soft or blocky" if bpp < BPP[0]
+        msg = (f"video {vbits / 1e6:.1f} Mbit/s" + (" (low because most of it is flat text cards)" if bpp < floor else "")) if level == "ok" else (
+            f"video {vbits / 1e6:.2f} Mbit/s is thin for this size: it will look soft or blocky" if bpp < floor
             else f"video {vbits / 1e6:.1f} Mbit/s is unusually heavy for this size: slow to move and upload")
         add(level, "bitrate", msg)
 

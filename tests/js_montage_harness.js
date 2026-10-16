@@ -148,8 +148,8 @@ const check = (i, v) => { all(card(), n => n.tag === "input" && n.type === "chec
     await sleep(400);
     out.after = view();
     out.confirms = confirms;
-  } else if (scenario === "draft") {
-    await press(button("Quick draft (half size, fast)"));
+  } else if (scenario === "draft" || scenario === "share") {
+    await press(button(scenario === "draft" ? "Quick draft (half size, fast)" : "Smaller file for sharing"));
     const t0 = Date.now();
     while (Date.now() - t0 < 120000) { const v = view(); if (v.video) break; await sleep(150); }
     await sleep(400);

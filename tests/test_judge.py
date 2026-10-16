@@ -109,6 +109,14 @@ class Judging(unittest.TestCase):
         r = judge.judge(heavy, plan(total=2.0, segments=[{"kind": "photo", "start": 0.0, "duration": 2.0}]))
         self.assertEqual(level_of(r, "bitrate"), "warn")
 
+    def test_a_share_copy_is_allowed_a_lower_bitrate_but_not_a_starved_one(self):
+        """A share copy is smaller on purpose (a photo reel at CRF 23 measured 0.016 bits per pixel and looked the same as the final)."""
+        low = self.make("sharelow.mp4", vopts=("-b:v", "50k", "-maxrate", "50k", "-bufsize", "100k"))
+        self.assertEqual(level_of(judge.judge(low, plan()), "bitrate"), "warn", "a final at this rate is thin")
+        self.assertEqual(level_of(judge.judge(low, plan(quality="share")), "bitrate"), "ok", "a share copy at this rate is as intended")
+        starved = self.make("sharestarved.mp4", vopts=("-b:v", "4k", "-maxrate", "4k", "-bufsize", "8k"))
+        self.assertEqual(level_of(judge.judge(starved, plan(quality="share")), "bitrate"), "warn", "but there is still a floor")
+
     def test_a_thin_bitrate_is_not_a_fault_when_most_of_the_video_is_flat_text_cards(self):
         thin = self.make("thincards.mp4", vopts=("-b:v", "4k", "-maxrate", "4k", "-bufsize", "8k"))
         cards = plan(segments=[{"kind": "quote", "start": 0.0, "duration": 3.0}, {"kind": "photo", "start": 3.0, "duration": 1.0}])

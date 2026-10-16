@@ -768,7 +768,7 @@ function createMontage(opts) {
   const HEADERS = {"Content-Type": "application/json", "X-Requested-With": "umcares"};
   let st = null, order = [], picked = new Set(), rows = [], ctl = null, timer = null;
   let form = {format: "reels", template: "slowmo", title: "", captions: true, music: "", bpm: "", sync: false, speech: true, sound: true, tighten: false, transition: "", depth: false, fxcuts: "", fxwords: false, max: "30"};
-  let jobsBox = null, planBox = null, noticeBox = null, listBox = null, goBtn = null, draftBtn = null, runBtns = [];
+  let jobsBox = null, planBox = null, noticeBox = null, listBox = null, goBtn = null, draftBtn = null, shareBtn = null, runBtns = [];
 
   const mb = n => n < 1048576 ? Math.max(1, Math.round(n / 1024)) + " KB" : (n / 1048576).toFixed(1) + " MB";
   const secs = n => (Math.round(n * 10) / 10) + " s";
@@ -933,10 +933,11 @@ function createMontage(opts) {
     if (!jobsBox || !st) return;
     if (goBtn) { goBtn.disabled = !st.can_render || st.active; goBtn.textContent = st.active ? "Rendering…" : "Make video"; }
     if (draftBtn) draftBtn.disabled = !st.can_render || st.active;
+    if (shareBtn) shareBtn.disabled = !st.can_render || st.active;
     runBtns.forEach(b => { b.disabled = st.active; });
     const kids = [];
     st.jobs.slice(-4).reverse().forEach((j, n) => {
-      const line = el("div", {className: "row"}, el("span", {className: "name"}, j.title + " · " + j.template + " · " + j.format + (j.quality === "draft" ? " · draft" : "")),
+      const line = el("div", {className: "row"}, el("span", {className: "name"}, j.title + " · " + j.template + " · " + j.format + (j.quality === "draft" ? " · draft" : j.quality === "share" ? " · share copy" : "")),
         el("span", {className: "dim"}, j.state === "running" ? "rendering " + j.percent + "%" : j.state === "queued" ? "waiting" : j.state === "done" ? "✓ done" : j.state === "failed" ? "✗ " + j.error : "cancelled"));
       kids.push(el("div", {className: "urow"}, line, (j.state === "running" || j.state === "queued") ? el("progress", {max: 100, value: j.percent}) : ""));
       if (n === 0) (j.warnings || []).forEach(w => kids.push(el("div", {className: "dim"}, "⚠ " + w)));     // only the newest job's
@@ -967,7 +968,7 @@ function createMontage(opts) {
         tick.addEventListener("change", () => { if (tick.checked) toCheck.add(x.name); else toCheck.delete(x.name); renderJobs(); });
         kids.push(el("div", {className: "row"},
           el("span", {}, tick, " ", el("a", {href: BASE + "/exports/" + encodeURIComponent(x.name), target: "_blank"}, x.name)),
-          el("span", {}, el("span", {className: "dim"}, (x.quality === "draft" ? "draft · " : "") + (x.duration ? secs(x.duration) + " · " : "") + mb(x.size) + " "), del)));
+          el("span", {}, el("span", {className: "dim"}, (x.quality === "draft" ? "draft · " : x.quality === "share" ? "share copy · " : "") + (x.duration ? secs(x.duration) + " · " : "") + mb(x.size) + " "), del)));
         const one = el("button", {type: "button", className: "mv"}, x.verdict ? "Check again" : "Check");
         one.disabled = checking;
         one.addEventListener("click", () => checkNames([x.name], !!x.verdict));
@@ -1034,11 +1035,14 @@ function createMontage(opts) {
     goBtn = go; runBtns = [];
     const draft = el("button", {type: "button", className: "alt"}, "Quick draft (half size, fast)");
     draftBtn = draft;
+    const share = el("button", {type: "button", className: "alt", title: "The same video at full size in a much smaller file (a photo reel came out at about a seventh of the size): quicker over a slow link, and about what Instagram keeps anyway"}, "Smaller file for sharing");
+    shareBtn = share;
     const look = el("button", {type: "button", className: "alt"}, "Preview plan");
     const keep = el("button", {type: "button", className: "alt"}, "Save recipe…");
     const ask = el("button", {type: "button", className: "alt"}, "Copy brief for Claude");
     go.addEventListener("click", () => make()); look.addEventListener("click", preview);
     draft.addEventListener("click", () => make(Object.assign(buildRecipe(), {quality: "draft"})));
+    share.addEventListener("click", () => make(Object.assign(buildRecipe(), {quality: "share"})));
     keep.addEventListener("click", save); ask.addEventListener("click", brief);
     if (!st.can_render) { go.disabled = true; look.disabled = true; }
     const saved = st.recipes.map(r => {
@@ -1065,7 +1069,7 @@ function createMontage(opts) {
       el("div", {className: "dim"}, "Cuts between pictures and clips"), ctl.cut,
       el("div", {className: "dim"}, "Sound effects"), ctl.fxcuts,
       el("div", {className: "dim"}, "Pictures and clips, in order (tick to include)"), listBox,
-      noticeBox, planBox, go, draft, look, keep, ask,
+      noticeBox, planBox, go, share, draft, look, keep, ask,
       ...(saved.length ? [el("div", {className: "dim"}, "Saved recipes")].concat(saved) : []),
       jobsBox));
     renderList(); renderJobs();
