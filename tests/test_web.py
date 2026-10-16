@@ -459,6 +459,37 @@ class PageStyles(Server):
         css = self.req("GET", "/p/demo/")[2].decode()
         self.assertIn("input[type=checkbox]{width:auto", css)
 
+    @staticmethod
+    def luminance(hex_colour):
+        h = hex_colour.lstrip("#")
+        h = "".join(c * 2 for c in h) if len(h) == 3 else h
+        lin = lambda v: v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+        r, g, b = (lin(int(h[i:i + 2], 16) / 255) for i in (0, 2, 4))
+        return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+    def contrast(self, a, b):
+        la, lb = sorted((self.luminance(a), self.luminance(b)), reverse=True)
+        return (la + 0.05) / (lb + 0.05)
+
+    def test_every_text_and_background_pair_meets_wcag_aa_in_light_and_dark(self):
+        """From the accessibility checklist saved in sekerinshotto: colour contrast comes first. 4.5:1 for text of any size."""
+        import re
+        tokens = {"light": dict(re.findall(r"--([\w-]+):(#[0-9a-fA-F]{3,6})", web.STYLE.split("@media (prefers-color-scheme:dark)")[0])),
+                  "dark": dict(re.findall(r"--([\w-]+):(#[0-9a-fA-F]{3,6})", web.STYLE.split("@media (prefers-color-scheme:dark)")[1].split("\n")[0]))}
+        pairs = [("fg", "bg"), ("fg", "surface"), ("fg", "surface2"), ("dim", "bg"), ("dim", "surface"), ("dim", "surface2"), ("acc", "bg"), ("acc", "surface"),
+                 ("acc", "surface2"), ("on-acc", "acc"), ("err", "surface"), ("err", "bg"), ("ok", "surface"), ("warn", "surface")]
+        for mode, t in tokens.items():
+            for fg, bg in pairs:
+                with self.subTest(mode=mode, text=fg, on=bg):
+                    self.assertGreaterEqual(self.contrast(t[fg], t[bg]), 4.5, f"{mode}: {fg} {t[fg]} on {bg} {t[bg]}")
+
+    def test_every_control_is_at_least_44_pixels_tall(self):
+        self.assertIn("--tap:44px", web.STYLE)
+        self.assertIn("min-height:var(--tap)", web.STYLE.split("input,textarea,select,button{")[1].split("}")[0], "text fields, selects and buttons")
+
+    def test_every_interactive_element_shows_where_the_focus_is(self):
+        self.assertRegex(web.STYLE, r":focus-visible\{outline:2px solid var\(--acc\)")
+
     def test_the_move_buttons_are_not_floated_so_up_comes_before_down(self):
         page = self.req("GET", "/p/demo/")[2].decode()
         rule = next(line for line in page.splitlines() if line.startswith(".mv{"))
