@@ -11,8 +11,10 @@ It never publishes to the tailnet by itself; `tailscale serve` is reported, not 
 from __future__ import annotations
 
 import hashlib
+import json
 import shlex
 import tempfile
+import time
 from pathlib import Path
 from xml.sax.saxutils import escape
 
@@ -42,12 +44,54 @@ def plist_text(python: str, app: str, home: str, owner: str, port: int, logfile:
 """
 
 
+class BusyError(RuntimeError):
+    """The remote is rendering or preparing; restarting it now would kill that work."""
+
+
+def busy(t, port: int) -> dict:
+    """What a restart would kill: {"busy": bool, "render": {...}, "prepare": {...}, "source": "app" | "ffmpeg" | "unknown"}.
+
+    The running app answers /api/busy. An app from before that existed answers 404, so a running ffmpeg is the next best evidence;
+    when neither can be read, the answer is "unknown" and not busy (a deploy must stay possible when the app is down or broken)."""
+    r = t.run(f"curl -s -m 5 http://127.0.0.1:{port}/api/busy", timeout=30)
+    try:
+        d = json.loads(r.stdout)
+        if isinstance(d, dict) and "busy" in d:
+            return {**d, "source": "app"}
+    except ValueError:
+        pass
+    if r.ok and r.stdout.strip():                                 # something answered but it is not this endpoint: an older app
+        p = t.run("pgrep -x ffmpeg | head -1", timeout=30)
+        if p.ok and p.stdout.strip():
+            return {"busy": True, "render": {}, "prepare": {}, "source": "ffmpeg"}
+        return {"busy": False, "render": {}, "prepare": {}, "source": "ffmpeg"}
+    return {"busy": False, "render": {}, "prepare": {}, "source": "unknown"}
+
+
+def _describe(b: dict) -> str:
+    parts = [f"{b[k].get('running', 0)} running and {b[k].get('queued', 0)} queued {k}" for k in ("render", "prepare") if b.get(k, {}).get("running") or b.get(k, {}).get("queued")]
+    return "; ".join(parts) or "an ffmpeg process is running"
+
+
 def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def deploy(t, remote_root: str, owner: str = "", port: int = DEFAULT_PORT, legacy_name: str = "") -> dict:
-    """Deploy to the machine behind transport `t`. Returns a report; raises RuntimeError on a real failure."""
+def deploy(t, remote_root: str, owner: str = "", port: int = DEFAULT_PORT, legacy_name: str = "", force: bool = False, wait: float = 0,
+           poll: float = 10) -> dict:
+    """Deploy to the machine behind transport `t`. Returns a report; raises RuntimeError on a real failure.
+
+    A restart kills a running render and loses the queue, so this refuses (BusyError, before anything is pushed) while the remote is
+    busy. `wait` seconds are spent waiting for it to finish first; `force` restarts regardless."""
+    deadline = time.time() + wait
+    while not force:
+        b = busy(t, port)
+        if not b["busy"]:
+            break
+        if time.time() >= deadline:
+            raise BusyError(f"the remote is busy ({_describe(b)}); a restart would kill it. Wait for it to finish, use --wait SECONDS, or --force")
+        log.info(f"the remote is busy ({_describe(b)}); waiting")
+        time.sleep(poll)
     root = remote_root.rstrip("/")
     app = f"{root}/web/app"
     logfile = f"{root}/web/web.log"
