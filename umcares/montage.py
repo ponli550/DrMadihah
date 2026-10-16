@@ -891,11 +891,14 @@ def _text_png(workdir: Path, text, name, width, height, **kw) -> Path:
 
 
 ENCODE_PIECE = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "14", "-pix_fmt", "yuv420p", "-an", "-threads", THREADS]
+EFFECT_RATE = ["-maxrate", "12000k", "-bufsize", "24000k"]        # noise and thin outlines are expensive: uncapped, a glitch reel came out at 63 Mbit/s and a neon one at 36
 DRAFT_ENCODE_PIECE = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-pix_fmt", "yuv420p", "-an", "-threads", THREADS]
 
 
 def _encode_piece(plan) -> list:
-    return DRAFT_ENCODE_PIECE if plan.get("quality") == "draft" else ENCODE_PIECE
+    if plan.get("quality") == "draft":
+        return DRAFT_ENCODE_PIECE
+    return ENCODE_PIECE + EFFECT_RATE if plan.get("effect") else ENCODE_PIECE
 
 
 def _piece_command(ffmpeg, plan, seg, i, workdir: Path, out: Path):
@@ -1116,6 +1119,7 @@ def render(plan: dict, root, out: Path, ctl: Control, on_pct=lambda p: None) -> 
             vgraph = ";".join(chain)
             quick = plan.get("quality") == "draft"
             vmap, venc = label, ["-c:v", "libx264", "-preset", "ultrafast" if quick else "medium", "-crf", "26" if quick else "18",
+                                 *(EFFECT_RATE if plan.get("effect") and not quick else []),
                                  "-pix_fmt", "yuv420p", "-r", str(fps), "-threads", THREADS,
                                  "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv"]
             n_in = len(pieces)

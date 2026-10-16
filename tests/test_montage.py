@@ -1981,6 +1981,13 @@ class PictureEffects(Fixtures):
         edge = max(sum(px(neon, x, y)) for y in range(h // 2 - 4, h // 2 + 4) for x in range(0, w))
         self.assertGreater(edge, sum(px(neon, *mid)) + 150, "while an outline on the same row is lit")
 
+    def test_an_effect_render_is_capped_because_noise_and_outlines_are_expensive(self):
+        """Uncapped on the Air a glitch reel was 63 Mbit/s and a neon one 36, against 6.6 for a plain final."""
+        self.assertIn("-maxrate", montage._encode_piece({"quality": "final", "effect": "glitch"}))
+        self.assertIn("12000k", montage._encode_piece({"quality": "final", "effect": "neon"}))
+        self.assertNotIn("-maxrate", montage._encode_piece({"quality": "final"}), "a plain final is as it was")
+        self.assertNotIn("-maxrate", montage._encode_piece({"quality": "draft", "effect": "neon"}), "and a draft stays a fast, small draft")
+
     def test_every_effect_works_on_a_clip_with_every_look_and_with_the_3d_options(self):
         self.add("boxclip.mp4")
         clips = [{"media": "box.jpg", "caption": "Hi"}, {"media": "boxclip.mp4", "move": "in"}, {"quote": "A quote"}, {"countdown": 2}]
