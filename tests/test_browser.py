@@ -83,6 +83,15 @@ class RealPage(unittest.TestCase):
         self.ev("document.querySelector('#montage [data-ctl=depth]').click()")                            # put it back
         self.assertNotIn("3D cards", self.ev("document.querySelector('#montage details.opts > summary').textContent"))
 
+    def test_the_picture_effect_list_is_in_the_fold_and_the_fold_says_when_one_is_on(self):
+        self.open_options()
+        self.assertTrue(self.ev("!!document.querySelector('#montage details.opts [data-ctl=effect]')"), "inside More options")
+        self.assertEqual(self.ev("Array.from(document.querySelector('#montage [data-ctl=effect]').options).map(o => o.value).join(',')"), ",dither,glitch,neon")
+        self.ev("(() => { const e = document.querySelector('#montage [data-ctl=effect]'); e.value = 'neon'; e.dispatchEvent(new Event('change', {bubbles: true})); })()")
+        self.assertIn("neon effect", self.ev("document.querySelector('#montage details.opts > summary').textContent"))
+        self.ev("(() => { const e = document.querySelector('#montage [data-ctl=effect]'); e.value = ''; e.dispatchEvent(new Event('change', {bubbles: true})); })()")
+        self.assertNotIn("effect", self.ev("document.querySelector('#montage details.opts > summary').textContent"))
+
     def test_a_look_is_described_under_the_list_not_inside_every_option(self):
         options = self.ev("Array.from(document.querySelector('#montage [data-ctl=template]').options).map(o => o.text)")
         self.assertTrue(all("—" not in o for o in options), "a long option is cut off on a phone")

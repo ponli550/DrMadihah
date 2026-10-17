@@ -111,6 +111,10 @@ const check = (i, v) => { pickBoxes()[i].checked = v; };
     ctlOf("cut").value = "zoom";
     await press(button("Preview plan"));
     out.view = view();
+  } else if (scenario === "effect") {
+    ctlOf("effect").value = "glitch";
+    await press(button("Preview plan"));
+    out.view = view();
   } else if (scenario === "threed") {
     ctlOf("cut").value = "flip";
     ctlOf("depth").checked = true;
