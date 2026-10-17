@@ -859,6 +859,15 @@ element one job and one level, make the primary action look primary, fewer choic
   final's timings** (same pieces, same cuts, same length), so what you preview is what you will get; only the pixels
   are cheaper. Measured on a 6-clip, 18.5 s reel: 5.0 s against 45.7 s, and 1.8 MB against 10.8 MB. Drafts are named
   `...-draft-...` and labelled in the list. Use drafts to try looks and orderings, then press Make video.
+- **Smaller file for sharing** (`"quality": "share"`, the **Smaller file for sharing** button): the same video at **full size, with
+  the final's timings and look**, encoded at CRF 23 with a 3.5 Mbit/s cap instead of CRF 14, so it is much smaller and moves over a
+  slow link much sooner. It is not a half-size draft. Measured on the Air, a 6-photo 18 s reel with captions and zoom cuts: **2.2 MB against 14.8 MB (15%,
+  0.96 Mbit/s against 6.6)**, and the share copy against the final scored **SSIM 0.982 and PSNR 44.6 dB**; a full-resolution crop of the same frame
+  from each looked the same to me. That 15% is a still-photo reel, which compresses easily: footage with real motion will be bigger (the 3.5 Mbit/s cap
+  is what limits it, so well under the final, but not 15%), and I have not measured a reel of moving clips. The detail it gives up is mostly
+  the final's film grain. Named `...-share-...`, labelled "share copy" in the list. The judge allows a share copy a lower bitrate floor
+  (0.01 bits per pixel instead of 0.03). Instagram re-encodes what it is given, so the extra bits of a final are mostly not kept; use the
+  final for the highest quality or for a long run of motion.
 - **On-screen text** is drawn by macOS (AppKit, via `osascript -l JavaScript`) into a transparent PNG and laid
   over with ffmpeg, because **this ffmpeg has no `drawtext` and no libass**. It supports Malay, Indonesian and
   emoji, fits the text to its box, and puts captions on a soft plate so they read over any picture. Captions sit
@@ -978,16 +987,20 @@ Each clip is probed and gets the least work that makes it safe:
   rotation counts as frozen.
 - **Download to this phone** (`downloader.js`): each finished video has a **Download to this phone** button, and by default a
   new final video that appears while the page is open starts downloading by itself (drafts and videos that were already there
-  do not; a tick turns the automatic part off). It fetches the file in **128 KB pieces with Range requests** and keeps each piece
-  in the browser's IndexedDB as it arrives, so a dropped connection only costs the piece in flight (retried with a growing wait,
+  do not; a tick turns the automatic part off). It fetches the file in **128 KB pieces with Range requests, four at a time**, and keeps each piece
+  in the browser's IndexedDB (by piece number, in whatever order they arrive) as it arrives, so a dropped connection only costs the pieces in flight (retried with a growing wait,
   and paused while the browser is offline), a reload or a closed tab resumes from the stored pieces (and a paused one stays
   paused), and the page shows real progress and an estimate. When the last piece arrives the file is rebuilt, its size and its
   **SHA-256** are checked against the server (`GET .../api/montage/hash?name=`, cached beside the video as `<name>.sha256`), and
   only then is **Save to phone** offered, which hands the browser the whole file under its own name; a damaged copy is thrown away
   and fetched again, a video replaced on the server restarts instead of mixing two files, a deleted one loses its phone copy.
   The stored copy stays until **Remove copy**. It asks the browser for persistent storage and for room first, and holds a
-  screen wake lock while downloading. **It does not make the link faster** (12 MB at 7-25 kB/s is still many minutes), it makes
-  it start earlier and survive drops; a normal page download pauses when the tab is closed or the phone sleeps, and Android
+  screen wake lock while downloading. **Parallel pieces** help when each request is slow but the link has room (a test proxy that
+  delays every request: 12 pieces take under half the time of one at a time) and are no help when the link itself is the limit. **On the
+  real link the gain is not demonstrated:** three 5 MB videos on 16 Oct gave 74, 155 and 250 kB/s (parallel, one at a time, parallel), but the
+  link itself swings about 3x between runs, so that says nothing about speed; it does show parallel downloads arrive intact (all three SHA-256
+  checks passed). A single 1 MB request measured 7 kB/s a few minutes before 168 kB/s. It still mostly makes a download start earlier and
+  survive drops; a normal page download pauses when the tab is closed or the phone sleeps, and Android
   Chrome's Background Fetch (keeps going with the tab closed) is **not** used yet. Tested in real headless Chrome through a proxy
   that drops connections mid-body and corrupts a piece (`tests/test_download_browser.py`).
 - **A poster for each video:** next to every export is a small first-frame JPEG (`<name>.jpg`, about 15 KB), made when the

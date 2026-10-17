@@ -94,7 +94,7 @@ class RealPage(unittest.TestCase):
         in_bar = self.ev("Array.from(document.querySelectorAll('#montage .bar > .btns > button')).map(b => b.textContent)")
         self.assertEqual(in_bar, ["Make video", "Preview plan"], "two buttons, not six")
         popover = self.ev("Array.from(document.querySelectorAll('#montage .bar details.more .pop button')).map(b => b.textContent)")
-        self.assertEqual(popover, ["Quick draft (half size, fast)", "Save recipe…", "Copy brief for Claude"], "the rest are one tap away")
+        self.assertEqual(popover, ["Smaller file for sharing", "Quick draft (half size, fast)", "Save recipe…", "Copy brief for Claude"], "the rest are one tap away")
 
     def test_empty_folders_are_one_line_not_a_card_each(self):
         text = self.ev("document.getElementById('lib').innerText")
