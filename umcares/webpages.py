@@ -926,7 +926,7 @@ function createMontage(opts) {
     }
     if (st.active) { const stop = el("button", {type: "button", className: "alt"}, "Cancel"); stop.addEventListener("click", cancel); kids.push(stop); }
     if (st.exports.length) {
-      kids.push(el("div", {className: "dim"}, "Finished videos (tick the ones you want checked)"));
+      kids.push(el("div", {className: "group-title"}, "Finished videos"), el("div", {className: "dim hint"}, "Tick the ones you want checked."));
       const shown = st.exports.slice(0, 12);
       Array.from(toCheck).forEach(n => { if (!shown.some(x => x.name === n)) toCheck.delete(n); });
       const checkSel = el("button", {type: "button", className: "alt"}, toCheck.size ? "Check selected (" + toCheck.size + ")" : "Check selected");
@@ -936,21 +936,27 @@ function createMontage(opts) {
       all.addEventListener("click", () => { if (toCheck.size === shown.length) toCheck.clear(); else shown.forEach(x => toCheck.add(x.name)); renderJobs(); });
       kids.push(el("div", {className: "row"}, checkSel, all));
       shown.forEach(x => {
-        const del = el("button", {type: "button", className: "mv", title: "Delete this video"}, "Delete");
+        const del = el("button", {type: "button", className: "danger", title: "Delete this video"}, "Delete");
         del.addEventListener("click", () => removeExport(x));
         const tick = el("input", {type: "checkbox", checked: toCheck.has(x.name), title: "Choose this video to be checked"});
         tick.addEventListener("change", () => { if (tick.checked) toCheck.add(x.name); else toCheck.delete(x.name); renderJobs(); });
-        kids.push(el("div", {className: "row"},
-          el("span", {}, tick, " ", el("a", {href: BASE + "/exports/" + encodeURIComponent(x.name), target: "_blank"}, x.name)),
-          el("span", {}, el("span", {className: "dim"}, (x.quality === "draft" ? "draft · " : "") + (x.duration ? secs(x.duration) + " · " : "") + mb(x.size) + " "), del)));
+        const poster = el("img", {className: "vposter", alt: "", loading: "lazy", src: BASE + "/exports/" + encodeURIComponent(x.name.replace(/\.mp4$/, ".jpg"))});
+        poster.addEventListener("error", () => { poster.style.visibility = "hidden"; });                  // an old video may have no picture yet
+        const tag = {draft: "draft", share: "share copy"}[x.quality];
         const one = el("button", {type: "button", className: "mv"}, x.verdict ? "Check again" : "Check");
         one.disabled = checking;
         one.addEventListener("click", () => checkNames([x.name], !!x.verdict));
         const badge = x.verdict ? el("button", {type: "button", className: "mv", title: "Show why"}, verdictText(x)) : "";
         if (badge) badge.addEventListener("click", () => toggleReport(x.name));
-        kids.push(el("div", {className: "row"}, el("span", {className: "dim"}, x.verdict ? "" : "not checked"), el("span", {}, badge, " ", one)));
-        if (opened.has(x.name)) kids.push(reportBox(x.name));
-        if (opts.downloader) kids.push(opts.downloader.row(x.name, x.size, x.quality));
+        // One card per video: its picture and name, what the checks say, how to get it onto the phone, and (quietly) delete.
+        kids.push(el("div", {className: "vcard"},
+          el("div", {className: "vhead"}, poster, el("div", {className: "vtext"},
+            el("div", {className: "vtitle"}, tick, " ", el("a", {href: BASE + "/exports/" + encodeURIComponent(x.name), target: "_blank"}, x.name)),
+            el("div", {className: "dim"}, (tag ? tag + " · " : "") + (x.duration ? secs(x.duration) + " · " : "") + mb(x.size) + (x.format ? " · " + x.format : "") + (x.template ? " · " + x.template : "")))),
+          el("div", {className: "row"}, el("span", {className: "dim"}, x.verdict ? "" : "not checked"), el("span", {}, badge, " ", one)),
+          ...(opened.has(x.name) ? [reportBox(x.name)] : []),
+          ...(opts.downloader ? [opts.downloader.row(x.name, x.size, x.quality)] : []),
+          el("div", {className: "vfoot"}, del)));
       });
       if (opts.downloader) {
         const auto = el("input", {type: "checkbox", checked: opts.downloader.auto()});

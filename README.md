@@ -733,8 +733,14 @@ element one job and one level, make the primary action look primary, fewer choic
 - *The library* draws a card only for folders that hold something; empty folders are one line at the end.
 - *Tests find the page's controls by name* (`data-ctl="template"`, `data-part="plan"`), never by position, so the layout can change without
   breaking them; every form control has a label a screen reader can read.
-- Measured on demo data at phone width, the page went from 3,558 px tall (old design) to 3,502 px: the bigger tap targets cost height and the
-  folding gives most of it back, so this is **not** a big reduction. The finished-videos list and the photo tiles are unchanged (next phase).
+- *Finished videos* are one card each: the video's first-frame picture, its name with the tick for "check this one", its details (length,
+  size, format, look, "draft" or "share copy"), what the checks say with **Check**, the **Download to this phone** area, and a quiet red
+  **Delete** at the bottom. Before, each video was four loose rows and the buttons were squeezed to one word per line (a Phase 1 mistake: every
+  `.mv` button was forced to 44 px wide; fixed, with a test that no text button wraps).
+- *Photo tiles* show the caption first; with none they say *No caption yet* in italics instead of a raw numeric filename, and the file name is
+  on the small line after the size, cut with an ellipsis (the full name is the tooltip) instead of breaking mid-word.
+- Measured on demo data at phone width, the page went from 3,558 px tall (old design) to 3,502 px after the card restructure: the bigger tap
+  targets cost height and the folding gives most of it back, so this is **not** a big reduction in length; the gain is in clarity and reach.
 
 ```json
 {"kind": "montage", "title": "CyberDSA", "format": "reels", "template": "slowmo",

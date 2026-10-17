@@ -364,8 +364,9 @@ h2 .dim{font-weight:400}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:var(--s3)}
 .item{min-width:0}
 .thumb{width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:var(--r-sm);background:var(--surface2);display:block}
+.nocap{color:var(--dim);font-style:italic}
 .name{font-size:13px;line-height:1.35;margin-top:var(--s1);overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.item .dim{overflow-wrap:anywhere}
+.item .dim{overflow-wrap:anywhere}.dim.one{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .edit{float:right;border:0;background:none;color:var(--acc);padding:var(--s2) var(--s3);width:auto;min-height:0;margin:calc(-1*var(--s2)) calc(-1*var(--s3)) 0 0;font-size:var(--t-sm);font-weight:600;cursor:pointer}
 textarea{resize:vertical;min-height:88px}
 .play{position:relative;cursor:pointer}
@@ -379,7 +380,7 @@ input[type=checkbox]{width:auto;min-height:0;height:22px;aspect-ratio:1;margin:0
 button{background:var(--acc);color:var(--on-acc);border:0;font-weight:650;cursor:pointer}
 button:disabled{opacity:.45;cursor:not-allowed}
 button.alt{background:var(--surface2);color:var(--acc);border:1px solid var(--line)}
-.mv{width:var(--tap);min-height:var(--tap);margin:0 0 0 var(--s2);padding:0;background:var(--surface2);border:1px solid var(--line);color:var(--acc);font-size:18px;cursor:pointer}
+.mv{width:auto;min-width:var(--tap);min-height:var(--tap);margin:0 0 0 var(--s2);padding:0 var(--s3);white-space:nowrap;background:var(--surface2);border:1px solid var(--line);color:var(--acc);font-size:18px;cursor:pointer}
 .notice{font-size:var(--t-sm);min-height:1.2em}.notice.err{color:var(--err)}.notice.ok{color:var(--fg)}
 .err{color:var(--err);font-size:var(--t-sm);min-height:1.2em}
 .row{display:flex;gap:var(--s3);flex-wrap:wrap;align-items:center;justify-content:space-between}
@@ -395,6 +396,14 @@ video{width:100%;border-radius:var(--r-sm);background:#000}
 .field>.dim{display:block;margin-bottom:0}
 .hint{margin:var(--s1) 0 0;line-height:1.35}
 .urow>.row{flex-wrap:nowrap;align-items:flex-start}.urow>.row>.pickline{flex:1;min-width:0;overflow-wrap:anywhere;display:block;min-height:var(--tap);padding:10px 0;cursor:pointer}.urow>.row>span:first-child{flex:1;min-width:0;overflow-wrap:anywhere}.urow>.row>span:last-child{flex:none;white-space:nowrap}
+.vcard{border-top:1px solid var(--line);padding:var(--s3) 0}.vcard:first-of-type{border-top:0}
+.vhead{display:flex;gap:var(--s3);align-items:flex-start}
+.vposter{flex:none;width:52px;aspect-ratio:9/16;object-fit:cover;border-radius:8px;background:var(--surface2)}
+.vtext{min-width:0;flex:1}
+.vtitle{display:flex;gap:var(--s2);align-items:flex-start;font-weight:600;overflow-wrap:anywhere}
+.vtitle input{flex:none;margin-top:3px}
+.vfoot{display:flex;justify-content:flex-end}
+button.danger{width:auto;min-width:var(--tap);background:none;color:var(--err);border:1px solid var(--line);font-weight:600}
 section.empties{background:none;border-style:dashed;padding:var(--s3) var(--s4)}
 .group{margin:var(--s4) 0}
 .group-title{font-size:13px;font-weight:650;letter-spacing:.04em;text-transform:uppercase;color:var(--dim);margin:0 0 var(--s2)}
@@ -537,11 +546,12 @@ async function fillThumbs(folders){
 const plural = (n, word) => n + " " + word + (n === 1 ? "" : "s");
 let knownShas = null;
 function tile(f, g) {
+  const label = f.caption || (f.sha && !f.skipped ? "No caption yet" : f.name);          // the caption first; with none, say so, not a raw filename
   const edit = f.sha ? el("button", {type: "button", className: "edit", title: "Add or change the caption"}, "✎") : "";
   if (f.sha) edit.addEventListener("click", () => details.start({only: [f.sha]}));
   return el("div", {className: "item"}, thumb(f, g.folder),
-    el("div", {className: "name", title: f.name}, edit, f.caption || f.name),
-    el("div", {className: "dim"}, (f.caption ? f.name + " · " : "") + mb(f.size) + (f.sha && !f.caption && !f.skipped ? " · no detail yet" : "")));
+    el("div", {className: f.caption ? "name" : "name nocap", title: f.name}, edit, label),
+    el("div", {className: "dim one", title: f.name}, mb(f.size) + (label === f.name ? "" : " · " + f.name)));
 }
 // Returns the shas that appeared since the previous load: the files an upload just added.
 function loadLibrary(){
