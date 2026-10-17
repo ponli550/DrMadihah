@@ -110,13 +110,17 @@ const check = (i, v) => { all(card(), n => n.tag === "input" && n.type === "chec
     selects()[4].value = "zoom";                                       // [0] format, [1] look, [2] music, [3] length, [4] cut style
     await press(button("Preview plan"));
     out.view = view();
+  } else if (scenario === "effect") {
+    selects()[5].value = "glitch";
+    await press(button("Preview plan"));
+    out.view = view();
   } else if (scenario === "threed") {
     selects()[4].value = "flip";
     all(card(), n => n.tag === "input" && n.type === "checkbox")[6].checked = true;
     await press(button("Preview plan"));
     out.view = view();
   } else if (scenario === "sfx") {
-    selects()[5].value = "hit";                                        // [4] is the cut style, [5] the sound effects on cuts
+    selects()[6].value = "hit";                                        // [4] is the cut style, [5] the picture effect, [6] the sound effects on cuts
     await press(button("Preview plan"));
     out.view = view();
   } else if (scenario === "tempo") {

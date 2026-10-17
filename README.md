@@ -776,6 +776,21 @@ renders the same video.
   turn is applied to a white mask and the two are multiplied. Measured on a bright square: 80% wide at rest, 10% narrower a quarter of
   the way into a sway, and a flip is under half width 0.05 s either side of the cut. Costs more CPU per piece than a zoom cut (two
   perspective passes per frame); not timed on the Air. The page has "3D card flip" in the cuts list and a "3D cards that sway" tick.
+- **Picture effects** (`"effect": "dither" | "glitch" | "neon"`, the "Picture effect" list): from the "20 animation styles" post saved in
+  sekerinshotto; the three of them that ffmpeg can do alone, no new dependency. Applied to photo and video pieces (not cards, the paper
+  collage or audiograms), with any look, `transition` and `depth`; the captions are drawn on top, so they stay clean. Timing-neutral.
+  **Dither**: the picture is drawn 180 pixels across, each colour channel is cut to 6 levels (216 colours) with a 4x4 ordered
+  (Bayer) matrix and the result is enlarged without smoothing, so the dots are chunky; it is deterministic (no noise, no flicker), and a flat
+  grey comes out as two levels in a repeating pattern (4 levels per channel looked noisy with olive fringes on skin, so it is 6). **Glitch**: a
+  burst of colour split, sideways tearing of some bands and noise for 0.14 s as every piece starts and again every 0.9 s (so it lands on
+  each cut); between bursts the picture is untouched. **Neon**: the picture is darkened, its outlines are found, lit as a cyan-white
+  line with a magenta glow. Measured on the Air with six real photos (18 s, 1080x1920): **render 35 s dither, 49 s glitch, 97 s neon**
+  against about 37 s for a plain final (neon is the slow one, about 2.6x). **Size is the catch:** noise and thin outlines are expensive at
+  CRF 14, so uncapped the glitch reel came out at **63 Mbit/s and the neon one at 36** (a plain final is 6.6; the judge flagged both as
+  unusually heavy), and an effect final is now capped at 12 Mbit/s: measured **33.8 MB (glitch) and 34.3 MB (neon) against 14.8 MB for a
+  plain final**, about 15 Mbit/s on average (the cap is per 3 s piece, which can burst before it settles). Dither was fine uncapped.
+  The judge passes all three. Not done: the other styles in that post (liquid morph, metaballs, flow fields, ray-marched fractals, particle
+  swarm, clay 3D) need a GPU or a rendering engine, not ffmpeg.
 - **Audiogram** (`{"audiogram": "song.mp3", "image": "photo.jpg", "caption": "Dr Madihah", "start": 0, "hold": 8}`): a song or voice
   file drawn as a moving waveform (ffmpeg `showwaves`), solid in the accent colour, over the picture darkened by 30% (or on the
   look's colour if there is no `image`), with the caption under it. **Its sound is always heard** (it is added to the soundtrack

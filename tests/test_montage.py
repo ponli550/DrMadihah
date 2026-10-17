@@ -1888,6 +1888,119 @@ class TightenGaps(Fixtures):
 
 
 @NEED
+class PictureEffects(Fixtures):
+    """`effect`: dither, glitch and neon. Measured on pixels, because a render that merely succeeds proves nothing about the look."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        box = "color=c=0x101010:s=640x360,drawbox=x=200:y=60:w=240:h=240:color=white:t=fill"
+        ff("-f", "lavfi", "-i", box, "-frames:v", "1", str(cls.fx / "box.jpg"))
+        ff("-f", "lavfi", "-i", box.replace("color=c=0x101010:s=640x360", "color=c=0x101010:s=640x360:r=30:d=4"), "-c:v", "libx264", "-pix_fmt", "yuv420p", str(cls.fx / "boxclip.mp4"))
+
+    def setUp(self):
+        super().setUp()
+        self.add("box.jpg")
+
+    def rec(self, **kw):
+        return recipe([{"media": "box.jpg", "move": "still", "hold": 3}], template="punchy", captions=False, **kw)
+
+    def frame_at(self, rec, at, w=216, h=384):
+        job, out = self.render(rec)
+        self.assertEqual(job["state"], "done", job["error"])
+        d = frame(out, at, w, h)
+        for f in self.root.joinpath("exports").glob("*"):
+            f.unlink()
+        return d
+
+    @staticmethod
+    def mad(a, b):
+        return sum(abs(x - y) for x, y in zip(a, b)) / len(a)
+
+    # ---------------------------------------------------------------- the recipe
+    def test_the_words_are_checked_and_reach_the_plan_without_touching_a_timing(self):
+        for e in montage.EFFECTS:
+            self.assertEqual(montage.plan_for(self.rec(effect=e), self.root)["effect"], e)
+        self.assertIsNone(montage.plan_for(self.rec(), self.root)["effect"])
+        with self.assertRaises(montage.RecipeError) as ctx:
+            montage.plan_for(self.rec(effect="sparkle"), self.root)
+        self.assertIn("effect", str(ctx.exception))
+        a, b = montage.plan_for(self.rec(), self.root), montage.plan_for(self.rec(effect="glitch"), self.root)
+        self.assertEqual([(x["start"], x["duration"]) for x in a["segments"]], [(x["start"], x["duration"]) for x in b["segments"]])
+
+    # ---------------------------------------------------------------- the filters themselves
+    def run_fragment(self, name, w=360, h=640):
+        """The effect on a test picture, kept in RGB so its pixels can be counted exactly."""
+        frag = montage._effect_fragment("[0:v]", "[o]", name, w, h).replace("format=yuv420p", "format=gbrp")
+        r = subprocess.run([FF, "-v", "error", "-f", "lavfi", "-i", f"testsrc2=size={w}x{h}:rate=30:d=1", "-filter_complex", frag, "-map", "[o]",
+                            "-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo", "-"], capture_output=True)
+        self.assertEqual(r.returncode, 0, r.stderr.decode()[-300:])
+        return r.stdout
+
+    def test_dither_uses_a_small_fixed_palette_in_chunky_cells(self):
+        w, h = 360, 640
+        d = self.run_fragment("dither", w, h)
+        colours = {d[i:i + 3] for i in range(0, len(d), 3)}
+        self.assertLessEqual(len(colours), 6 ** 3, "no colour outside a 6-level-per-channel palette")
+        self.assertGreater(len(colours), 4 ** 3, "and it uses more than the 4-level palette that looked noisy")
+        cell = w // montage.DITHER_WIDTH                                       # 2 pixels at this size: neighbours inside a cell are identical
+        same = total = 0
+        for y in range(0, h, 7):
+            for x in range(0, w - cell, cell):
+                same += d[(y * w + x) * 3:(y * w + x) * 3 + 3] == d[(y * w + x + 1) * 3:(y * w + x + 1) * 3 + 3]
+                total += 1
+        self.assertGreater(same / total, 0.99, "pixels are enlarged cells, not single dots")
+
+    def test_dither_is_an_ordered_pattern_not_noise(self):
+        """A flat mid-grey comes out as two levels in a pattern that repeats every 4 cells (the 4x4 matrix), the same every time."""
+        w, h = 360, 640
+        frag = montage._effect_fragment("[0:v]", "[o]", "dither", w, h).replace("format=yuv420p", "format=gbrp")
+        run = lambda: subprocess.run([FF, "-v", "error", "-f", "lavfi", "-i", f"color=c=0x808080:s={w}x{h}:r=30:d=1", "-filter_complex", frag, "-map", "[o]",
+                                      "-frames:v", "1", "-pix_fmt", "rgb24", "-f", "rawvideo", "-"], capture_output=True).stdout
+        d = run()
+        self.assertEqual(d, run(), "no randomness")
+        px = lambda x, y: d[(y * w + x) * 3:(y * w + x) * 3 + 3]
+        self.assertEqual(len({px(x, y) for x in range(w) for y in range(0, h, 5)}), 2, "two neighbouring levels of grey")
+        period = 4 * (w // montage.DITHER_WIDTH)
+        self.assertTrue(all(px(x, y) == px(x + period, y) and px(x, y) == px(x, y + period) for x in range(0, w - period, 3) for y in range(0, h - period, 11)),
+                        "and the pattern repeats")
+
+    # ---------------------------------------------------------------- in a real render
+    def test_glitch_bursts_as_a_piece_starts_and_is_clean_between_bursts(self):
+        plain = self.frame_at(self.rec(), 0.04)
+        burst = self.frame_at(self.rec(effect="glitch"), 0.04)
+        self.assertGreater(self.mad(plain, burst), 8, "torn and colour-split in a burst")
+        self.assertLess(self.mad(self.frame_at(self.rec(), 0.5), self.frame_at(self.rec(effect="glitch"), 0.5)), 2, "and the same as no effect in between")
+
+    def test_neon_darkens_the_picture_and_lights_its_outlines(self):
+        w, h = 216, 384
+        plain, neon = self.frame_at(self.rec(), 1.5), self.frame_at(self.rec(effect="neon"), 1.5)
+        px = lambda d, x, y: d[(y * w + x) * 3:(y * w + x) * 3 + 3]
+        mid = (w // 2, h // 2)
+        self.assertLess(sum(px(neon, *mid)), sum(px(plain, *mid)) - 120, "the flat middle of the square is darker")
+        edge = max(sum(px(neon, x, y)) for y in range(h // 2 - 4, h // 2 + 4) for x in range(0, w))
+        self.assertGreater(edge, sum(px(neon, *mid)) + 150, "while an outline on the same row is lit")
+
+    def test_an_effect_render_is_capped_because_noise_and_outlines_are_expensive(self):
+        """Uncapped on the Air a glitch reel was 63 Mbit/s and a neon one 36, against 6.6 for a plain final."""
+        self.assertIn("-maxrate", montage._encode_piece({"quality": "final", "effect": "glitch"}))
+        self.assertIn("12000k", montage._encode_piece({"quality": "final", "effect": "neon"}))
+        self.assertNotIn("-maxrate", montage._encode_piece({"quality": "final"}), "a plain final is as it was")
+        self.assertNotIn("-maxrate", montage._encode_piece({"quality": "draft", "effect": "neon"}), "and a draft stays a fast, small draft")
+
+    def test_every_effect_works_on_a_clip_with_every_look_and_with_the_3d_options(self):
+        self.add("boxclip.mp4")
+        clips = [{"media": "box.jpg", "caption": "Hi"}, {"media": "boxclip.mp4", "move": "in"}, {"quote": "A quote"}, {"countdown": 2}]
+        for e in montage.EFFECTS:
+            for tpl in ("clean", "kinetic", "collage"):
+                with self.subTest(effect=e, template=tpl):
+                    job, out = self.render(recipe(clips, template=tpl, effect=e, quality="draft"))
+                    self.assertEqual(job["state"], "done", f"{e}/{tpl}: {job['error']}")
+            with self.subTest(effect=e, three_d=True):
+                job, out = self.render(recipe(clips, template="punchy", effect=e, transition="flip", depth="card", quality="draft"))
+                self.assertEqual(job["state"], "done", f"{e}+3D: {job['error']}")
+
+@NEED
 class ShareQuality(Fixtures):
     """`quality: "share"`: the same video at full size and with the same timings, in a much smaller file."""
 
