@@ -94,7 +94,7 @@ PUNCH_TIME = 0.3                                  # seconds a zoom cut takes (at
 # A draft is the same video at half size, without the slow finishing (grain, vignette) and with a fast encode. Its timings
 # are exactly the final's, so what you preview is what you will get; only the pixels are cheaper.
 DRAFT_SCALE = 0.5
-QUALITIES = ("final", "draft")
+QUALITIES = ("final", "share", "draft")             # share: the full-size video in a much smaller file (CRF 23, at most 3.5 Mbit/s), for a slow link and for posting
 
 MAX_CLIPS = 60
 DEFAULT_SECONDS, MAX_SECONDS_LIMIT = 60, 90
@@ -563,7 +563,7 @@ def resolve(validated: dict, root) -> dict:
                  "fade_out": round(min(float(m.get("fade_out", 1.5)), total / 2), 3)}
     even = lambda n: max(2, int(round(n)) // 2 * 2)                      # x264 needs even sizes
     width, height = (even(fmt["width"] * DRAFT_SCALE), even(fmt["height"] * DRAFT_SCALE)) if draft else (fmt["width"], fmt["height"])
-    return {"title": r["title"], "format": r["format"], "template": r["template"], "quality": "draft" if draft else "final",
+    return {"title": r["title"], "format": r["format"], "template": r["template"], "quality": r.get("quality") or "final",
             "width": width, "height": height,
             "fps": fmt["fps"], "fade": round(fade, 3), "total": total, "transition": r.get("transition"), "depth": r.get("depth"), "effect": r.get("effect"), "sfx": sfx_plan, "segments": segs, "duck": duck, "music": music, "sync": None if not sync else {k: v for k, v in sync.items() if k != "music_start"},
             "warnings": warnings,
@@ -892,12 +892,17 @@ def _text_png(workdir: Path, text, name, width, height, **kw) -> Path:
 
 ENCODE_PIECE = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "14", "-pix_fmt", "yuv420p", "-an", "-threads", THREADS]
 EFFECT_RATE = ["-maxrate", "12000k", "-bufsize", "24000k"]        # noise and thin outlines are expensive: uncapped, a glitch reel came out at 63 Mbit/s and a neon one at 36
+SHARE_RATE = ["-maxrate", "3500k", "-bufsize", "7000k"]           # Instagram keeps about this much: more is uploaded, slow to move, and thrown away
+SHARE_ENCODE_PIECE = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", *SHARE_RATE, "-pix_fmt", "yuv420p", "-an", "-threads", THREADS]
 DRAFT_ENCODE_PIECE = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-pix_fmt", "yuv420p", "-an", "-threads", THREADS]
 
 
 def _encode_piece(plan) -> list:
-    if plan.get("quality") == "draft":
+    q = plan.get("quality")
+    if q == "draft":
         return DRAFT_ENCODE_PIECE
+    if q == "share":
+        return SHARE_ENCODE_PIECE
     return ENCODE_PIECE + EFFECT_RATE if plan.get("effect") else ENCODE_PIECE
 
 
@@ -1118,8 +1123,9 @@ def render(plan: dict, root, out: Path, ctl: Control, on_pct=lambda p: None) -> 
                 label = out_l
             vgraph = ";".join(chain)
             quick = plan.get("quality") == "draft"
-            vmap, venc = label, ["-c:v", "libx264", "-preset", "ultrafast" if quick else "medium", "-crf", "26" if quick else "18",
-                                 *(EFFECT_RATE if plan.get("effect") and not quick else []),
+            share = plan.get("quality") == "share"
+            vmap, venc = label, ["-c:v", "libx264", "-preset", "ultrafast" if quick else "medium", "-crf", "26" if quick else ("23" if share else "18"),
+                                 *(SHARE_RATE if share else (EFFECT_RATE if plan.get("effect") and not quick else [])),
                                  "-pix_fmt", "yuv420p", "-r", str(fps), "-threads", THREADS,
                                  "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv"]
             n_in = len(pieces)
@@ -1249,11 +1255,19 @@ def _verify(out: Path, plan: dict) -> dict:
 # ------------------------------------------------------------------ jobs
 def export_name(plan: dict) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", (plan["title"] or "montage").lower()).strip("-")[:40] or "montage"
-    return f"{slug}-{plan['format']}{'-draft' if plan.get('quality') == 'draft' else ''}-{time.strftime('%Y%m%d-%H%M%S')}.mp4"
+    return f"{slug}-{plan['format']}{'-' + plan['quality'] if plan.get('quality') in ('draft', 'share') else ''}-{time.strftime('%Y%m%d-%H%M%S')}.mp4"
+
+
+QUEUE_FILE = ".umcares/queue.json"
+MAX_RUNS = 2                                      # a render the app started this many times without finishing is given up on, so a recipe that
+                                                  # kills the app (out of memory, a crash) cannot restart-loop forever
 
 
 class Renderer:
-    """One worker, one render at a time, and never alongside a prepare job (they share prepare.HEAVY)."""
+    """One worker, one render at a time, and never alongside a prepare job (they share prepare.HEAVY).
+
+    Unfinished jobs are kept in <project>/.umcares/queue.json, so an app restart (a deploy, a crash, a reboot) does not lose them:
+    `restore()` queues them again. A job that was running starts again from the beginning (ffmpeg cannot resume)."""
     def __init__(self):
         self.cv = threading.Condition(threading.RLock())
         self.jobs: list = []
@@ -1268,17 +1282,77 @@ class Renderer:
             same = next((j for j in self.jobs if j["root"] == str(root) and j["state"] in ("queued", "running") and j.get("_key") == key), None)
             if same:                                         # a second press of Make must not queue a second copy
                 return self.public(same)
-            job = {"id": f"{int(time.time() * 1000):x}{len(self.jobs)}", "root": str(root), "state": "queued", "percent": 0,
-                   "error": None, "output": None, "title": plan["title"] or "Montage", "format": plan["format"],
-                   "template": plan["template"], "quality": plan["quality"], "total": plan["total"], "pieces": len(plan["segments"]),
-                   "warnings": plan["warnings"], "_plan": plan, "_recipe": recipe, "_key": key}
-            self.jobs.append(job)
-            self.jobs = self.jobs[-100:]
-            if self.thread is None or not self.thread.is_alive():
-                self.thread = threading.Thread(target=self._work, daemon=True)
-                self.thread.start()
-            self.cv.notify_all()
+            job = self._enqueue(root, recipe, plan, key, f"{int(time.time() * 1000):x}{len(self.jobs)}", 0)
         return self.public(job)
+
+    def _enqueue(self, root, recipe, plan, key, job_id, runs) -> dict:
+        job = {"id": job_id, "root": str(root), "state": "queued", "percent": 0,
+               "error": None, "output": None, "title": plan["title"] or "Montage", "format": plan["format"],
+               "template": plan["template"], "quality": plan["quality"], "total": plan["total"], "pieces": len(plan["segments"]),
+               "warnings": plan["warnings"], "_plan": plan, "_recipe": recipe, "_key": key, "_runs": runs}
+        self.jobs.append(job)
+        self.jobs = self.jobs[-100:]
+        self._save(root)
+        if self.thread is None or not self.thread.is_alive():
+            self.thread = threading.Thread(target=self._work, daemon=True)
+            self.thread.start()
+        self.cv.notify_all()
+        return job
+
+    def _save(self, root):
+        """Write this project's unfinished jobs to its queue file (atomically), or remove the file when there are none. Best effort:
+        a disk problem must not stop a render. Call with self.cv held."""
+        path = Path(root) / QUEUE_FILE
+        mine = [{"id": j["id"], "recipe": j["_recipe"], "runs": j.get("_runs", 0)} for j in self.jobs
+                if j["root"] == str(root) and j["state"] in ("queued", "running") and "_recipe" in j]
+        try:
+            if not mine:
+                path.unlink(missing_ok=True)
+                return
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(path.name + ".part")
+            tmp.write_text(json.dumps({"jobs": mine}, default=str), encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError:
+            pass
+
+    def restore(self, roots) -> dict:
+        """Queue again what each project's queue file says was unfinished when the app stopped. Returns {"queued": n, "failed": n}.
+
+        A job already started MAX_RUNS times is not tried again: it is listed as failed, saying so. A recipe that no longer
+        plans (a picture was deleted meanwhile) is listed as failed with the reason."""
+        n = {"queued": 0, "failed": 0}
+        for root in roots:
+            root = Path(root)
+            try:
+                entries = json.loads((root / QUEUE_FILE).read_text(encoding="utf-8")).get("jobs", [])
+            except (OSError, ValueError, AttributeError):
+                continue
+            with self.cv:
+                for e in entries if isinstance(entries, list) else []:
+                    try:
+                        recipe, runs, jid = e["recipe"], int(e.get("runs", 0)), str(e["id"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    why = None
+                    if runs >= MAX_RUNS:
+                        why = f"the app stopped {runs} times while making this video, so it was not tried again: press Make to try once more"
+                    else:
+                        try:
+                            plan = plan_for(recipe, root)
+                        except (RecipeError, MontageError) as err:
+                            why = "could not be restarted after the app was restarted: " + (", ".join(err.problems) if isinstance(err, RecipeError) else str(err))
+                    if why is None:
+                        self._enqueue(root, recipe, plan, json.dumps(recipe, sort_keys=True, default=str), jid, runs)
+                        n["queued"] += 1
+                    else:
+                        title = recipe.get("title") if isinstance(recipe, dict) else None
+                        self.jobs.append({"id": jid, "root": str(root), "state": "failed", "percent": 0, "error": why, "output": None,
+                                          "title": title or "Montage", "format": (recipe or {}).get("format", "reels") if isinstance(recipe, dict) else "reels",
+                                          "template": "", "quality": "final", "total": 0, "pieces": 0, "warnings": []})
+                        n["failed"] += 1
+                self._save(root)
+        return n
 
     @staticmethod
     def public(job) -> dict:
@@ -1287,6 +1361,11 @@ class Renderer:
     def snapshot(self, root) -> list:
         with self.cv:
             return [self.public(j) for j in self.jobs if j["root"] == str(root)][-20:]
+
+    def counts(self) -> dict:
+        """How many jobs are running and waiting, across every project."""
+        with self.cv:
+            return {"running": sum(j["state"] == "running" for j in self.jobs), "queued": sum(j["state"] == "queued" for j in self.jobs)}
 
     def active(self, root=None) -> bool:
         with self.cv:
@@ -1299,6 +1378,7 @@ class Renderer:
                 if j["root"] == str(root) and j["state"] in ("queued", "running"):
                     if j["state"] == "queued":
                         j["state"] = "cancelled"
+                        self._save(root)
                     elif j["id"] in self.ctls:
                         self.ctls[j["id"]].cancel()
                     n += 1
@@ -1320,6 +1400,8 @@ class Renderer:
                     if job is None:
                         return
                     job["state"] = "running"
+                    job["_runs"] = job.get("_runs", 0) + 1
+                    self._save(Path(job["root"]))                  # counted before it starts: a crash during it still counts
                     ctl = self.ctls[job["id"]] = Control()
                 try:
                     self._run(job, ctl)
@@ -1334,6 +1416,7 @@ class Renderer:
             if output:
                 job["output"], job["percent"] = output, 100
             self.ctls.pop(job["id"], None)
+            self._save(Path(job["root"]))
             self.cv.notify_all()
 
     def _run(self, job, ctl):
@@ -1597,6 +1680,7 @@ def brief(root, project_name: str = "") -> str:
               "- `effect`: `\"dither\"` (chunky ordered-dither pixels, 216 colours), `\"glitch\"` (a short burst of colour split, sideways tearing and noise as every piece starts and about every 0.9 s) or `\"neon\"` (glowing outlines over a darkened picture). Applies to photos and clips, works with any look, never changes any timing; captions stay clean and on top.",
               "- `depth`: `\"card\"` shows each photo and clip as a smaller card that sways in 3D perspective over a darkened, blurred copy of itself. It is a flat picture tilted, not a depth map, so nothing parallaxes. It also works with `transition`.",
               "- `speech`: `\"follow\"` starts each video clip (that has no explicit `start`) where people speak, so a long clip's excerpt holds the words, not dead air. It finds speech-like sound, not words.",
+              "- `quality`: `\"final\"` (default), `\"share\"` (the same video at full size in a much smaller file, for a slow link or posting; a little less fine detail: a photo reel came out at 15% of the final's size) or `\"draft\"` (half size, no grain: a fast preview).",
               f"- `max_seconds`: up to {MAX_SECONDS_LIMIT} (default {DEFAULT_SECONDS}); clips beyond it are dropped from the end.",
               "", "## Example", "", "```json", json.dumps(EXAMPLE, indent=2), "```", "",
               "## Rules", "", "- Use only files from the table above. Do not invent refs.",

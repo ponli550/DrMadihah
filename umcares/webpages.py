@@ -480,7 +480,7 @@ DOWNLOADER_JS = r"""
 // a drop only costs the piece in flight, the page shows real progress, and Save is instant once the file is whole and verified.
 function createDownloader(opts) {
   if (typeof indexedDB === "undefined" || typeof fetch === "undefined") return null;
-  const BASE = opts.base, CHUNK = opts.chunk || 131072, TIMEOUT = opts.timeout || 120000, MAXWAIT = opts.maxWait || 30000;
+  const BASE = opts.base, CHUNK = opts.chunk || 131072, TIMEOUT = opts.timeout || 120000, MAXWAIT = opts.maxWait || 30000, PARALLEL = opts.parallel || 4;
   const SETTING = "umcares-auto-download";
   let dbp = null, onChange = opts.onChange || (() => {}), wake = null, firstWatch = true;
   const known = new Set(), tasks = {}, state = {}, rows = {};
@@ -558,6 +558,7 @@ function createDownloader(opts) {
     if (!t) return;
     t.stop = true;
     try { t.ctl && t.ctl.abort(); } catch (e) {}
+    await abortAll(t);
     try { await t.done; } catch (e) {}
   }
 
@@ -566,42 +567,74 @@ function createDownloader(opts) {
     const s = st(name); s.got = 0; s.samples = []; s.note = why; changed(name);
   }
 
+  // Pieces are fetched PARALLEL at a time and stored by number, in whatever order they arrive, so a resume fetches exactly the
+  // pieces that are missing. (Measured on the erratic link: one piece at a time 168 kB/s, eight at once 424 kB/s.)
+  async function storedPieces(name) {
+    const keys = await op("chunks", "readonly", x => x.getAllKeys(IDBKeyRange.bound(keyOf(name) + "#", keyOf(name) + "#\uffff")));
+    return (keys || []).map(k => Number(String(k).split("#").pop())).filter(Number.isInteger);
+  }
+
   async function run(name) {
     const t = tasks[name], s = st(name);
-    let fails = 0;
-    while (!t.stop) {
-      const m = await get("meta", keyOf(name));
-      if (!m || m.state !== "downloading") return;
-      if (m.next * CHUNK >= m.size) return finish(name, m);
-      const a = m.next * CHUNK, b = Math.min(m.size, a + CHUNK) - 1;
-      try {
-        if (typeof navigator !== "undefined" && navigator.onLine === false) { s.note = "waiting for a connection…"; changed(name); await sleep(1500); continue; }
-        const ctl = new AbortController(); t.ctl = ctl;
-        const timer = setTimeout(() => ctl.abort(), TIMEOUT);
-        let r;
-        try { r = await fetch(urlOf(name), {headers: {Range: "bytes=" + a + "-" + b}, signal: ctl.signal, cache: "no-store"}); }
-        finally { clearTimeout(timer); }
-        if (t.stop) return;
-        if (r.status === 404) { s.state = "failed"; s.note = "the video is no longer on the server"; await dropChunks(keyOf(name)); await op("meta", "readwrite", x => x.delete(keyOf(name))); t.stop = true; changed(name); return; }
-        if (r.status !== 206) throw new Error("the server answered " + r.status + " to a range request");
-        const total = Number(((r.headers.get("Content-Range") || "").split("/")[1]) || 0);
-        if (total && total !== m.size) { m.size = total; s.size = total; await restart(name, m, "the video changed on the server; starting over"); continue; }
-        const buf = await r.arrayBuffer();
-        if (buf.byteLength !== b - a + 1) throw new Error("a piece arrived short");
-        await put("chunks", keyOf(name) + "#" + m.next, buf);
-        m.next += 1; await put("meta", keyOf(name), m);
-        fails = 0; s.note = "";
-        const now = Date.now(); s.samples.push([now, buf.byteLength]); s.samples = s.samples.filter(x => now - x[0] < 30000);
-        const span = Math.max(1000, now - s.samples[0][0]); s.rate = s.samples.length > 1 ? s.samples.slice(1).reduce((n, x) => n + x[1], 0) / (span / 1000) : buf.byteLength / ((now - (s.last || now) || 1000) / 1000);
-        s.last = now; s.got = Math.min(m.size, m.next * CHUNK);
-        changed(name);
-      } catch (e) {
-        if (t.stop) return;
-        fails += 1; s.note = "connection trouble, retrying (" + fails + ")…"; changed(name);
-        await sleep(Math.min(MAXWAIT, 500 * Math.pow(2, Math.min(fails, 6))));
+    const m = await get("meta", keyOf(name));
+    if (!m || m.state !== "downloading") return;
+    const n = Math.ceil(m.size / CHUNK), size = m.size;
+    const have = new Set((await storedPieces(name)).filter(i => i < n));
+    const bytesOf = i => Math.min(size, (i + 1) * CHUNK) - i * CHUNK;
+    const prefix = () => { let k = 0; while (have.has(k)) k++; return k; };
+    let got = 0; have.forEach(i => { got += bytesOf(i); });
+    s.got = got; m.next = prefix(); changed(name);
+    const pending = []; for (let i = 0; i < n; i++) if (!have.has(i)) pending.push(i);
+    let fails = 0, changedOnServer = false, newSize = 0;
+    t.ctls = new Set();
+
+    async function worker() {
+      while (!t.stop && !changedOnServer && pending.length) {
+        const i = pending.shift(), a = i * CHUNK, b = Math.min(size, a + CHUNK) - 1;
+        try {
+          if (typeof navigator !== "undefined" && navigator.onLine === false) { pending.unshift(i); s.note = "waiting for a connection…"; changed(name); await sleep(1500); continue; }
+          const ctl = new AbortController(); t.ctls.add(ctl);
+          const timer = setTimeout(() => ctl.abort(), TIMEOUT);
+          let r;
+          try { r = await fetch(urlOf(name), {headers: {Range: "bytes=" + a + "-" + b}, signal: ctl.signal, cache: "no-store"}); }
+          finally { clearTimeout(timer); t.ctls.delete(ctl); }
+          if (t.stop) return;
+          if (r.status === 404) { t.gone = true; t.stop = true; await abortAll(t); return; }               // cleaned up in run() once every worker has stopped
+          if (r.status !== 206) throw new Error("the server answered " + r.status + " to a range request");
+          const total = Number(((r.headers.get("Content-Range") || "").split("/")[1]) || 0);
+          if (total && total !== size) { changedOnServer = true; newSize = total; return; }
+          const buf = await r.arrayBuffer();
+          if (buf.byteLength !== b - a + 1) throw new Error("a piece arrived short");
+          if (t.stop) return;
+          await put("chunks", keyOf(name) + "#" + i, buf);
+          have.add(i); got += buf.byteLength; m.next = prefix(); await put("meta", keyOf(name), m);
+          fails = 0; s.note = "";
+          const now = Date.now(); s.samples.push([now, buf.byteLength]); s.samples = s.samples.filter(x => now - x[0] < 30000);
+          const span = Math.max(1000, now - s.samples[0][0]);
+          s.rate = s.samples.length > 1 ? s.samples.slice(1).reduce((k, x) => k + x[1], 0) / (span / 1000) : buf.byteLength / ((now - (s.last || now) || 1000) / 1000);
+          s.last = now; s.got = Math.min(size, got);
+          changed(name);
+        } catch (e) {
+          if (t.stop) return;
+          pending.unshift(i);                                         // this piece is still wanted: another try (by anyone) takes it
+          fails += 1; s.note = "connection trouble, retrying (" + fails + ")…"; changed(name);
+          await sleep(Math.min(MAXWAIT, 500 * Math.pow(2, Math.min(fails, 6))));
+        }
       }
     }
+    // A worker stops when nothing is pending, but another worker's piece in flight can still fail and come back: so go round again
+    // until every piece is stored.
+    while (!t.stop && have.size < n && !changedOnServer) await Promise.all(Array.from({length: Math.min(PARALLEL, Math.max(1, pending.length))}, worker));
+    if (t.gone) {                                                  // deleted on the server: only now, with no piece still in flight to write over this
+      s.state = "failed"; s.note = "the video is no longer on the server"; s.rate = 0;
+      await dropChunks(keyOf(name)); await op("meta", "readwrite", x => x.delete(keyOf(name))); changed(name);
+      return;
+    }
+    if (t.stop) return;
+    if (changedOnServer) { m.size = newSize; s.size = newSize; await restart(name, m, "the video changed on the server; starting over"); return run(name); }
+    return finish(name, m);
   }
+  async function abortAll(t) { try { (t.ctls || []).forEach(c => c.abort()); } catch (e) {} }
 
   async function assemble(name, m) {
     const parts = [];
@@ -740,7 +773,7 @@ function createMontage(opts) {
   const HEADERS = {"Content-Type": "application/json", "X-Requested-With": "umcares"};
   let st = null, order = [], picked = new Set(), rows = [], ctl = null, timer = null;
   let form = {format: "reels", template: "slowmo", title: "", captions: true, music: "", bpm: "", sync: false, speech: true, sound: true, tighten: false, transition: "", effect: "", depth: false, fxcuts: "", fxwords: false, max: "30"};
-  let jobsBox = null, planBox = null, noticeBox = null, listBox = null, goBtn = null, draftBtn = null, runBtns = [];
+  let jobsBox = null, planBox = null, noticeBox = null, listBox = null, goBtn = null, draftBtn = null, shareBtn = null, runBtns = [];
 
   const mb = n => n < 1048576 ? Math.max(1, Math.round(n / 1024)) + " KB" : (n / 1048576).toFixed(1) + " MB";
   const secs = n => (Math.round(n * 10) / 10) + " s";
@@ -906,10 +939,11 @@ function createMontage(opts) {
     if (!jobsBox || !st) return;
     if (goBtn) { goBtn.disabled = !st.can_render || st.active; goBtn.textContent = st.active ? "Rendering…" : "Make video"; }
     if (draftBtn) draftBtn.disabled = !st.can_render || st.active;
+    if (shareBtn) shareBtn.disabled = !st.can_render || st.active;
     runBtns.forEach(b => { b.disabled = st.active; });
     const kids = [];
     st.jobs.slice(-4).reverse().forEach((j, n) => {
-      const line = el("div", {className: "row"}, el("span", {className: "name"}, j.title + " · " + j.template + " · " + j.format + (j.quality === "draft" ? " · draft" : "")),
+      const line = el("div", {className: "row"}, el("span", {className: "name"}, j.title + " · " + j.template + " · " + j.format + (j.quality === "draft" ? " · draft" : j.quality === "share" ? " · share copy" : "")),
         el("span", {className: "dim"}, j.state === "running" ? "rendering " + j.percent + "%" : j.state === "queued" ? "waiting" : j.state === "done" ? "✓ done" : j.state === "failed" ? "✗ " + j.error : "cancelled"));
       kids.push(el("div", {className: "urow"}, line, (j.state === "running" || j.state === "queued") ? el("progress", {max: 100, value: j.percent}) : ""));
       if (n === 0) (j.warnings || []).forEach(w => kids.push(el("div", {className: "dim"}, "⚠ " + w)));     // only the newest job's
@@ -940,7 +974,7 @@ function createMontage(opts) {
         tick.addEventListener("change", () => { if (tick.checked) toCheck.add(x.name); else toCheck.delete(x.name); renderJobs(); });
         kids.push(el("div", {className: "row"},
           el("span", {}, tick, " ", el("a", {href: BASE + "/exports/" + encodeURIComponent(x.name), target: "_blank"}, x.name)),
-          el("span", {}, el("span", {className: "dim"}, (x.quality === "draft" ? "draft · " : "") + (x.duration ? secs(x.duration) + " · " : "") + mb(x.size) + " "), del)));
+          el("span", {}, el("span", {className: "dim"}, (x.quality === "draft" ? "draft · " : x.quality === "share" ? "share copy · " : "") + (x.duration ? secs(x.duration) + " · " : "") + mb(x.size) + " "), del)));
         const one = el("button", {type: "button", className: "mv"}, x.verdict ? "Check again" : "Check");
         one.disabled = checking;
         one.addEventListener("click", () => checkNames([x.name], !!x.verdict));
@@ -1008,11 +1042,14 @@ function createMontage(opts) {
     goBtn = go; runBtns = [];
     const draft = el("button", {type: "button", className: "alt"}, "Quick draft (half size, fast)");
     draftBtn = draft;
+    const share = el("button", {type: "button", className: "alt", title: "The same video at full size in a much smaller file (a photo reel came out at about a seventh of the size): quicker over a slow link, and about what Instagram keeps anyway"}, "Smaller file for sharing");
+    shareBtn = share;
     const look = el("button", {type: "button", className: "alt"}, "Preview plan");
     const keep = el("button", {type: "button", className: "alt"}, "Save recipe…");
     const ask = el("button", {type: "button", className: "alt"}, "Copy brief for Claude");
     go.addEventListener("click", () => make()); look.addEventListener("click", preview);
     draft.addEventListener("click", () => make(Object.assign(buildRecipe(), {quality: "draft"})));
+    share.addEventListener("click", () => make(Object.assign(buildRecipe(), {quality: "share"})));
     keep.addEventListener("click", save); ask.addEventListener("click", brief);
     if (!st.can_render) { go.disabled = true; look.disabled = true; }
     const saved = st.recipes.map(r => {
@@ -1040,7 +1077,7 @@ function createMontage(opts) {
       el("div", {className: "dim"}, "Picture effect"), ctl.effect,
       el("div", {className: "dim"}, "Sound effects"), ctl.fxcuts,
       el("div", {className: "dim"}, "Pictures and clips, in order (tick to include)"), listBox,
-      noticeBox, planBox, go, draft, look, keep, ask,
+      noticeBox, planBox, go, share, draft, look, keep, ask,
       ...(saved.length ? [el("div", {className: "dim"}, "Saved recipes")].concat(saved) : []),
       jobsBox));
     renderList(); renderJobs();

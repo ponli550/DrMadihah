@@ -186,6 +186,13 @@ class Card(unittest.TestCase):
         self.assertEqual(len(files), 1)
         self.assertIn(files[0], v["video"])
 
+    def test_the_smaller_file_button_makes_a_share_copy_labelled_as_one(self):
+        v = self.run_js("share")["view"]
+        self.assertIn("Smaller file for sharing", v["buttons"])
+        self.assertRegex(v["video"] or "", r"-reels-share-\d{8}-\d{6}\.mp4$")
+        self.assertIn("· share copy", v["jobs"], "the job line says what it is")
+        self.assertIn("share copy ·", v["jobs"], "and so does the finished-videos list")
+
     def test_quick_draft_makes_a_half_size_video_labelled_as_a_draft(self):
         v = self.run_js("draft")["view"]
         self.assertIn("Quick draft (half size, fast)", v["buttons"])

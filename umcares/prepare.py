@@ -363,6 +363,11 @@ class Preparer:
         with self.cv:
             return [dict(j) for j in self.jobs if j["root"] == str(root)][-30:]
 
+    def counts(self) -> dict:
+        """How many jobs are running and waiting, across every project."""
+        with self.cv:
+            return {"running": sum(j["state"] == "running" for j in self.jobs), "queued": sum(j["state"] == "queued" for j in self.jobs)}
+
     def active(self, root=None) -> bool:
         with self.cv:
             return any(j["state"] in ("queued", "running") and (root is None or j["root"] == str(root)) for j in self.jobs)
