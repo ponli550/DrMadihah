@@ -93,7 +93,7 @@ PUNCH_TIME = 0.3                                  # seconds a zoom cut takes (at
 # A draft is the same video at half size, without the slow finishing (grain, vignette) and with a fast encode. Its timings
 # are exactly the final's, so what you preview is what you will get; only the pixels are cheaper.
 DRAFT_SCALE = 0.5
-QUALITIES = ("final", "draft")
+QUALITIES = ("final", "share", "draft")             # share: the full-size video in a much smaller file (CRF 23, at most 3.5 Mbit/s), for a slow link and for posting
 
 MAX_CLIPS = 60
 DEFAULT_SECONDS, MAX_SECONDS_LIMIT = 60, 90
@@ -560,7 +560,7 @@ def resolve(validated: dict, root) -> dict:
                  "fade_out": round(min(float(m.get("fade_out", 1.5)), total / 2), 3)}
     even = lambda n: max(2, int(round(n)) // 2 * 2)                      # x264 needs even sizes
     width, height = (even(fmt["width"] * DRAFT_SCALE), even(fmt["height"] * DRAFT_SCALE)) if draft else (fmt["width"], fmt["height"])
-    return {"title": r["title"], "format": r["format"], "template": r["template"], "quality": "draft" if draft else "final",
+    return {"title": r["title"], "format": r["format"], "template": r["template"], "quality": r.get("quality") or "final",
             "width": width, "height": height,
             "fps": fmt["fps"], "fade": round(fade, 3), "total": total, "transition": r.get("transition"), "depth": r.get("depth"), "sfx": sfx_plan, "segments": segs, "duck": duck, "music": music, "sync": None if not sync else {k: v for k, v in sync.items() if k != "music_start"},
             "warnings": warnings,
@@ -834,11 +834,13 @@ def _text_png(workdir: Path, text, name, width, height, **kw) -> Path:
 
 
 ENCODE_PIECE = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "14", "-pix_fmt", "yuv420p", "-an", "-threads", THREADS]
+SHARE_RATE = ["-maxrate", "3500k", "-bufsize", "7000k"]           # Instagram keeps about this much: more is uploaded, slow to move, and thrown away
+SHARE_ENCODE_PIECE = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", *SHARE_RATE, "-pix_fmt", "yuv420p", "-an", "-threads", THREADS]
 DRAFT_ENCODE_PIECE = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "24", "-pix_fmt", "yuv420p", "-an", "-threads", THREADS]
 
 
 def _encode_piece(plan) -> list:
-    return DRAFT_ENCODE_PIECE if plan.get("quality") == "draft" else ENCODE_PIECE
+    return {"draft": DRAFT_ENCODE_PIECE, "share": SHARE_ENCODE_PIECE}.get(plan.get("quality"), ENCODE_PIECE)
 
 
 def _piece_command(ffmpeg, plan, seg, i, workdir: Path, out: Path):
@@ -1062,7 +1064,9 @@ def render(plan: dict, root, out: Path, ctl: Control, on_pct=lambda p: None) -> 
                 label = out_l
             vgraph = ";".join(chain)
             quick = plan.get("quality") == "draft"
-            vmap, venc = label, ["-c:v", "libx264", "-preset", "ultrafast" if quick else "medium", "-crf", "26" if quick else "18",
+            share = plan.get("quality") == "share"
+            vmap, venc = label, ["-c:v", "libx264", "-preset", "ultrafast" if quick else "medium", "-crf", "26" if quick else ("23" if share else "18"),
+                                 *(SHARE_RATE if share else []),
                                  "-pix_fmt", "yuv420p", "-r", str(fps), "-threads", THREADS,
                                  "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv"]
             n_in = len(pieces)
@@ -1192,7 +1196,7 @@ def _verify(out: Path, plan: dict) -> dict:
 # ------------------------------------------------------------------ jobs
 def export_name(plan: dict) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", (plan["title"] or "montage").lower()).strip("-")[:40] or "montage"
-    return f"{slug}-{plan['format']}{'-draft' if plan.get('quality') == 'draft' else ''}-{time.strftime('%Y%m%d-%H%M%S')}.mp4"
+    return f"{slug}-{plan['format']}{'-' + plan['quality'] if plan.get('quality') in ('draft', 'share') else ''}-{time.strftime('%Y%m%d-%H%M%S')}.mp4"
 
 
 QUEUE_FILE = ".umcares/queue.json"
@@ -1616,6 +1620,7 @@ def brief(root, project_name: str = "") -> str:
               "A video clip can also take `move`: `\"in\"` or `\"out\"` to zoom slowly over its whole length.",
               "- `depth`: `\"card\"` shows each photo and clip as a smaller card that sways in 3D perspective over a darkened, blurred copy of itself. It is a flat picture tilted, not a depth map, so nothing parallaxes. It also works with `transition`.",
               "- `speech`: `\"follow\"` starts each video clip (that has no explicit `start`) where people speak, so a long clip's excerpt holds the words, not dead air. It finds speech-like sound, not words.",
+              "- `quality`: `\"final\"` (default), `\"share\"` (the same video at full size in a much smaller file, for a slow link or posting; a little less fine detail: a photo reel came out at 15% of the final's size) or `\"draft\"` (half size, no grain: a fast preview).",
               f"- `max_seconds`: up to {MAX_SECONDS_LIMIT} (default {DEFAULT_SECONDS}); clips beyond it are dropped from the end.",
               "", "## Example", "", "```json", json.dumps(EXAMPLE, indent=2), "```", "",
               "## Rules", "", "- Use only files from the table above. Do not invent refs.",

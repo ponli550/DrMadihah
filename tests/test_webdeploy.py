@@ -199,13 +199,14 @@ class BusyEndpoint(unittest.TestCase):
     def test_it_counts_running_and_queued_work_of_both_kinds(self):
         self.assertFalse(self.get()["busy"])
         r, p = montage.RENDERER, prepare.PREPARER
-        r.jobs.append({"state": "running"}); r.jobs.append({"state": "queued"}); r.jobs.append({"state": "done"})
-        p.jobs.append({"state": "queued"})
+        fakes_r = [{"state": "running"}, {"state": "queued"}, {"state": "done"}]
+        fakes_p = [{"state": "queued"}]
+        r.jobs.extend(fakes_r); p.jobs.extend(fakes_p)
         try:
             d = self.get()
-        finally:
-            r.jobs[:] = [j for j in r.jobs if j.get("state") not in ("running", "queued") or "root" in j]
-            p.jobs[:] = [j for j in p.jobs if "root" in j]
+        finally:                                              # remove exactly what was added: a leftover job with no root breaks every later snapshot()
+            r.jobs[:] = [j for j in r.jobs if not any(j is f for f in fakes_r)]
+            p.jobs[:] = [j for j in p.jobs if not any(j is f for f in fakes_p)]
         self.assertEqual((d["render"], d["prepare"], d["busy"]), ({"running": 1, "queued": 1}, {"running": 0, "queued": 1}, True))
 
     def test_the_real_answer_is_what_the_deploy_understands(self):

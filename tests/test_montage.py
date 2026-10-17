@@ -693,13 +693,13 @@ class Draft(Fixtures):
         return recipe([{"media": "land.jpg", "caption": "Selamat datang"}, {"media": "port.jpg"}, {"media": "clip.mp4"}],
                       template="slowmo", title_card={"text": "CyberDSA", "subtitle": "Hari terbuka"}, **kw)
 
-    def test_quality_is_final_or_draft_and_nothing_else(self):
+    def test_quality_is_final_share_or_draft_and_nothing_else(self):
         self.add("land.jpg")
         self.assertEqual(montage.validate({"clips": [{"media": "land.jpg"}]}, self.root)["quality"], "final")
         self.assertEqual(montage.validate({"clips": [{"media": "land.jpg"}], "quality": "draft"}, self.root)["quality"], "draft")
         with self.assertRaises(montage.RecipeError) as cm:
             montage.validate({"clips": [{"media": "land.jpg"}], "quality": "ultra"}, self.root)
-        self.assertIn("quality: must be one of final, draft", cm.exception.problems[0])
+        self.assertIn("quality: must be one of final, share, draft", cm.exception.problems[0])
 
     def test_a_draft_has_exactly_the_same_timings_as_the_final_at_half_the_size(self):
         self.add("land.jpg", "port.jpg", "clip.mp4")
@@ -1886,6 +1886,57 @@ class TightenGaps(Fixtures):
                 job, out = self.render(recipe([{"media": "gappy.mp4", "hold": 15}], template=tpl, tighten="gaps", quality="draft", max_seconds=60))
                 self.assertEqual(job["state"], "done", f"{tpl}: {job['error']}")
 
+
+@NEED
+class ShareQuality(Fixtures):
+    """`quality: "share"`: the same video at full size and with the same timings, in a much smaller file."""
+
+    def setUp(self):
+        super().setUp()
+        self.add("land.jpg", "port.jpg")
+        self.clips = [{"media": "land.jpg", "hold": 2}, {"media": "port.jpg", "hold": 2}, {"media": "land.jpg", "hold": 2}]
+
+    def plan(self, **kw):
+        return montage.plan_for(recipe(self.clips, template="punchy", **kw), self.root)
+
+    def test_it_is_a_quality_the_recipe_can_name_and_a_wrong_one_is_refused(self):
+        self.assertEqual(self.plan(quality="share")["quality"], "share")
+        self.assertEqual(self.plan()["quality"], "final")
+        with self.assertRaises(montage.RecipeError) as ctx:
+            self.plan(quality="tiny")
+        self.assertIn("share", str(ctx.exception))
+
+    def test_it_is_not_a_draft_so_the_size_and_the_timings_are_the_finals(self):
+        final, share, draft = self.plan(), self.plan(quality="share"), self.plan(quality="draft")
+        self.assertEqual((share["width"], share["height"]), (final["width"], final["height"]), "full size, unlike a draft")
+        self.assertLess(draft["width"], final["width"])
+        self.assertEqual([(x["start"], x["duration"]) for x in share["segments"]], [(x["start"], x["duration"]) for x in final["segments"]])
+
+    def test_the_encode_is_capped_and_a_final_is_not(self):
+        self.assertIn("-maxrate", montage._encode_piece({"quality": "share"}))
+        self.assertIn("23", montage._encode_piece({"quality": "share"}))
+        self.assertNotIn("-maxrate", montage._encode_piece({"quality": "final"}))
+        self.assertNotIn("-maxrate", montage._encode_piece({"quality": "draft"}))
+        self.assertIn("14", montage._encode_piece({"quality": "final"}), "the final is as it was")
+
+    def test_the_file_is_smaller_the_same_length_and_named_and_listed_as_a_share_copy(self):
+        sizes, durs = {}, {}
+        for q in ("final", "share"):
+            job, out = self.render(recipe(self.clips, template="punchy", quality=q))
+            self.assertEqual(job["state"], "done", job["error"])
+            sizes[q], durs[q] = out.stat().st_size, stats(out)["dur"]
+            if q == "share":
+                self.assertIn("-share-", out.name)
+                self.assertEqual(next(e for e in montage.exports(self.root) if e["name"] == out.name)["quality"], "share")
+        self.assertLess(sizes["share"], 0.8 * sizes["final"], f"{sizes}")
+        self.assertAlmostEqual(durs["share"], durs["final"], delta=0.1)
+
+    def test_a_crossfading_look_is_capped_too(self):
+        """Crossfades re-encode the whole video in one pass, which is a different code path from the stream copy of hard cuts."""
+        job, out = self.render(recipe(self.clips, template="clean", quality="share"))
+        self.assertEqual(job["state"], "done", job["error"])
+        job2, out2 = self.render(recipe(self.clips, template="clean"))
+        self.assertLess(out.stat().st_size, 0.8 * out2.stat().st_size)
 
 @NEED
 class QueueSurvivesRestart(Fixtures):
