@@ -58,7 +58,7 @@ const view = () => {
 };
 const typeAndSave = async (text, label) => { all(card(), n => n.tag === "textarea")[0].value = text; await press(button(label)); };
 const tiles = () => all(ids.lib, n => n.className === "item").map(t => ({
-  name: all(t, n => n.className === "name")[0].textContent, hasEdit: all(t, n => n.className === "edit").length > 0, dim: all(t, n => n.className === "dim").map(d => d.textContent).join(" | "),
+  name: all(t, n => (n.className || "").split(" ").includes("name"))[0].textContent, hasEdit: all(t, n => n.className === "edit").length > 0, dim: all(t, n => (n.className || "").split(" ").includes("dim")).map(d => d.textContent).join(" | "),
 }));
 
 (async () => {

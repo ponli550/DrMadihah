@@ -845,13 +845,15 @@ function createMontage(opts) {
     listBox.replaceChildren(...order.map((ref, idx) => {
       const i = byRef[ref];
       const check = el("input", {type: "checkbox", checked: picked.has(ref)});
+      check.setAttribute("data-ctl", "pick");
       rows.push({ref, check});
       const up = el("button", {type: "button", className: "mv", title: "Move earlier"}, "↑");
       const down = el("button", {type: "button", className: "mv", title: "Move later"}, "↓");
+      up.setAttribute("aria-label", "Move earlier"); down.setAttribute("aria-label", "Move later");
       up.addEventListener("click", () => move(ref, -1));
       down.addEventListener("click", () => move(ref, 1));
       return el("div", {className: "urow"}, el("div", {className: "row"},
-        el("span", {}, check, " " + (i.kind === "video" ? "🎞 " : "🖼 ") + (i.caption || i.name)),
+        el("label", {className: "pickline"}, check, " " + (i.kind === "video" ? "🎞 " : "🖼 ") + (i.caption || i.name)),
         el("span", {}, up, down)),
         i.caption ? el("div", {className: "dim"}, i.name) : "");
     }));
@@ -865,6 +867,7 @@ function createMontage(opts) {
         ...p.warnings.map(w => el("div", {className: "dim"}, "⚠ " + w)),
         ...p.segments.map(s => el("div", {className: "dim"}, secs(s.start) + "  " + (["title", "end", "quote", "announce", "countdown"].includes(s.kind) ? s.kind + " card: " + s.text : s.name + (s.text ? " — " + s.text : "")) + "  (" + secs(s.duration) + ")" + (s.speech ? "  🗣 " + secs(s.speech) + " of speech" : "") + (s.sound ? "  🔊 sound kept" : "") + (s.cuts ? "  ✂ " + s.cuts + (s.cuts === 1 ? " jump cut, " : " jump cuts, ") + secs(s.trimmed) + " of dead air removed" : ""))));
       say("");
+      if (planBox.scrollIntoView) planBox.scrollIntoView({block: "nearest", behavior: "smooth"});
     } catch (e) { planBox.replaceChildren(); say("Cannot make this yet: " + e.message, e.problems, true); }
   }
   async function make(rec) {
@@ -958,7 +961,7 @@ function createMontage(opts) {
     }
     if (st.active) { const stop = el("button", {type: "button", className: "alt"}, "Cancel"); stop.addEventListener("click", cancel); kids.push(stop); }
     if (st.exports.length) {
-      kids.push(el("div", {className: "dim"}, "Finished videos (tick the ones you want checked)"));
+      kids.push(el("div", {className: "group-title"}, "Finished videos"), el("div", {className: "dim hint"}, "Tick the ones you want checked."));
       const shown = st.exports.slice(0, 12);
       Array.from(toCheck).forEach(n => { if (!shown.some(x => x.name === n)) toCheck.delete(n); });
       const checkSel = el("button", {type: "button", className: "alt"}, toCheck.size ? "Check selected (" + toCheck.size + ")" : "Check selected");
@@ -968,21 +971,27 @@ function createMontage(opts) {
       all.addEventListener("click", () => { if (toCheck.size === shown.length) toCheck.clear(); else shown.forEach(x => toCheck.add(x.name)); renderJobs(); });
       kids.push(el("div", {className: "row"}, checkSel, all));
       shown.forEach(x => {
-        const del = el("button", {type: "button", className: "mv", title: "Delete this video"}, "Delete");
+        const del = el("button", {type: "button", className: "danger", title: "Delete this video"}, "Delete");
         del.addEventListener("click", () => removeExport(x));
         const tick = el("input", {type: "checkbox", checked: toCheck.has(x.name), title: "Choose this video to be checked"});
         tick.addEventListener("change", () => { if (tick.checked) toCheck.add(x.name); else toCheck.delete(x.name); renderJobs(); });
-        kids.push(el("div", {className: "row"},
-          el("span", {}, tick, " ", el("a", {href: BASE + "/exports/" + encodeURIComponent(x.name), target: "_blank"}, x.name)),
-          el("span", {}, el("span", {className: "dim"}, (x.quality === "draft" ? "draft · " : x.quality === "share" ? "share copy · " : "") + (x.duration ? secs(x.duration) + " · " : "") + mb(x.size) + " "), del)));
+        const poster = el("img", {className: "vposter", alt: "", loading: "lazy", src: BASE + "/exports/" + encodeURIComponent(x.name.replace(/\.mp4$/, ".jpg"))});
+        poster.addEventListener("error", () => { poster.style.visibility = "hidden"; });                  // an old video may have no picture yet
+        const tag = {draft: "draft", share: "share copy"}[x.quality];
         const one = el("button", {type: "button", className: "mv"}, x.verdict ? "Check again" : "Check");
         one.disabled = checking;
         one.addEventListener("click", () => checkNames([x.name], !!x.verdict));
         const badge = x.verdict ? el("button", {type: "button", className: "mv", title: "Show why"}, verdictText(x)) : "";
         if (badge) badge.addEventListener("click", () => toggleReport(x.name));
-        kids.push(el("div", {className: "row"}, el("span", {className: "dim"}, x.verdict ? "" : "not checked"), el("span", {}, badge, " ", one)));
-        if (opened.has(x.name)) kids.push(reportBox(x.name));
-        if (opts.downloader) kids.push(opts.downloader.row(x.name, x.size, x.quality));
+        // One card per video: its picture and name, what the checks say, how to get it onto the phone, and (quietly) delete.
+        kids.push(el("div", {className: "vcard"},
+          el("div", {className: "vhead"}, poster, el("div", {className: "vtext"},
+            el("div", {className: "vtitle"}, tick, " ", el("a", {href: BASE + "/exports/" + encodeURIComponent(x.name), target: "_blank"}, x.name)),
+            el("div", {className: "dim"}, (tag ? tag + " · " : "") + (x.duration ? secs(x.duration) + " · " : "") + mb(x.size) + (x.format ? " · " + x.format : "") + (x.template ? " · " + x.template : "")))),
+          el("div", {className: "row"}, el("span", {className: "dim"}, x.verdict ? "" : "not checked"), el("span", {}, badge, " ", one)),
+          ...(opened.has(x.name) ? [reportBox(x.name)] : []),
+          ...(opts.downloader ? [opts.downloader.row(x.name, x.size, x.quality)] : []),
+          el("div", {className: "vfoot"}, del)));
       });
       if (opts.downloader) {
         const auto = el("input", {type: "checkbox", checked: opts.downloader.auto()});
@@ -1003,10 +1012,10 @@ function createMontage(opts) {
     const select = (options, value) => { const s = el("select", {}); options.forEach(([v, label]) => s.append(el("option", {value: v}, label))); s.value = value; return s; };
     ctl = {
       format: select(Object.entries(st.formats).map(([k, f]) => [k, f.label]), form.format),
-      template: select(Object.entries(st.templates).map(([k, t]) => [k, t.label + " — " + t.blurb]), form.template),
+      template: select(Object.entries(st.templates).map(([k, t]) => [k, t.label]), form.template),
       title: el("input", {type: "text", maxLength: 100, placeholder: "Title card text (optional)", value: form.title}),
       captions: el("input", {type: "checkbox", checked: form.captions}),
-      music: select([["", "No music (add a track in the app when you post)"]].concat(st.catalog.filter(i => i.kind === "audio").map(i => [i.name, i.name])), form.music),
+      music: select([["", "No music (add one when you post)"]].concat(st.catalog.filter(i => i.kind === "audio").map(i => [i.name, i.name])), form.music),
       sync: el("input", {type: "checkbox", checked: form.sync, disabled: !form.music}),
       syncHint: el("span", {className: "dim"}, form.music ? "" : "  (pick a song in the list above first)"),
       speech: el("input", {type: "checkbox", checked: form.speech}),
@@ -1020,6 +1029,7 @@ function createMontage(opts) {
       cut: select([["", "Plain cuts"], ["zoom", "Zoom through (punch in, then settle)"], ["zoom_in", "Zoom in at the end of each piece"], ["zoom_out", "Settle in at the start of each piece"], ["flip", "3D card flip (best on hard cuts)"]], form.transition),
       max: select([["15", "up to 15 s"], ["30", "up to 30 s"], ["45", "up to 45 s"], ["60", "up to 60 s"], ["90", "up to 90 s"]], form.max),
     };
+    Object.keys(ctl).forEach(k => { if (ctl[k] && ctl[k].setAttribute) ctl[k].setAttribute("data-ctl", k); });     // controls are found by name (tests, and anything that styles them), not by position
     // a plain text box that keeps only digits and a dot: a number box lets "e" in, and then refuses everything typed after it
     ctl.bpm.addEventListener("input", () => { const v = ctl.bpm.value.replace(/[^0-9.]/g, ""); if (v !== ctl.bpm.value) ctl.bpm.value = v; });
     ctl.music.addEventListener("change", () => {
@@ -1038,6 +1048,7 @@ function createMontage(opts) {
       if (b) ctl.bpm.value = String(b);
     });
     listBox = el("div", {}); planBox = el("div", {}); noticeBox = el("div", {className: "notice ok"}); jobsBox = el("div", {});
+    listBox.setAttribute("data-part", "list"); planBox.setAttribute("data-part", "plan"); noticeBox.setAttribute("data-part", "notice"); jobsBox.setAttribute("data-part", "jobs");
     const go = el("button", {type: "button"}, "Make video");
     goBtn = go; runBtns = [];
     const draft = el("button", {type: "button", className: "alt"}, "Quick draft (half size, fast)");
@@ -1059,31 +1070,61 @@ function createMontage(opts) {
         r.valid ? el("span", {}, use, run) : el("span", {className: "dim"}, "needs fixing")),
         ...(r.valid ? [] : r.problems.map(p => el("div", {className: "dim"}, "• " + p))));
     });
+    const cardTitle = el("span", {}, "Make a video"); cardTitle.setAttribute("data-part", "title");
+    const savedBox = el("div", {}, ...saved); savedBox.setAttribute("data-part", "saved");
+    // What the look is like is said under the list, not inside every option: a long option is cut off on a phone.
+    const lookHint = el("div", {className: "dim hint"}, "");
+    const showHint = () => { const t = st.templates[ctl.template.value]; lookHint.textContent = t ? t.blurb : ""; };
+    ctl.template.addEventListener("change", showHint); showHint();
+    ctl.title.setAttribute("aria-label", "Title card text (optional)"); ctl.bpm.setAttribute("aria-label", "Beats per minute of the song, 50 to 200");
+    const field = (label, control, hint) => el("label", {className: "field"}, el("span", {className: "dim"}, label), control, hint || "");
+    const group = (title, ...kids) => el("div", {className: "group"}, el("div", {className: "group-title"}, title), ...kids);
+    const tick = (control, text, ...extra) => el("label", {className: "row"}, el("span", {}, control, " " + text, ...extra));
+    // The options most videos never touch are folded away; the summary says which of them are on, so a closed fold hides nothing.
+    const optsSummary = el("summary", {}, "More options");
+    const more = el("details", {className: "opts"}, optsSummary,
+      group("Timing to the music",
+        tick(ctl.sync, "Cut on the beat of the music (hard cuts)", ctl.syncHint),
+        el("div", {className: "dim"}, "Or cut to a song's tempo with no audio, for a trending song you add later in Instagram: type its BPM, numbers only (e.g. 75)."), ctl.bpm, ctl.tap, ctl.tapNote),
+      group("Clips where people speak",
+        tick(ctl.speech, "Start video clips where people speak"),
+        tick(ctl.sound, "Keep the sound of clips where people speak (music dips under it)"),
+        tick(ctl.tighten, "Cut the dead air out of talking clips (jump cuts)")),
+      group("Motion and sound",
+        field("Cuts between pictures and clips", ctl.cut),
+        field("Picture effect", ctl.effect),
+        tick(ctl.depth, "Show pictures as 3D cards that sway (tilted, over a blurred copy)"),
+        tick(ctl.fxwords, "Tick on each word (kinetic type) and countdown number"),
+        field("Sound effects", ctl.fxcuts), field("Length", ctl.max)));
+    const switches = [["sync", "beat sync"], ["speech", "speech start"], ["sound", "clip sound"], ["tighten", "jump cuts"], ["depth", "3D cards"], ["fxwords", "word ticks"]];
+    const showOpts = () => {
+      const on = switches.filter(([k]) => ctl[k].checked && !(k === "speech" || k === "sound")).map(([, t]) => t);   // speech and sound are on by default: not news
+      if (ctl.bpm.value) on.push(ctl.bpm.value + " BPM");
+      if (ctl.cut.value) on.push("cuts");
+      if (ctl.effect.value) on.push(ctl.effect.value + " effect");
+      if (ctl.fxcuts.value) on.push("sound effects");
+      if (ctl.max.value !== "30") on.push("up to " + ctl.max.value + " s");
+      optsSummary.textContent = "More options" + (on.length ? " · " + on.join(", ") : "");
+    };
+    more.addEventListener("change", showOpts); more.addEventListener("input", showOpts); showOpts();
+    const moreSummary = el("summary", {title: "More actions"}, "⋯"); moreSummary.setAttribute("aria-label", "More actions");
+    const moreActions = el("details", {className: "more"}, moreSummary, el("div", {className: "pop"}, share, draft, keep, ask));
+    const bar = el("div", {className: "bar"}, noticeBox, el("div", {className: "btns"}, go, look, moreActions));
     mount.replaceChildren(el("section", {className: "card"},
-      el("h2", {}, el("span", {}, "Make a video"), el("span", {className: "dim"}, "for Instagram, Reels, TikTok")),
+      el("h2", {}, cardTitle, el("span", {className: "dim"}, "for Instagram, Reels, TikTok")),
       el("div", {className: "dim"}, "Pick the look and the pictures; every timing is worked out for you."),
-      el("div", {className: "dim"}, "Format"), ctl.format, el("div", {className: "dim"}, "Look"), ctl.template,
-      ctl.title, el("label", {className: "row"}, el("span", {}, ctl.captions, " Show captions on screen")),
-      el("div", {className: "dim"}, "Music: pick a song from this list (no typing). To add one, press “Add a song” at the top of the page."), ctl.music,
-      el("label", {className: "row"}, el("span", {}, ctl.sync, " Cut on the beat of the music (hard cuts)", ctl.syncHint)),
-      el("label", {className: "row"}, el("span", {}, ctl.speech, " Start video clips where people speak")),
-      el("label", {className: "row"}, el("span", {}, ctl.sound, " Keep the sound of clips where people speak (music dips under it)")),
-      el("label", {className: "row"}, el("span", {}, ctl.tighten, " Cut the dead air out of talking clips (jump cuts)")),
-      el("label", {className: "row"}, el("span", {}, ctl.fxwords, " Tick on each word (kinetic type) and countdown number")),
-      el("label", {className: "row"}, el("span", {}, ctl.depth, " Show pictures as 3D cards that sway (tilted, over a blurred copy)")),
-      el("div", {className: "dim"}, "Or cut to a song's tempo with no audio, for a trending song you add later in Instagram: type its BPM, numbers only (e.g. 75)."), ctl.bpm, ctl.tap, ctl.tapNote,
-      el("div", {className: "dim"}, "Length"), ctl.max,
-      el("div", {className: "dim"}, "Cuts between pictures and clips"), ctl.cut,
-      el("div", {className: "dim"}, "Picture effect"), ctl.effect,
-      el("div", {className: "dim"}, "Sound effects"), ctl.fxcuts,
-      el("div", {className: "dim"}, "Pictures and clips, in order (tick to include)"), listBox,
-      noticeBox, planBox, go, share, draft, look, keep, ask,
-      ...(saved.length ? [el("div", {className: "dim"}, "Saved recipes")].concat(saved) : []),
-      jobsBox));
+      group("Style",
+        field("Format", ctl.format), field("Look", ctl.template, lookHint), ctl.title,
+        tick(ctl.captions, "Show captions on screen"),
+        field("Music", ctl.music, el("div", {className: "dim hint"}, "Music: pick a song from this list (no typing). To add one, press “Add a song” at the top of the page."))),
+      group("Pictures and clips", el("div", {className: "dim hint"}, "Tick the ones to include. The arrows change the order."), listBox),
+      more, planBox,
+      ...(saved.length ? [el("details", {className: "opts"}, el("summary", {}, "Saved recipes (" + saved.length + ")"), savedBox)] : []),
+      bar, jobsBox));
     renderList(); renderJobs();
   }
   async function refresh() {
-    try { syncForm(); await load(); render(); if (st.active) schedule(1500); } catch (e) { /* the card just stays as it was */ }
+    try { syncForm(); await load(); render(); if (st.active) schedule(1500); } catch (e) { console.error("make-a-video card:", e); /* the card just stays as it was */ }
   }
   return {refresh};
 }

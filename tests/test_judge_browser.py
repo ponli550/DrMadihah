@@ -52,6 +52,24 @@ class ChooseAndCheck(unittest.TestCase):
         self.ev(f"""(() => {{ const row = Array.from(document.querySelectorAll('#montage input[type=checkbox][title^="Choose"]')).find(i => i.parentElement.textContent.includes({name!r}));
                   if (row.checked !== {str(on).lower()}) row.click(); }})()""")
 
+    # ---------------------------------------------------------------- the finished videos as cards
+    def test_each_finished_video_is_one_card_with_its_picture_its_checks_its_download_and_a_quiet_delete(self):
+        cards = self.ev("Array.from(document.querySelectorAll('#montage .vcard')).map(c => ({name: c.querySelector('.vtitle a').textContent, "
+                        "poster: !!c.querySelector('img.vposter'), checkbox: !!c.querySelector('input[type=checkbox]'), dl: !!c.querySelector('.dl'), "
+                        "delete: Array.from(c.querySelectorAll('button')).filter(b => b.textContent === 'Delete').map(b => b.className), "
+                        "state: c.innerText.includes('not checked')}))")
+        self.assertEqual(sorted(c["name"] for c in cards), sorted(self.names), "one card per video")
+        for c in cards:
+            self.assertTrue(c["poster"] and c["checkbox"] and c["dl"] and c["state"], c)
+            self.assertEqual(c["delete"], ["danger"], "Delete is one quiet red-text button, not one of a row of equal ones")
+        self.assertEqual(self.ev("document.querySelectorAll('#montage .vcard .vtitle input[type=checkbox]').length"), 3)
+
+    def test_text_buttons_are_as_wide_as_their_words(self):
+        """Phase 1 gave every .mv button a 44 px width, which squeezed 'Select all' and 'Check again' onto two lines."""
+        for label in ("Select all", "Check"):
+            wrapped = self.ev(f"{self.button(label)}.filter(b => b.className.includes('mv')).map(b => b.scrollWidth > b.clientWidth + 1 || b.getBoundingClientRect().height > 60)")
+            self.assertTrue(wrapped and not any(wrapped), f"{label}: {wrapped}")
+
     def wait_for(self, needle, seconds=40):
         end = time.time() + seconds
         while time.time() < end:

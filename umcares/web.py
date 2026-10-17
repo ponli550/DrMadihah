@@ -346,33 +346,84 @@ def icon_png(name: str):
 
 
 STYLE = """
-:root{--bg:#f6f6f4;--card:#fff;--line:#dcdcd6;--fg:#1c1c1a;--dim:#6b6b66;--acc:#1f5fbf;--err:#b3261e}
-@media (prefers-color-scheme:dark){:root{--bg:#111318;--card:#1b1e26;--line:#2a2d36;--fg:#e8e8ea;--dim:#9a9aa3;--acc:#7fb0ff;--err:#ff8a80}}
+/* Design tokens first (type, spacing, colour, shape), then components that only use them. Text pairs are contrast-tested (tests/test_web.py). */
+:root{--bg:#f3f4f7;--surface:#fff;--surface2:#eceef3;--line:#d9dde5;--fg:#14171c;--dim:#566070;--acc:#1c5fd4;--on-acc:#fff;--err:#b3261e;--ok:#14733a;--warn:#8a5a00;
+--r:14px;--r-sm:10px;--s1:4px;--s2:8px;--s3:12px;--s4:16px;--s5:24px;--tap:44px;--t-sm:14px;--t-md:16px;--t-lg:20px;--t-xl:26px}
+@media (prefers-color-scheme:dark){:root{--bg:#0e1014;--surface:#161920;--surface2:#1f232c;--line:#2a2f3b;--fg:#eceff4;--dim:#9aa3b2;--acc:#7db0ff;--on-acc:#08111f;--err:#ff9088;--ok:#6fd39a;--warn:#f0c36a}}
 *{box-sizing:border-box}
-body{margin:0;padding:16px;font:16px -apple-system,system-ui,sans-serif;background:var(--bg);color:var(--fg)}
-main{max-width:900px;margin:0 auto}
-h1{font-size:20px;margin:0 0 4px}.dim{color:var(--dim);font-size:14px}
-section,.card{background:var(--card);border:1px solid var(--line);border-radius:10px;margin:14px 0;padding:12px}
-h2{font-size:15px;margin:0 0 8px;display:flex;justify-content:space-between;gap:8px}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
-.item{min-width:0}.thumb{width:100%;aspect-ratio:16/10;object-fit:cover;border-radius:6px;background:var(--line);display:block}
-.name{font-size:13px;margin-top:4px;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.edit{float:right;border:0;background:none;color:var(--acc);padding:0 4px;width:auto;margin:0;font-size:14px;cursor:pointer}
-textarea{resize:vertical}
-.item .dim{overflow-wrap:anywhere}
-a{color:var(--acc)}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;padding:max(var(--s4),env(safe-area-inset-top)) max(var(--s4),env(safe-area-inset-right)) max(var(--s5),env(safe-area-inset-bottom)) max(var(--s4),env(safe-area-inset-left));
+font:var(--t-md)/1.45 -apple-system,system-ui,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--fg)}
+main{max-width:760px;margin:0 auto}
+h1{font-size:var(--t-xl);line-height:1.15;letter-spacing:-.01em;margin:var(--s2) 0 var(--s1)}
+.dim{color:var(--dim);font-size:var(--t-sm)}
+a{color:var(--acc);text-underline-offset:3px}
+section,.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);margin:var(--s4) 0;padding:var(--s4)}
+h2{font-size:var(--t-md);font-weight:650;margin:0 0 var(--s3);display:flex;justify-content:space-between;align-items:baseline;gap:var(--s2)}
+h2 .dim{font-weight:400}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:var(--s3)}
+.item{min-width:0}
+.thumb{width:100%;aspect-ratio:4/3;object-fit:cover;border-radius:var(--r-sm);background:var(--surface2);display:block}
+.nocap{color:var(--dim);font-style:italic}
+.name{font-size:13px;line-height:1.35;margin-top:var(--s1);overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.item .dim{overflow-wrap:anywhere}.dim.one{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.edit{float:right;border:0;background:none;color:var(--acc);padding:var(--s2) var(--s3);width:auto;min-height:0;margin:calc(-1*var(--s2)) calc(-1*var(--s3)) 0 0;font-size:var(--t-sm);font-weight:600;cursor:pointer}
+textarea{resize:vertical;min-height:88px}
 .play{position:relative;cursor:pointer}
 .badge{position:absolute;inset:0;display:grid;place-items:center;font-size:28px;color:#fff;text-shadow:0 1px 6px #000}
-input,textarea,button{font:inherit;width:100%;padding:10px;margin:4px 0;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--fg)}
-input[type=checkbox]{width:auto;margin:0 8px 0 0;padding:0;vertical-align:middle}
-.mv{width:auto;margin:0 0 0 6px;padding:2px 10px;background:none;border:1px solid var(--line);color:var(--acc);font-size:16px;cursor:pointer}
-.notice{font-size:14px;min-height:1.2em}.notice.err{color:var(--err)}.notice.ok{color:var(--fg)}
-button{background:var(--acc);color:#fff;border:0;font-weight:600;cursor:pointer}button:disabled{opacity:.5}
-.err{color:var(--err);font-size:14px;min-height:1.2em}
-.row{display:flex;gap:10px;flex-wrap:wrap;align-items:baseline;justify-content:space-between}
-.btns{display:flex;gap:8px;flex-wrap:wrap}.btns button{flex:1;min-width:140px}
-button.alt{background:var(--card);color:var(--acc);border:1px solid var(--acc)}
-.urow{margin:10px 0;font-size:14px}progress{width:100%;height:8px}
+input,textarea,select,button{font:inherit;width:100%;min-height:var(--tap);padding:10px var(--s3);margin:var(--s1) 0;border-radius:var(--r-sm);border:1px solid var(--line);background:var(--surface2);color:var(--fg)}
+input::placeholder,textarea::placeholder{color:var(--dim);opacity:.85}
+select{appearance:none;-webkit-appearance:none;padding-right:38px;cursor:pointer;
+background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%238a93a3' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'><path d='M6 9l6 6 6-6'/></svg>");background-repeat:no-repeat;background-position:right 14px center}
+input[type=checkbox]{width:auto;min-height:0;height:22px;aspect-ratio:1;margin:0 var(--s2) 0 0;padding:0;vertical-align:middle;accent-color:var(--acc)}
+:is(a,button,input,select,textarea,summary,.play):focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+button{background:var(--acc);color:var(--on-acc);border:0;font-weight:650;cursor:pointer}
+button:disabled{opacity:.45;cursor:not-allowed}
+button.alt{background:var(--surface2);color:var(--acc);border:1px solid var(--line)}
+.mv{width:auto;min-width:var(--tap);min-height:var(--tap);margin:0 0 0 var(--s2);padding:0 var(--s3);white-space:nowrap;background:var(--surface2);border:1px solid var(--line);color:var(--acc);font-size:18px;cursor:pointer}
+.notice{font-size:var(--t-sm);min-height:1.2em}.notice.err{color:var(--err)}.notice.ok{color:var(--fg)}
+.err{color:var(--err);font-size:var(--t-sm);min-height:1.2em}
+.row{display:flex;gap:var(--s3);flex-wrap:wrap;align-items:center;justify-content:space-between}
+label.row{min-height:var(--tap)}
+.btns{display:flex;gap:var(--s2);flex-wrap:wrap}.btns button{flex:1;min-width:140px}
+.urow{margin:var(--s3) 0;font-size:var(--t-sm)}
+progress{appearance:none;-webkit-appearance:none;width:100%;height:8px;border:0;border-radius:99px;background:var(--surface2);overflow:hidden}
+progress::-webkit-progress-bar{background:var(--surface2)}
+progress::-webkit-progress-value{background:var(--acc);border-radius:99px}
+progress::-moz-progress-bar{background:var(--acc);border-radius:99px}
+video{width:100%;border-radius:var(--r-sm);background:#000}
+.field{display:block;margin:var(--s3) 0 var(--s1)}
+.field>.dim{display:block;margin-bottom:0}
+.hint{margin:var(--s1) 0 0;line-height:1.35}
+.urow>.row{flex-wrap:nowrap;align-items:flex-start}.urow>.row>.pickline{flex:1;min-width:0;overflow-wrap:anywhere;display:block;min-height:var(--tap);padding:10px 0;cursor:pointer}.urow>.row>span:first-child{flex:1;min-width:0;overflow-wrap:anywhere}.urow>.row>span:last-child{flex:none;white-space:nowrap}
+.vcard{border-top:1px solid var(--line);padding:var(--s3) 0}.vcard:first-of-type{border-top:0}
+.vhead{display:flex;gap:var(--s3);align-items:flex-start}
+.vposter{flex:none;width:52px;aspect-ratio:9/16;object-fit:cover;border-radius:8px;background:var(--surface2)}
+.vtext{min-width:0;flex:1}
+.vtitle{display:flex;gap:var(--s2);align-items:flex-start;font-weight:600;overflow-wrap:anywhere}
+.vtitle input{flex:none;margin-top:3px}
+.vfoot{display:flex;justify-content:flex-end}
+button.danger{width:auto;min-width:var(--tap);background:none;color:var(--err);border:1px solid var(--line);font-weight:600}
+section.empties{background:none;border-style:dashed;padding:var(--s3) var(--s4)}
+.group{margin:var(--s4) 0}
+.group-title{font-size:13px;font-weight:650;letter-spacing:.04em;text-transform:uppercase;color:var(--dim);margin:0 0 var(--s2)}
+details.opts{border:1px solid var(--line);border-radius:var(--r-sm);margin:var(--s4) 0;background:var(--surface)}
+details.opts>summary{min-height:var(--tap);padding:var(--s3);font-weight:650;cursor:pointer;list-style:none;display:flex;align-items:center;gap:var(--s2);overflow-wrap:anywhere}
+details.opts>summary::-webkit-details-marker{display:none}
+details.opts>summary::before{content:"";flex:none;width:8px;height:8px;border-right:2px solid var(--dim);border-bottom:2px solid var(--dim);transform:rotate(-45deg);transition:transform .15s}
+details.opts[open]>summary::before{transform:rotate(45deg)}
+details.opts>:not(summary){margin-left:var(--s3);margin-right:var(--s3)}
+details.opts[open]{padding-bottom:var(--s2)}
+.bar{position:sticky;bottom:0;z-index:5;margin:var(--s4) calc(-1*var(--s4)) calc(-1*var(--s4));padding:var(--s3) var(--s4) max(var(--s3),env(safe-area-inset-bottom));background:var(--surface);border-top:1px solid var(--line);border-radius:0 0 var(--r) var(--r);box-shadow:0 -8px 20px -12px rgba(0,0,0,.35)}
+.bar .notice{margin:0 0 var(--s2)}.bar .notice:empty{display:none}
+.bar .btns{flex-wrap:nowrap}.bar .btns>button{min-width:0;white-space:nowrap;padding-left:var(--s2);padding-right:var(--s2)}.bar .btns button:first-child{flex:1.4}.bar .btns>button.alt{flex:1}
+details.more{position:relative;flex:none}
+details.more>summary{display:grid;place-items:center;width:var(--tap);min-height:var(--tap);border-radius:var(--r-sm);border:1px solid var(--line);background:var(--surface2);color:var(--acc);font-size:22px;font-weight:700;line-height:1;cursor:pointer;list-style:none}
+details.more>summary::-webkit-details-marker{display:none}
+details.more>.pop{position:absolute;right:0;bottom:calc(100% + var(--s2));z-index:6;width:min(280px,calc(100vw - 2*var(--s4)));padding:var(--s2);background:var(--surface);border:1px solid var(--line);border-radius:var(--r-sm);box-shadow:0 10px 28px rgba(0,0,0,.4)}
+details.more>.pop button{margin:var(--s1) 0}
+@media (prefers-reduced-motion:no-preference){button,.mv{transition:filter .12s,transform .08s}button:not(:disabled):active{transform:scale(.98)}button:not(:disabled):hover{filter:brightness(1.08)}}
+@media (min-width:700px){section,.card{padding:var(--s5)}}
 """
 
 HOME_PAGE = """<!doctype html>
@@ -473,9 +524,10 @@ function thumb(f, folder){
   const src = url(folder, f.name);
   if (f.kind === "audio") return el("audio", {src, preload:"none", controls:true, style:"width:100%"});
   if (f.kind === "file") return el("a", {href:src}, "open");
-  const img = el("img", {className:"thumb", alt:f.name});
+  const img = el("img", {className:"thumb", alt:""});                       // the caption under it says what it is; an empty alt keeps a loading picture a calm grey box, not a broken-image icon with a link
+  const named = {ariaLabel: f.caption || f.name};                            // ... so the link that holds only the picture is named instead
   (tiles[folder] = tiles[folder] || {})[f.name] = img;
-  if (f.kind === "image") return el("a", {href:src, target:"_blank"}, img);
+  if (f.kind === "image") return el("a", Object.assign({href:src, target:"_blank"}, named), img);
   const tile = el("div", {className:"play"}, img, el("span", {className:"badge"}, "▶"));
   tile.onclick = () => tile.replaceWith(el("video", {className:"thumb", src, controls:true, autoplay:true, playsInline:true}));
   return tile;
@@ -495,11 +547,12 @@ async function fillThumbs(folders){
 const plural = (n, word) => n + " " + word + (n === 1 ? "" : "s");
 let knownShas = null;
 function tile(f, g) {
+  const label = f.caption || (f.sha && !f.skipped ? "No caption yet" : f.name);          // the caption first; with none, say so, not a raw filename
   const edit = f.sha ? el("button", {type: "button", className: "edit", title: "Add or change the caption"}, "✎") : "";
   if (f.sha) edit.addEventListener("click", () => details.start({only: [f.sha]}));
   return el("div", {className: "item"}, thumb(f, g.folder),
-    el("div", {className: "name", title: f.name}, edit, f.caption || f.name),
-    el("div", {className: "dim"}, (f.caption ? f.name + " · " : "") + mb(f.size) + (f.sha && !f.caption && !f.skipped ? " · no detail yet" : "")));
+    el("div", {className: f.caption ? "name" : "name nocap", title: f.name}, edit, label),
+    el("div", {className: "dim one", title: f.name}, mb(f.size) + (label === f.name ? "" : " · " + f.name)));
 }
 // Returns the shas that appeared since the previous load: the files an upload just added.
 function loadLibrary(){
@@ -507,13 +560,20 @@ function loadLibrary(){
     const lib = document.getElementById("lib");
     lib.replaceChildren(); tiles = {};
     let n = 0, bytes = 0;
+    const empties = [];
     d.folders.forEach(g => {
       n += g.files.length; g.files.forEach(f => bytes += f.size);
+      if (!g.files.length) { empties.push(g); return; }                       // a folder with nothing in it is one line at the end, not a card
       const grid = el("div", {className:"grid"});
       g.files.forEach(f => grid.append(tile(f, g)));
-      if (!g.files.length) grid.append(el("div", {className:"dim"}, g.exists ? "empty" : "folder missing"));
       lib.append(el("section", {}, el("h2", {}, el("span", {}, g.label), el("span", {className:"dim"}, plural(g.files.length, "file"))), grid));
     });
+    if (empties.length) {
+      const missing = empties.filter(g => !g.exists);
+      const note = el("section", {className: "empties"}, el("div", {className: "dim"}, "Empty folders: " + empties.map(g => g.label).join(", ") + "."
+        + (missing.length ? " Not created yet: " + missing.map(g => g.label).join(", ") + "." : "")));
+      lib.append(note);
+    }
     document.getElementById("status").textContent = plural(n, "file") + " · " + mb(bytes);
     fillThumbs(d.folders.filter(g => g.files.some(f => f.kind === "video" || f.kind === "image")).map(g => g.folder));
     const now = d.folders.flatMap(g => g.files).map(f => f.sha).filter(Boolean);

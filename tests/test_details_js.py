@@ -114,13 +114,15 @@ class Details(unittest.TestCase):
     def test_tiles_show_the_caption_an_edit_button_and_what_still_needs_detail(self):
         captions.set_detail(self.root, captions.items(self.root)[0]["sha"], "Opening speech")
         out = self.run_js("tiles")
-        t = {x["name"]: x for x in out["tiles"]}
-        self.assertEqual(len(t), 3)
-        self.assertTrue(all(x["hasEdit"] for x in t.values()))
-        self.assertIn("Opening speech", t)
-        self.assertIn("IMG_1.jpg", t["Opening speech"]["dim"])                 # the filename moves to the small line
-        self.assertIn("no detail yet", t["IMG_2.jpg"]["dim"])
-        self.assertNotIn("no detail yet", t["Opening speech"]["dim"])
+        tiles = out["tiles"]
+        import re
+        file_of = lambda x: (re.search(r"[A-Za-z][\w-]*\.\w+", x["dim"]) or re.search(r".*", x["name"])).group(0)      # on the small line after the size, or the label itself when that is the name
+        by_file = {file_of(x): x for x in tiles}
+        self.assertEqual(len(tiles), 3)
+        self.assertTrue(all(x["hasEdit"] for x in tiles))
+        self.assertEqual(by_file["IMG_1.jpg"]["name"], "Opening speech", "the caption is the main label")
+        self.assertEqual(by_file["IMG_2.jpg"]["name"], "No caption yet", "with no caption it says so, not a raw filename")
+        self.assertRegex(by_file["IMG_1.jpg"]["dim"], r"^\d+(\.\d)? (KB|MB) · IMG_1\.jpg$", "size first, then the file name")
         self.assertTrue(out["status"].startswith("3 files"))
 
     def test_one_file_is_not_called_one_files(self):
