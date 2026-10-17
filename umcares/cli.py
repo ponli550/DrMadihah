@@ -190,8 +190,12 @@ def cmd_web(args, cfg):
     if args.action == "deploy":
         from . import webdeploy
         t = _transport(args, cfg)
-        with spinner.spin("deploying the web app", 60):
-            report = webdeploy.deploy(t, cfg.remote.root, owner, args.port)
+        try:
+            with spinner.spin("deploying the web app", 60):
+                report = webdeploy.deploy(t, cfg.remote.root, owner, args.port, force=args.force, wait=args.wait)
+        except webdeploy.BusyError as e:
+            log.err(str(e))
+            return 2
         if not report["published"]:
             log.info("not on the tailnet yet; run: umcares web --serve   (or on that machine: "
                      + " ".join(web.serve_command(args.port)) + ")")
@@ -990,6 +994,8 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--home", help="folder that holds the projects (default ~/Projects/umcares-projects)")
     w.add_argument("--owner", help="the one Tailscale login allowed in (or UMC_WEB_OWNER)")
     w.add_argument("--port", type=int, default=web.DEFAULT_PORT)
+    w.add_argument("--force", action="store_true", help="deploy even if a render or prepare job is running (it is killed)")
+    w.add_argument("--wait", type=float, default=0, metavar="SECONDS", help="deploy: wait this long for a running job to finish before refusing")
     w.add_argument("--no-caffeinate", action="store_true",
                    help="do not hold the Mac awake while serving")
     w.add_argument("--serve", action="store_true",

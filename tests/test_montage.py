@@ -1938,6 +1938,145 @@ class ShareQuality(Fixtures):
         job2, out2 = self.render(recipe(self.clips, template="clean"))
         self.assertLess(out.stat().st_size, 0.8 * out2.stat().st_size)
 
+@NEED
+class QueueSurvivesRestart(Fixtures):
+    """An app restart (a deploy, a crash, a reboot) must not lose renders: unfinished jobs are kept on disk and queued again."""
+
+    def recipe(self, **kw):
+        return recipe([{"media": "land.jpg", "hold": 2}], template="punchy", quality="draft", **kw)
+
+    def queue_file(self):
+        return self.root / montage.QUEUE_FILE
+
+    def entries(self):
+        return json.loads(self.queue_file().read_text())["jobs"]
+
+    def crash(self, rec=None):
+        """A renderer whose process is killed in the middle of a render: the worker dies and the job is left 'running'."""
+        r = montage.Renderer()
+        with mock.patch.object(montage, "render", side_effect=SystemExit):
+            r.submit(self.root, rec or self.recipe())
+            r.thread.join(10)
+        self.assertEqual(r.snapshot(self.root)[-1]["state"], "running", "it died mid-render, so nothing marked it ended")
+        return r
+
+    def restarted(self):
+        """A fresh renderer, as after a restart, and what it makes of the queue file."""
+        r = montage.Renderer()
+        n = r.restore([self.root])
+        r.cv.acquire(); r.cv.release()
+        end = time.time() + 120
+        while time.time() < end and r.active():
+            time.sleep(0.05)
+        return r, n
+
+    def setUp(self):
+        super().setUp()
+        self.add("land.jpg")
+
+    def test_a_job_that_was_running_when_the_app_died_is_made_again_and_the_file_is_cleaned_up(self):
+        self.crash()
+        self.assertEqual([e["runs"] for e in self.entries()], [1], "kept, and counted as one attempt")
+        r, n = self.restarted()
+        self.assertEqual(n, {"queued": 1, "failed": 0})
+        job = r.snapshot(self.root)[-1]
+        self.assertEqual(job["state"], "done", job["error"])
+        self.assertTrue((self.root / "exports" / job["output"]).is_file())
+        self.assertFalse(self.queue_file().exists(), "nothing unfinished is left on disk")
+
+    def test_a_job_that_had_not_started_is_kept_with_no_attempts_used_and_runs_after_the_restart(self):
+        r1 = montage.Renderer()
+        with mock.patch.object(montage.Renderer, "_work", lambda self: None):
+            r1.submit(self.root, self.recipe())
+        self.assertEqual([e["runs"] for e in self.entries()], [0])
+        r, n = self.restarted()
+        self.assertEqual((n["queued"], r.snapshot(self.root)[-1]["state"]), (1, "done"))
+
+    def test_the_job_keeps_its_id_so_a_page_that_was_watching_it_still_finds_it(self):
+        r1 = self.crash()
+        old = r1.snapshot(self.root)[-1]["id"]
+        r, _ = self.restarted()
+        self.assertEqual(r.snapshot(self.root)[-1]["id"], old)
+
+    def test_a_render_that_keeps_killing_the_app_is_given_up_on_after_two_tries(self):
+        self.crash()
+        r2 = montage.Renderer()
+        with mock.patch.object(montage, "render", side_effect=SystemExit):
+            r2.restore([self.root])
+            r2.thread.join(10)
+        self.assertEqual([e["runs"] for e in self.entries()], [2])
+        r3 = montage.Renderer()
+        with mock.patch.object(montage, "render", side_effect=AssertionError("must not run a third time")):
+            n = r3.restore([self.root])
+        self.assertEqual(n, {"queued": 0, "failed": 1})
+        job = r3.snapshot(self.root)[-1]
+        self.assertEqual(job["state"], "failed")
+        self.assertIn("not tried again", job["error"])
+        self.assertIn("press Make", job["error"])
+        self.assertFalse(self.queue_file().exists(), "it will not come back at the next restart either")
+        self.assertEqual(list((self.root / "exports").glob("*.mp4")) if (self.root / "exports").is_dir() else [], [])
+
+    def test_a_recipe_whose_picture_was_deleted_meanwhile_is_reported_and_the_others_still_run(self):
+        self.crash()
+        d = json.loads(self.queue_file().read_text())
+        bad = {"id": "dead", "runs": 0, "recipe": recipe([{"media": "gone.jpg"}], template="punchy")}
+        self.queue_file().write_text(json.dumps({"jobs": [bad] + d["jobs"]}))
+        r, n = self.restarted()
+        self.assertEqual(n, {"queued": 1, "failed": 1})
+        states = {j["id"]: j for j in r.snapshot(self.root)}
+        self.assertEqual(states["dead"]["state"], "failed")
+        self.assertIn("gone.jpg", states["dead"]["error"])
+        self.assertEqual([j["state"] for i, j in states.items() if i != "dead"], ["done"])
+
+    def test_nothing_is_left_on_disk_when_a_job_finishes_fails_or_is_cancelled(self):
+        job, out = self.render(self.recipe())
+        self.assertEqual(job["state"], "done", job["error"])
+        self.assertFalse(self.queue_file().exists(), "finished")
+        with mock.patch.object(montage, "render", side_effect=montage.MontageError("boom")):
+            job, _ = self.render(recipe([{"media": "land.jpg", "hold": 3}], template="punchy", quality="draft"))
+        self.assertEqual(job["state"], "failed")
+        self.assertFalse(self.queue_file().exists(), "failed: a failure is final, not retried at restart")
+        r = montage.Renderer()
+        with mock.patch.object(montage.Renderer, "_work", lambda self: None):
+            r.submit(self.root, self.recipe())
+        self.assertTrue(self.queue_file().exists())
+        r.cancel(self.root)
+        self.assertFalse(self.queue_file().exists(), "cancelled while waiting")
+
+    def test_a_damaged_queue_file_is_ignored_not_fatal(self):
+        self.queue_file().parent.mkdir(parents=True, exist_ok=True)
+        for junk in ("{not json", '{"jobs": 7}', '{"jobs": [1, {"recipe": 3}, {"id": "x"}]}', "[]"):
+            self.queue_file().write_text(junk)
+            self.assertEqual(montage.Renderer().restore([self.root]), {"queued": 0, "failed": 0}, junk)
+
+    def test_the_app_itself_picks_the_queue_up_when_it_starts(self):
+        """The real process: `python -m umcares.web` on a project whose queue file was left behind finishes the video."""
+        self.crash()
+        import socket
+        with socket.socket() as so:
+            so.bind(("127.0.0.1", 0))
+            port = so.getsockname()[1]
+        repo = Path(__file__).resolve().parent.parent
+        proc = subprocess.Popen(["python3", "-m", "umcares.web", "--home", str(self.home), "--port", str(port), "--no-caffeinate"], cwd=repo,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        try:
+            import urllib.request
+            end, state = time.time() + 150, None
+            while time.time() < end and state != "done":
+                time.sleep(0.5)
+                try:
+                    with urllib.request.urlopen(f"http://127.0.0.1:{port}/p/demo/api/montage", timeout=5) as resp:
+                        jobs = json.load(resp)["jobs"]
+                    state = jobs[-1]["state"] if jobs else None
+                except OSError:
+                    pass
+            self.assertEqual(state, "done", "the restarted app made the video")
+        finally:
+            proc.terminate()
+            proc.wait(10)
+            proc.stderr.close()
+        self.assertFalse(self.queue_file().exists())
+
 
 @NEED
 class ThreeD(Fixtures):

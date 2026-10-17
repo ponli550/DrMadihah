@@ -1199,8 +1199,16 @@ def export_name(plan: dict) -> str:
     return f"{slug}-{plan['format']}{'-' + plan['quality'] if plan.get('quality') in ('draft', 'share') else ''}-{time.strftime('%Y%m%d-%H%M%S')}.mp4"
 
 
+QUEUE_FILE = ".umcares/queue.json"
+MAX_RUNS = 2                                      # a render the app started this many times without finishing is given up on, so a recipe that
+                                                  # kills the app (out of memory, a crash) cannot restart-loop forever
+
+
 class Renderer:
-    """One worker, one render at a time, and never alongside a prepare job (they share prepare.HEAVY)."""
+    """One worker, one render at a time, and never alongside a prepare job (they share prepare.HEAVY).
+
+    Unfinished jobs are kept in <project>/.umcares/queue.json, so an app restart (a deploy, a crash, a reboot) does not lose them:
+    `restore()` queues them again. A job that was running starts again from the beginning (ffmpeg cannot resume)."""
     def __init__(self):
         self.cv = threading.Condition(threading.RLock())
         self.jobs: list = []
@@ -1215,17 +1223,77 @@ class Renderer:
             same = next((j for j in self.jobs if j["root"] == str(root) and j["state"] in ("queued", "running") and j.get("_key") == key), None)
             if same:                                         # a second press of Make must not queue a second copy
                 return self.public(same)
-            job = {"id": f"{int(time.time() * 1000):x}{len(self.jobs)}", "root": str(root), "state": "queued", "percent": 0,
-                   "error": None, "output": None, "title": plan["title"] or "Montage", "format": plan["format"],
-                   "template": plan["template"], "quality": plan["quality"], "total": plan["total"], "pieces": len(plan["segments"]),
-                   "warnings": plan["warnings"], "_plan": plan, "_recipe": recipe, "_key": key}
-            self.jobs.append(job)
-            self.jobs = self.jobs[-100:]
-            if self.thread is None or not self.thread.is_alive():
-                self.thread = threading.Thread(target=self._work, daemon=True)
-                self.thread.start()
-            self.cv.notify_all()
+            job = self._enqueue(root, recipe, plan, key, f"{int(time.time() * 1000):x}{len(self.jobs)}", 0)
         return self.public(job)
+
+    def _enqueue(self, root, recipe, plan, key, job_id, runs) -> dict:
+        job = {"id": job_id, "root": str(root), "state": "queued", "percent": 0,
+               "error": None, "output": None, "title": plan["title"] or "Montage", "format": plan["format"],
+               "template": plan["template"], "quality": plan["quality"], "total": plan["total"], "pieces": len(plan["segments"]),
+               "warnings": plan["warnings"], "_plan": plan, "_recipe": recipe, "_key": key, "_runs": runs}
+        self.jobs.append(job)
+        self.jobs = self.jobs[-100:]
+        self._save(root)
+        if self.thread is None or not self.thread.is_alive():
+            self.thread = threading.Thread(target=self._work, daemon=True)
+            self.thread.start()
+        self.cv.notify_all()
+        return job
+
+    def _save(self, root):
+        """Write this project's unfinished jobs to its queue file (atomically), or remove the file when there are none. Best effort:
+        a disk problem must not stop a render. Call with self.cv held."""
+        path = Path(root) / QUEUE_FILE
+        mine = [{"id": j["id"], "recipe": j["_recipe"], "runs": j.get("_runs", 0)} for j in self.jobs
+                if j["root"] == str(root) and j["state"] in ("queued", "running") and "_recipe" in j]
+        try:
+            if not mine:
+                path.unlink(missing_ok=True)
+                return
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(path.name + ".part")
+            tmp.write_text(json.dumps({"jobs": mine}, default=str), encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError:
+            pass
+
+    def restore(self, roots) -> dict:
+        """Queue again what each project's queue file says was unfinished when the app stopped. Returns {"queued": n, "failed": n}.
+
+        A job already started MAX_RUNS times is not tried again: it is listed as failed, saying so. A recipe that no longer
+        plans (a picture was deleted meanwhile) is listed as failed with the reason."""
+        n = {"queued": 0, "failed": 0}
+        for root in roots:
+            root = Path(root)
+            try:
+                entries = json.loads((root / QUEUE_FILE).read_text(encoding="utf-8")).get("jobs", [])
+            except (OSError, ValueError, AttributeError):
+                continue
+            with self.cv:
+                for e in entries if isinstance(entries, list) else []:
+                    try:
+                        recipe, runs, jid = e["recipe"], int(e.get("runs", 0)), str(e["id"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    why = None
+                    if runs >= MAX_RUNS:
+                        why = f"the app stopped {runs} times while making this video, so it was not tried again: press Make to try once more"
+                    else:
+                        try:
+                            plan = plan_for(recipe, root)
+                        except (RecipeError, MontageError) as err:
+                            why = "could not be restarted after the app was restarted: " + (", ".join(err.problems) if isinstance(err, RecipeError) else str(err))
+                    if why is None:
+                        self._enqueue(root, recipe, plan, json.dumps(recipe, sort_keys=True, default=str), jid, runs)
+                        n["queued"] += 1
+                    else:
+                        title = recipe.get("title") if isinstance(recipe, dict) else None
+                        self.jobs.append({"id": jid, "root": str(root), "state": "failed", "percent": 0, "error": why, "output": None,
+                                          "title": title or "Montage", "format": (recipe or {}).get("format", "reels") if isinstance(recipe, dict) else "reels",
+                                          "template": "", "quality": "final", "total": 0, "pieces": 0, "warnings": []})
+                        n["failed"] += 1
+                self._save(root)
+        return n
 
     @staticmethod
     def public(job) -> dict:
@@ -1234,6 +1302,11 @@ class Renderer:
     def snapshot(self, root) -> list:
         with self.cv:
             return [self.public(j) for j in self.jobs if j["root"] == str(root)][-20:]
+
+    def counts(self) -> dict:
+        """How many jobs are running and waiting, across every project."""
+        with self.cv:
+            return {"running": sum(j["state"] == "running" for j in self.jobs), "queued": sum(j["state"] == "queued" for j in self.jobs)}
 
     def active(self, root=None) -> bool:
         with self.cv:
@@ -1246,6 +1319,7 @@ class Renderer:
                 if j["root"] == str(root) and j["state"] in ("queued", "running"):
                     if j["state"] == "queued":
                         j["state"] = "cancelled"
+                        self._save(root)
                     elif j["id"] in self.ctls:
                         self.ctls[j["id"]].cancel()
                     n += 1
@@ -1267,6 +1341,8 @@ class Renderer:
                     if job is None:
                         return
                     job["state"] = "running"
+                    job["_runs"] = job.get("_runs", 0) + 1
+                    self._save(Path(job["root"]))                  # counted before it starts: a crash during it still counts
                     ctl = self.ctls[job["id"]] = Control()
                 try:
                     self._run(job, ctl)
@@ -1281,6 +1357,7 @@ class Renderer:
             if output:
                 job["output"], job["percent"] = output, 100
             self.ctls.pop(job["id"], None)
+            self._save(Path(job["root"]))
             self.cv.notify_all()
 
     def _run(self, job, ctl):
