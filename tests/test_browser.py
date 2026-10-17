@@ -105,6 +105,13 @@ class RealPage(unittest.TestCase):
         popover = self.ev("Array.from(document.querySelectorAll('#montage .bar details.more .pop button')).map(b => b.textContent)")
         self.assertEqual(popover, ["Smaller file for sharing", "Quick draft (half size, fast)", "Save recipe…", "Copy brief for Claude"], "the rest are one tap away")
 
+    def test_a_loading_photo_is_a_quiet_box_not_a_broken_image_icon_and_its_link_is_still_named(self):
+        info = self.ev("Array.from(document.querySelectorAll('#lib img.thumb')).map(i => ({alt: i.getAttribute('alt'), link: i.parentElement.tagName === 'A' ? i.parentElement.getAttribute('aria-label') : 'n/a'}))")
+        self.assertTrue(info, "the demo project has photos")
+        for t in info:
+            self.assertEqual(t["alt"], "", "an empty alt: the caption below says what it is")
+            self.assertTrue(t["link"] and t["link"] != "n/a", f"the link that holds only the picture has a name: {t}")
+
     def test_empty_folders_are_one_line_not_a_card_each(self):
         text = self.ev("document.getElementById('lib').innerText")
         cards = self.ev("document.querySelectorAll('#lib > section:not(.empties)').length")

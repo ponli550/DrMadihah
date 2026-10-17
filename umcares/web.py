@@ -524,9 +524,10 @@ function thumb(f, folder){
   const src = url(folder, f.name);
   if (f.kind === "audio") return el("audio", {src, preload:"none", controls:true, style:"width:100%"});
   if (f.kind === "file") return el("a", {href:src}, "open");
-  const img = el("img", {className:"thumb", alt:f.name});
+  const img = el("img", {className:"thumb", alt:""});                       // the caption under it says what it is; an empty alt keeps a loading picture a calm grey box, not a broken-image icon with a link
+  const named = {ariaLabel: f.caption || f.name};                            // ... so the link that holds only the picture is named instead
   (tiles[folder] = tiles[folder] || {})[f.name] = img;
-  if (f.kind === "image") return el("a", {href:src, target:"_blank"}, img);
+  if (f.kind === "image") return el("a", Object.assign({href:src, target:"_blank"}, named), img);
   const tile = el("div", {className:"play"}, img, el("span", {className:"badge"}, "▶"));
   tile.onclick = () => tile.replaceWith(el("video", {className:"thumb", src, controls:true, autoplay:true, playsInline:true}));
   return tile;
