@@ -1137,6 +1137,17 @@ def build_parser() -> argparse.ArgumentParser:
     dr.add_argument("--dry-run", action="store_true", help="check the draft and print it, but do not save it")
     dr.set_defaults(func=cmd_draft)
 
+    ex = sub.add_parser("explain", help="research a topic on the web and draft a cards-only explainer video from the sourced facts (saved for you to approve)")
+    ex.add_argument("project", help="the project's folder name on the web app (it needs no pictures)")
+    ex.add_argument("topic", nargs="+", help="what the video explains, e.g. how DevOps works")
+    ex.add_argument("--url", help="the web app's address (default: UMC_WEB_URL)")
+    ex.add_argument("--lang", default="English", help="the language of the words on screen, e.g. 'Bahasa Melayu' (default: English)")
+    ex.add_argument("--sheet", metavar="FILE", help="also save the fact sheet (with its sources) to this file")
+    ex.add_argument("--model", help="model for both calls (default: your Claude Code default)")
+    ex.add_argument("--budget", type=float, default=draft_mod.DEFAULT_BUDGET, help="safety cap in dollars for the drafting call (research has its own cap)")
+    ex.add_argument("--dry-run", action="store_true", help="check the draft and print it, but do not save it")
+    ex.set_defaults(func=cmd_explain)
+
     jd = sub.add_parser("judge", help="check finished videos you choose (format, sound, picture) and say pass, warn or fail")
     jd.add_argument("project", help="the project's folder name on the web app, e.g. cyberdsa")
     jd.add_argument("names", nargs="*", help="the video file names to check (nothing is checked unless you name it or use --all)")
@@ -1169,6 +1180,33 @@ def cmd_draft(args, cfg):
     plan = res["plan"]
     log.ok(f"{'revised' if res.get('revised') else 'drafted'} a {plan['total']} s video of {len(plan['segments'])} pieces ({plan['template']}, {plan['format']}); "
            f"Claude saw {res['images']} picture(s), {res['attempts']} attempt(s)")
+    for w in [*plan.get("warnings", []), *res.get("warnings", [])]:
+        log.warn(w)
+    if res["name"]:
+        log.ok(f"saved as recipe '{res['name']}': open the project page, Make a video, Saved recipes, then Use or Make. Nothing was rendered.")
+    else:
+        log.out(res["recipe"])
+    return 0
+
+
+def cmd_explain(args, cfg):
+    """Research a topic (web search, read-only), then draft a cards-only recipe from the sourced facts."""
+    import os
+    from pathlib import Path
+    url = args.url or cfg.env.get("UMC_WEB_URL") or os.environ.get("UMC_WEB_URL", "")
+    try:
+        site = draft_mod.Site(url)
+        with spinner.spin("Claude is researching the topic, then drafting", 900):
+            res = draft_mod.explain(site, args.project, " ".join(args.topic), lang=args.lang, budget=args.budget, model=args.model, save=not args.dry_run)
+    except draft_mod.DraftError as e:
+        log.err(str(e))
+        return 2
+    if args.sheet:
+        Path(args.sheet).write_text(res["sheet"] + "\n", encoding="utf-8")
+        log.ok(f"fact sheet saved to {args.sheet}")
+    plan = res["plan"]
+    log.ok(f"drafted a {plan['total']} s explainer of {len(plan['segments'])} pieces ({plan['template']}, {plan['format']}), {res['attempts']} attempt(s)")
+    log.warn("every claim comes from the fact sheet, but read it and the cards before you post: the sources are the model's reading of the web")
     for w in [*plan.get("warnings", []), *res.get("warnings", [])]:
         log.warn(w)
     if res["name"]:

@@ -85,7 +85,7 @@ class Site:
         return 200, (json.loads(raw) if raw[:1] in (b"{", b"[") else raw.decode("utf-8", "replace"))
 
 
-def gather(site, slug: str, max_images: int = MAX_IMAGES, images: bool = True) -> dict:
+def gather(site, slug: str, max_images: int = MAX_IMAGES, images: bool = True, need_media: bool = True) -> dict:
     """Catalog, brief and (optionally) thumbnails of a project. Thumbnails are matched to catalog items by folder and name."""
     base = f"/p/{slug}"
     code, state = site.call("GET", base + "/api/montage")
@@ -95,7 +95,7 @@ def gather(site, slug: str, max_images: int = MAX_IMAGES, images: bool = True) -
     if code != 200 or not isinstance(brief, str):
         raise DraftError("could not read the recipe brief from the web app")
     items = [i for i in state["catalog"] if i["kind"] in ("image", "video")]
-    if not items:
+    if not items and need_media:
         raise DraftError("this project has no pictures or clips to make a video from")
     pics = []
     if images:
@@ -157,7 +157,7 @@ def build_input(ctx: dict, request: str, repair=None, base=None) -> str:
     shown = {p[0]["ref"] for p in ctx["pics"]}
     listing = "\n".join(f"- ref={i['ref']} name={i['name']} kind={i['kind']}" + (f" caption={i['caption']!r}" if i["caption"] else "")
                         + ("" if i["ref"] in shown else " (no picture shown)") for i in ctx["items"])
-    text = (RULES + "\n## Files in the project\n" + listing + "\n\n## Brief\n" + ctx["brief"])
+    text = (ctx.get("rules", RULES) + "\n## Files in the project\n" + listing + "\n\n## Brief\n" + ctx["brief"])
     if base is not None:
         text += "\n\n## Recipe to revise\n" + REFINE + "\n" + json.dumps(base)
     text += "\n\n## Request\n" + request.strip()
@@ -168,13 +168,17 @@ def build_input(ctx: dict, request: str, repair=None, base=None) -> str:
     return json.dumps({"type": "user", "message": {"role": "user", "content": content}})
 
 
-def ask_claude(line: str, budget: float = DEFAULT_BUDGET, model=None, timeout: int = CLAUDE_TIMEOUT, claude=None, runner=subprocess.run) -> str:
-    """Run `claude -p` once, with every tool switched off, and return the text of its answer."""
+def ask_claude(line: str, budget: float = DEFAULT_BUDGET, model=None, timeout: int = CLAUDE_TIMEOUT, claude=None, runner=subprocess.run,
+               tools: str = "") -> str:
+    """Run `claude -p` once and return the text of its answer. With every tool switched off unless `tools` names some (the research step
+    names only the two read-only web tools, and nothing that can write, run or edit)."""
     exe = claude or shutil.which("claude")
     if not exe:
         raise DraftError("Claude Code (`claude`) is not installed on this machine")
-    cmd = [exe, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--tools", "",
+    cmd = [exe, "-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--tools", tools,
            "--no-session-persistence", "--max-budget-usd", str(budget)]
+    if tools:
+        cmd += ["--allowedTools", tools]                                 # headless: nothing could answer a permission prompt
     if model:
         cmd += ["--model", model]
     try:
@@ -241,7 +245,7 @@ def length_warning(request: str, plan: dict):
 
 # ------------------------------------------------------------------ the whole job
 def draft(site, slug: str, request: str, max_images: int = MAX_IMAGES, images: bool = True, budget: float = DEFAULT_BUDGET,
-          model=None, save: bool = True, ask=None, claude=None, revise=None) -> dict:
+          model=None, save: bool = True, ask=None, claude=None, revise=None, ctx=None) -> dict:
     """Draft, check, (repair once), and save a recipe. With `revise` (a saved recipe's name, or "latest") the request is applied to that
     recipe instead of drafting from scratch; the original is left as it is and the result is saved under a new name. Returns {"name", "recipe", "plan", "attempts", "images"}."""
     if not request or not request.strip():
@@ -251,7 +255,7 @@ def draft(site, slug: str, request: str, max_images: int = MAX_IMAGES, images: b
         if not claude:                                                  # before the slow part, not after it
             raise DraftError("Claude Code (`claude`) is not installed on this machine")
         ask = lambda line: ask_claude(line, budget=budget, model=model, claude=claude)
-    ctx = gather(site, slug, max_images, images)
+    ctx = ctx or gather(site, slug, max_images, images)
     base = base_recipe(ctx, revise) if revise else None
     repair, last = None, None
     for attempt in (1, 2):
@@ -274,6 +278,60 @@ def draft(site, slug: str, request: str, max_images: int = MAX_IMAGES, images: b
         problems = d.get("problems") or [d.get("error", f"HTTP {code}")]
         repair, last = {"answer": json.dumps(recipe)[:4000], "problems": problems}, "; ".join(problems[:3])
     raise DraftError("Claude's recipe did not pass the checker after one correction: " + (last or "unknown problem"))
+
+
+# ------------------------------------------------------------------ a topic, researched
+WEB_TOOLS = "WebSearch,WebFetch"
+RESEARCH_BUDGET = 1.0
+RESEARCH_TIMEOUT = 600
+
+RESEARCH = """Research the topic below on the web and write a FACT SHEET for a short explainer video. Rules:
+- Search first, then read the best pages. Prefer the vendor's or standards body's own documentation, then reputable engineering or news sources.
+- 8 to 14 facts, each ONE plain sentence a viewer could understand, each followed by its source URL in parentheses. A fact you could not
+  find a source for is left out, not guessed.
+- No statistics, percentages or dates unless the source states them; when one is used, quote it as the source does.
+- Add a final section "## Not settled" listing anything the sources disagree on or that is a matter of opinion.
+- Write in English. Reply with ONLY the fact sheet in markdown.
+Topic: """
+
+EXPLAIN_RULES = """You are drafting ONE video recipe that EXPLAINS a topic, using ONLY the fact sheet below. The recipe format, the limits and the
+card kinds are in the brief. Rules:
+- Reply with ONLY the recipe as one JSON object. No prose before or after, no code fences.
+- The project has no pictures: build the whole video from cards (quote, announce, countdown, checklist, progress, typing, list, flow,
+  versus) and use no `media` clips. Give it a hook first, a body of 5 to 8 cards that each carry one idea, and an ending.
+- Every claim on a card must come from the fact sheet; do not add numbers, names or dates it does not contain, and drop what is "Not settled".
+- Use the right card for the idea: `flow` for a sequence, `versus` for before and after, `checklist` for a list of benefits, `typing` for commands.
+- End with an `end_card` that names the sources (their sites, not full URLs).
+- Write every word shown on screen in this language: """
+
+
+def research(topic: str, ask) -> str:
+    """The fact sheet for a topic. `ask` takes a stream-json line and returns text. A sheet with fewer than two source URLs is refused: it
+    means the model answered from memory, and a video built on that would carry invented facts."""
+    if not topic or not topic.strip():
+        raise DraftError("say what the video is about, e.g. \"how DevOps works\"")
+    line = json.dumps({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": RESEARCH + topic.strip()}]}})
+    sheet = ask(line).strip()
+    if len(set(re.findall(r"https?://[^\s)\]>]+", sheet))) < 2:
+        raise DraftError("the research came back without sources (fewer than two links), so nothing was drafted; try again or narrow the topic")
+    return sheet
+
+
+def explain(site, slug: str, topic: str, lang: str = "English", budget: float = DEFAULT_BUDGET, model=None, save: bool = True,
+            ask=None, research_ask=None, claude=None) -> dict:
+    """Research a topic, then draft a cards-only recipe from the fact sheet through `draft`. Returns draft()'s result plus "sheet"."""
+    if research_ask is None or ask is None:
+        claude = claude or shutil.which("claude")
+        if not claude:
+            raise DraftError("Claude Code (`claude`) is not installed on this machine")
+        if research_ask is None:
+            research_ask = lambda line: ask_claude(line, budget=RESEARCH_BUDGET, model=model, timeout=RESEARCH_TIMEOUT, claude=claude, tools=WEB_TOOLS)
+    sheet = research(topic, research_ask)
+    ctx = gather(site, slug, 0, False, need_media=False)
+    ctx["rules"] = EXPLAIN_RULES + (lang or "English") + "\n\n## Fact sheet\n" + sheet + "\n"
+    res = draft(site, slug, f"Explain: {topic.strip()}", budget=budget, model=model, save=save, ask=ask, claude=claude, ctx=ctx)
+    res["sheet"] = sheet
+    return res
 
 
 # ------------------------------------------------------------------ judging chosen videos

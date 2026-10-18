@@ -241,6 +241,64 @@ class Flow(unittest.TestCase):
         self.assertEqual(web.montage_state(self.root)["recipes"], [], "--dry-run saved nothing")
 
 
+class Explain(unittest.TestCase):
+    """`explain`: a topic is researched into a sourced fact sheet, and a cards-only recipe is drafted from that sheet alone."""
+    SHEET = "- CI builds and tests every change (https://example.org/ci)\n- CD ships a tested build (https://example.org/cd)\n## Not settled\n- naming"
+    RECIPE = json.dumps({"kind": "montage", "title": "CI/CD", "format": "reels", "template": "kinetic", "captions": False,
+                         "clips": [{"quote": "Automasikan.", "hold": 2.5}, {"flow": {"title": "Alur", "steps": ["Kod", "Binaan", "Ujian"]}}],
+                         "end_card": {"text": "Sumber", "subtitle": "example.org", "hold": 3}})
+
+    def setUp(self):
+        montage._info_cache.clear()
+        self.home = Path(tempfile.mkdtemp())
+        self.root = Path(projects.create_project(self.home, "Bare", init_git=True)["path"])      # no pictures at all
+        self.srv = web.make_server(self.home, "me@x.com", 0)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.site = draft.Site(f"http://127.0.0.1:{self.srv.server_address[1]}")
+
+    def tearDown(self):
+        montage.RENDERER.wait_idle(10)
+        self.srv.shutdown()
+        self.srv.server_close()
+        shutil.rmtree(self.home, ignore_errors=True)
+
+    def test_a_project_without_pictures_gets_a_saved_cards_only_draft_built_from_the_fact_sheet(self):
+        research, ask = Fake(self.SHEET), Fake(self.RECIPE)
+        res = draft.explain(self.site, "bare", "how CI/CD works", lang="Bahasa Melayu", ask=ask, research_ask=research)
+        self.assertEqual(res["sheet"], self.SHEET)
+        self.assertTrue(res["name"].startswith("claude-draft-"))
+        self.assertEqual(res["images"], 0)
+        prompt = text_of(ask.asked[0])
+        for must in ("https://example.org/ci", "Bahasa Melayu", "ONLY the fact sheet", "no pictures", "Explain: how CI/CD works"):
+            self.assertIn(must, prompt)
+        self.assertIn("how CI/CD works", text_of(research.asked[0]), "the topic is what is researched")
+        self.assertEqual(len(web.montage_state(self.root)["recipes"]), 1)
+
+    def test_a_sheet_without_sources_stops_everything_before_a_draft_is_asked_for(self):
+        ask = Fake(self.RECIPE)
+        for sheet in ("CI is great.", "- one (https://example.org/a)", "- same twice (https://example.org/a) and (https://example.org/a)"):
+            with self.subTest(sheet=sheet):
+                with self.assertRaises(draft.DraftError) as ctx:
+                    draft.explain(self.site, "bare", "x", ask=ask, research_ask=Fake(sheet))
+                self.assertIn("without sources", str(ctx.exception))
+        self.assertEqual(ask.asked, [], "the drafting model was never called")
+        self.assertEqual(web.montage_state(self.root)["recipes"], [])
+
+    def test_draft_still_refuses_a_project_with_nothing_to_show_and_a_blank_topic_is_refused(self):
+        with self.assertRaises(draft.DraftError) as ctx:
+            draft.draft(self.site, "bare", "a reel", ask=Fake(self.RECIPE))
+        self.assertIn("no pictures or clips", str(ctx.exception))
+        with self.assertRaises(draft.DraftError):
+            draft.explain(self.site, "bare", "  ", ask=Fake(), research_ask=Fake())
+
+    def test_dry_run_saves_nothing_and_the_command_prints_the_sheet_to_a_file_on_request(self):
+        with mock.patch.object(draft, "ask_claude", side_effect=[self.SHEET, self.RECIPE]), mock.patch.object(draft.shutil, "which", return_value="/bin/claude"):
+            out = Path(self.home) / "sheet.md"
+            self.assertEqual(cli.main(["explain", "bare", "how", "CI/CD", "works", "--dry-run", "--sheet", str(out), "--url", self.site.base]), 0)
+        self.assertEqual(out.read_text().strip(), self.SHEET)
+        self.assertEqual(web.montage_state(self.root)["recipes"], [])
+
+
 class Model(unittest.TestCase):
     """ask_claude without a real model: the command it builds and how it reads the answer."""
     def runner(self, stdout, rc=0):
@@ -268,6 +326,18 @@ class Model(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--model") + 1], "opus")
         self.assertIn("--no-session-persistence", cmd)
         self.assertEqual(seen["input"], "LINE")
+
+    def test_the_research_step_may_use_only_the_two_read_only_web_tools(self):
+        run, seen = self.runner(self.result("sheet"))
+        draft.ask_claude("LINE", claude="/bin/claude", runner=run, tools=draft.WEB_TOOLS)
+        cmd = seen["cmd"]
+        self.assertEqual(cmd[cmd.index("--tools") + 1], "WebSearch,WebFetch")
+        self.assertEqual(cmd[cmd.index("--allowedTools") + 1], "WebSearch,WebFetch", "headless: a permission prompt could not be answered")
+        for banned in ("Bash", "Write", "Edit", "--dangerously-skip-permissions"):
+            self.assertFalse(any(banned in c for c in cmd), banned)
+        run, seen = self.runner(self.result("x"))
+        draft.ask_claude("LINE", claude="/bin/claude", runner=run)
+        self.assertNotIn("--allowedTools", seen["cmd"], "the drafting call still allows nothing")
 
     def test_errors_timeouts_and_a_missing_claude_are_clear(self):
         run, _ = self.runner(self.result("budget exceeded", err=True))
