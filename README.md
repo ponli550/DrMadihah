@@ -606,6 +606,28 @@ saved as `claude-draft-<time>` under *Saved recipes* and is **never rendered**: 
 - Exit code 2 means a refusal or a clear error (no project, nothing to draw from, unreachable web app, two answers that
   failed the checker), never a half-saved recipe.
 
+
+#### Mode D: `umcares explain` (a topic, researched)
+
+```bash
+umcares explain dormathon "how DNS turns a website name into an address" --lang "Bahasa Melayu" --sheet dns-facts.md
+umcares explain dormathon "..." --dry-run     # print the recipe, save nothing
+```
+
+Two calls to `claude -p` on the machine you type it on. **1. Research:** Claude gets only `WebSearch` and `WebFetch` (nothing that can run,
+write or edit), searches, reads the best pages and writes a **fact sheet**: 8 to 14 one-sentence facts, each with its source URL, no
+statistics the source does not state, and a "Not settled" section for what sources disagree on. A sheet with fewer than two distinct links is
+refused before anything else happens (it means the answer came from memory). **2. Draft:** the sheet goes through the same path as `draft`
+(brief, dry-run validation, one repair, saved as `claude-draft-<time>`, never rendered) with rules to use **only** the sheet, build the
+video from cards, and end with a card naming the sources. The project needs no pictures. `--sheet FILE` keeps the sheet so you can check
+each claim; research is capped at $1 and drafting at `--budget`.
+
+Tried on "how DNS turns a website name into an address", in Malay, on the (empty) `dormathon` project: 1 m 16 s for both calls, a
+13-fact sheet from MDN, the RFC, freeCodeCamp, IANA and Cloudflare, and a 41 s video of nine cards with a source end card. **Limits:** the sources
+are the model's reading of the web, and a page it could not open (one returned 403) is simply missing, so read the sheet before you post;
+the on-screen words are in the language you ask for and nobody has checked that Malay; a framing line the model puts in a quote card
+("by": "DNS") is attribution you should look at.
+
 #### Choosing the project: `--project` and the refuse rule
 
 The pipeline commands act on one folder on the remote (`UMC_REMOTE_ROOT`, the original DrMadihah project). With the web app
