@@ -1169,7 +1169,7 @@ def cmd_draft(args, cfg):
     plan = res["plan"]
     log.ok(f"{'revised' if res.get('revised') else 'drafted'} a {plan['total']} s video of {len(plan['segments'])} pieces ({plan['template']}, {plan['format']}); "
            f"Claude saw {res['images']} picture(s), {res['attempts']} attempt(s)")
-    for w in plan.get("warnings", []):
+    for w in [*plan.get("warnings", []), *res.get("warnings", [])]:
         log.warn(w)
     if res["name"]:
         log.ok(f"saved as recipe '{res['name']}': open the project page, Make a video, Saved recipes, then Use or Make. Nothing was rendered.")

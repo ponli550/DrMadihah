@@ -101,6 +101,27 @@ class Flow(unittest.TestCase):
         self.assertEqual((state["jobs"], state["exports"], state["active"]), ([], [], False), "a draft is never rendered")
         self.assertGreater(res["plan"]["total"], 2)
 
+    # -------------------------------------------------------------- a named length that cannot be met
+    def test_the_length_a_request_names_is_read_in_seconds_and_minutes_and_none_is_none(self):
+        for text, want in (("a 20 second reel", 20), ("30s opening", 30), ("video 2 minit", 120), ("1.5 minutes", 90), ("12-sec teaser", 12),
+                           ("about 20 slides", None), ("an upbeat reel", None), ("", None)):
+            with self.subTest(text=text):
+                self.assertEqual(draft.asked_seconds(text), want)
+
+    def test_a_video_clearly_shorter_than_the_named_length_gets_a_warning_and_one_near_it_or_unnamed_does_not(self):
+        self.assertIn("asked for about 30 s", draft.length_warning("a 30 second reel", {"total": 12.4}))
+        self.assertIn("12.4 s", draft.length_warning("a 30 second reel", {"total": 12.4}))
+        self.assertIsNone(draft.length_warning("a 30 second reel", {"total": 26}), "within a fifth is close enough")
+        self.assertIsNone(draft.length_warning("a 30 second reel", {"total": 40}), "longer is not what this warns about")
+        self.assertIsNone(draft.length_warning("an upbeat reel", {"total": 3}), "no length was named")
+        self.assertIsNone(draft.length_warning("a 2 second flash", {"total": 1}), "a tiny length is not a promise worth policing")
+
+    def test_a_draft_reports_the_warning_with_the_result(self):
+        res = draft.draft(self.site, "demo", "a 60 second reel", ask=Fake(self.good()))
+        self.assertEqual(len(res["warnings"]), 1)
+        self.assertIn("60 s", res["warnings"][0])
+        self.assertEqual(draft.draft(self.site, "demo", "an upbeat reel", ask=Fake(self.good()))["warnings"], [])
+
     # -------------------------------------------------------------- revising a saved recipe
     def save(self, name, **kw):
         code, _ = self.site.call("POST", "/p/demo/api/montage/recipes", {"name": name, "recipe": json.loads(self.good(**kw))})

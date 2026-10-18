@@ -966,6 +966,7 @@ function createMontage(opts) {
     listBox.replaceChildren(...order.map((ref, idx) => {
       if (isCard(ref)) return cardRow(ref);
       const i = byRef[ref];
+      const idName = !i.caption && /\d{6,}/.test(i.name);               // a camera or chat id such as 20261015_014614: not a name anyone can tell apart
       const check = el("input", {type: "checkbox", checked: picked.has(ref)});
       check.setAttribute("data-ctl", "pick");
       rows.push({ref, check});
@@ -975,9 +976,9 @@ function createMontage(opts) {
       up.addEventListener("click", () => move(ref, -1));
       down.addEventListener("click", () => move(ref, 1));
       return el("div", {className: "urow"}, el("div", {className: "row"},
-        el("label", {className: "pickline"}, check, " " + (i.kind === "video" ? "🎞 " : "🖼 ") + (i.caption || i.name)),
+        el("label", {className: "pickline"}, check, " " + (i.kind === "video" ? "🎞 " : "🖼 ") + (i.caption || (idName ? "No caption yet" : i.name))),
         el("span", {}, up, down)),
-        i.caption ? el("div", {className: "dim"}, i.name) : "");
+        i.caption || idName ? el("div", {className: "dim"}, i.name) : "");
     }));
   }
   async function preview() {
