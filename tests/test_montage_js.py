@@ -110,6 +110,62 @@ class Card(unittest.TestCase):
             self.assertIn(label, card)
         self.assertIn("glitch effect", self.run_js("effect")["view"]["plan"], "the choice reached the server and came back in the plan")
 
+    # ---------------------------------------------------------------- cards
+    def saved(self, out, name="My reel"):
+        return json.loads((self.root / "recipes" / f"{name}.montage.json").read_text())
+
+    def test_every_kind_of_card_can_be_added_and_becomes_the_clip_the_server_expects(self):
+        out = self.run_js("allcards")
+        clips = self.saved(out)["clips"]
+        self.assertEqual(clips, [
+            {"quote": "Belajar tanpa henti.", "by": "Dr Madihah"},
+            {"announce": {"title": "Hackathon CyberDSA", "date": "12 Okt 2026", "place": "Dewan A"}},
+            {"countdown": 4},
+            {"checklist": {"title": "Alat yang tepat", "items": ["Task Board", "Version Control", "Focus Timer"]}},
+            {"progress": {"label": "Produktiviti", "from": 22, "to": 100, "unit": "%"}},
+            {"typing": {"title": "sprint.ts", "text": "const a = 1;\n  ship(a);"}},
+            {"list": {"title": "Hari ini", "items": ["Standup 09:00", "Retro 16:00"], "from": "left"}},
+        ])
+        plan = montage.plan_for(self.saved(out), self.root)
+        self.assertEqual([s["kind"] for s in plan["segments"]], ["quote", "announce", "countdown", "checklist", "progress", "typing", "list"],
+                         "the server accepts exactly what the page built")
+
+    def test_empty_optional_fields_are_left_out_and_blank_lines_and_spaces_are_cleaned(self):
+        clips = self.saved(self.run_js("allcards"))["clips"]
+        self.assertNotIn("note", clips[1]["announce"])                                   # an announcement field left empty is not sent
+        self.assertEqual(clips[3]["checklist"]["items"], ["Task Board", "Version Control", "Focus Timer"], "trimmed, blank lines dropped")
+        self.assertEqual(clips[5]["typing"]["text"], "const a = 1;\n  ship(a);", "the indentation of code is kept; trailing newlines are not")
+
+    def test_cards_move_with_the_arrows_and_can_be_removed_like_pictures_can_be_left_out(self):
+        out = self.run_js("cardops")
+        clips = self.saved(out)["clips"]
+        self.assertEqual([c["quote"] for c in clips], ["Tiga", "Dua"], "Tiga moved above Dua, and the first card (Satu) was removed")
+
+    def test_a_card_survives_making_a_video_which_reloads_the_page_data(self):
+        out = self.run_js("cardsurvive")
+        self.assertTrue(out["video"], "the draft was made, with the card in it")
+        self.assertTrue(any("Quote" in t for t in out["before"]))
+        self.assertEqual(out["after"][:len(out["before"])], out["before"], "the first card is still in the list, in its place, after the reload")
+        self.assertEqual(len(out["after"]), len(out["before"]) + 1, "and the new one is added after it")
+
+    def test_a_cards_row_says_what_it_shows(self):
+        out = self.run_js("allcards")
+        card = out["saved"]["card"]
+        for says in ("Belajar tanpa henti.", "Hackathon CyberDSA", "Alat yang tepat", "Produktiviti", "sprint.ts", "Hari ini"):
+            self.assertIn(says, card)
+
+    def test_a_saved_recipe_with_cards_loads_back_and_a_clip_without_media_no_longer_breaks_Use(self):
+        recipe = {"kind": "montage", "title": "Cards", "format": "reels", "template": "punchy",
+                  "clips": [{"quote": "Satu", "by": "Aku"}, {"checklist": {"title": "Alat", "items": ["A", "B"]}}, {"countdown": 3}]}
+        (self.root / "recipes").mkdir(exist_ok=True)
+        (self.root / "recipes" / "with-cards.montage.json").write_text(json.dumps(recipe))
+        out = self.run_js("usecards")
+        texts = [r["text"] for r in out["used"]["rows"]]
+        self.assertEqual(sum(1 for t in texts if "Quote" in t or "Checklist" in t or "Countdown" in t), 3, texts)
+        self.assertTrue(texts[0].strip().endswith("Quote") and "Checklist" in texts[1] and "Countdown" in texts[2], "in the recipe's order, first")
+        self.assertIn("checklist card: Alat", out["plan"])
+        self.assertEqual(out["editors"], 0, "loaded cards start folded")
+
     def test_the_3d_choices_are_offered_and_reach_the_plan(self):
         card = self.run_js("card")["view"]["card"]
         self.assertIn("3D card flip", card)

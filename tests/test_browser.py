@@ -105,6 +105,71 @@ class RealPage(unittest.TestCase):
         popover = self.ev("Array.from(document.querySelectorAll('#montage .bar details.more .pop button')).map(b => b.textContent)")
         self.assertEqual(popover, ["Smaller file for sharing", "Quick draft (half size, fast)", "Save recipe…", "Copy brief for Claude"], "the rest are one tap away")
 
+    # ---------------------------------------------------------------- cards on the page
+    CARD_FIELDS = {
+        "quote": {"cf-quote": "Belajar tanpa henti.", "cf-by": "Dr Madihah"},
+        "announce": {"cf-title": "Hackathon CyberDSA", "cf-date": "12 Okt 2026"},
+        "countdown": {"cf-n": "3"},
+        "checklist": {"cf-title": "Alat yang tepat", "cf-items": "Task Board\nVersion Control"},
+        "progress": {"cf-label": "Produktiviti", "cf-to": "100"},
+        "typing": {"cf-title": "sprint.ts", "cf-text": "const a = 1;"},
+        "list": {"cf-title": "Hari ini", "cf-items": "Standup 09:00\nRetro 16:00"},
+    }
+
+    def add_card(self, kind):
+        self.ev(f"""(() => {{ const k = document.querySelector('#montage [data-ctl=cardKind]'); k.value = {kind!r}; k.dispatchEvent(new Event('change', {{bubbles: true}}));
+                  Array.from(document.querySelectorAll('#montage button')).find(b => b.textContent === 'Add card').click(); }})()""")
+        for name, value in self.CARD_FIELDS[kind].items():
+            self.ev(f"""(() => {{ const e = Array.from(document.querySelectorAll('#montage [data-part=card-editor] [data-ctl={name}]')).pop();
+                      e.value = {value!r}; e.dispatchEvent(new Event('input', {{bubbles: true}})); e.dispatchEvent(new Event('change', {{bubbles: true}})); }})()""")
+
+    def remove_all_cards(self):
+        for _ in range(12):
+            if not self.ev("(() => { const b = Array.from(document.querySelectorAll('#montage button')).find(x => x.textContent === 'Remove card'); if (b) { b.click(); return true; } "
+                           "const d = Array.from(document.querySelectorAll('#montage [data-ctl=card-edit]')).find(x => x.textContent === 'Edit'); if (d) { d.click(); return true; } return false; })()"):
+                break
+
+    def test_all_seven_kinds_of_card_can_be_added_and_the_server_plans_every_one(self):
+        try:
+            for kind in self.CARD_FIELDS:
+                self.add_card(kind)
+            self.ev("Array.from(document.querySelectorAll('#montage button')).find(b => b.textContent === 'Preview plan').click()")
+            end = time.time() + 20
+            while time.time() < end and "list card" not in (self.ev("document.querySelector('#montage [data-part=plan]').innerText") or ""):
+                time.sleep(0.3)
+            plan = self.ev("document.querySelector('#montage [data-part=plan]').innerText")
+            for kind in self.CARD_FIELDS:
+                self.assertIn(f"{kind} card:", plan, plan)
+        finally:
+            self.remove_all_cards()
+
+    def test_every_card_field_has_a_label_and_is_big_enough_to_tap(self):
+        try:
+            for kind in self.CARD_FIELDS:
+                self.add_card(kind)
+            self.ev("document.querySelectorAll('#montage .cardrow').length")
+            bad = self.ev("""Array.from(document.querySelectorAll('#montage [data-part=card-editor] input, #montage [data-part=card-editor] select, #montage [data-part=card-editor] textarea'))
+                .filter(e => !(e.labels && e.labels.length) && !e.getAttribute('aria-label')).map(e => e.getAttribute('data-ctl'))""")
+            self.assertEqual(bad, [], "fields with no label")
+            small = self.ev("""Array.from(document.querySelectorAll('#montage [data-part=card-editor] input[type=text], #montage [data-part=card-editor] select, #montage [data-part=card-editor] textarea'))
+                .filter(e => e.getBoundingClientRect().height < 43).map(e => e.getAttribute('data-ctl'))""")
+            self.assertEqual(small, [], "fields smaller than 44 px")
+        finally:
+            self.remove_all_cards()
+
+    def test_a_card_folds_and_unfolds_and_removing_it_takes_it_off_the_list(self):
+        try:
+            self.add_card("quote")
+            self.assertEqual(self.ev("document.querySelectorAll('#montage .cardrow [data-part=card-editor]').length"), 1, "a new card opens its fields")
+            self.ev("Array.from(document.querySelectorAll('#montage [data-ctl=card-edit]')).find(b => b.textContent === 'Done').click()")
+            self.assertEqual(self.ev("document.querySelectorAll('#montage .cardrow [data-part=card-editor]').length"), 0, "Done folds it")
+            self.assertIn("Belajar tanpa henti.", self.ev("document.querySelector('#montage .cardrow').innerText"), "the folded row says what it shows")
+            self.ev("Array.from(document.querySelectorAll('#montage [data-ctl=card-edit]')).find(b => b.textContent === 'Edit').click()")
+            self.ev("Array.from(document.querySelectorAll('#montage button')).find(b => b.textContent === 'Remove card').click()")
+            self.assertEqual(self.ev("document.querySelectorAll('#montage .cardrow').length"), 0)
+        finally:
+            self.remove_all_cards()
+
     def test_a_loading_photo_is_a_quiet_box_not_a_broken_image_icon_and_its_link_is_still_named(self):
         info = self.ev("Array.from(document.querySelectorAll('#lib img.thumb')).map(i => ({alt: i.getAttribute('alt'), link: i.parentElement.tagName === 'A' ? i.parentElement.getAttribute('aria-label') : 'n/a'}))")
         self.assertTrue(info, "the demo project has photos")

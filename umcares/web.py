@@ -405,6 +405,11 @@ video{width:100%;border-radius:var(--r-sm);background:#000}
 .vfoot{display:flex;justify-content:flex-end}
 button.danger{width:auto;min-width:var(--tap);background:none;color:var(--err);border:1px solid var(--line);font-weight:600}
 section.empties{background:none;border-style:dashed;padding:var(--s3) var(--s4)}
+.cardrow{border-left:3px solid var(--acc);padding-left:var(--s3);margin-left:calc(-1*var(--s3))}
+.cardbar{display:flex;justify-content:flex-end}
+.cardbox{background:var(--surface2);border-radius:var(--r-sm);padding:var(--s3);margin:var(--s2) 0}
+textarea.mono{font-family:Menlo,ui-monospace,monospace;font-size:14px}
+.addcard{margin-top:var(--s3)}.addcard button{margin-top:var(--s2)}
 .group{margin:var(--s4) 0}
 .group-title{font-size:13px;font-weight:650;letter-spacing:.04em;text-transform:uppercase;color:var(--dim);margin:0 0 var(--s2)}
 details.opts{border:1px solid var(--line);border-radius:var(--r-sm);margin:var(--s4) 0;background:var(--surface)}
