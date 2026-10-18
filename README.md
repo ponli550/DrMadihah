@@ -591,6 +591,9 @@ fetches up to 12 thumbnails (one request per folder, small JPEGs), and calls Cla
 same validation a hand-written recipe gets; if it has problems, Claude is shown them **once** and corrects. The result is
 saved as `claude-draft-<time>` under *Saved recipes* and is **never rendered**: open the page, look at the plan, press Make.
 
+- **A named length it cannot meet:** if the request names a length ("a 20 second reel", "2 minit") and the drafted video comes out under
+  80% of it, `draft` prints a warning with the actual length (and returns it as `warnings`). It reads seconds and minutes only, ignores
+  lengths under 5 s, and does not warn about being longer. `max_seconds` is a cap, not a promise, so it is never checked.
 - **Privacy:** the thumbnails (photos of people) and captions go to Anthropic through your Claude Code login. `--no-images`
   sends only names and captions.
 - **Cost and speed:** one call. Measured on the 9-photo CyberDSA project: about 90 s end to end, most of it fetching

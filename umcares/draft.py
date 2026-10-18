@@ -217,6 +217,28 @@ def extract_recipe(text: str) -> dict:
     return d
 
 
+ASKED_LENGTH = re.compile(r"(\d+(?:[.,]\d+)?)[\s-]*(seconds?|secs?|saat|s|minutes?|mins?|minit)\b", re.I)
+
+
+def asked_seconds(request: str):
+    """The length the request names ("a 20 second reel", "2 minit"), in seconds, or None when it names none."""
+    m = ASKED_LENGTH.search(request or "")
+    if not m:
+        return None
+    n = float(m.group(1).replace(",", "."))
+    return n * 60 if m.group(2).lower().startswith("m") else n
+
+
+def length_warning(request: str, plan: dict):
+    """A sentence when the drafted video is clearly shorter than the length the request named, else None. A cap such as max_seconds is not
+    checked: a recipe may stay under its cap, but a named length is a promise."""
+    want = asked_seconds(request)
+    if not want or want < 5 or plan["total"] >= want * 0.8:
+        return None
+    return (f"you asked for about {want:g} s but the clips and cards only make {plan['total']:g} s; "
+            f"add more pictures or clips, give a clip a longer hold, or accept the shorter video")
+
+
 # ------------------------------------------------------------------ the whole job
 def draft(site, slug: str, request: str, max_images: int = MAX_IMAGES, images: bool = True, budget: float = DEFAULT_BUDGET,
           model=None, save: bool = True, ask=None, claude=None, revise=None) -> dict:
@@ -247,7 +269,8 @@ def draft(site, slug: str, request: str, max_images: int = MAX_IMAGES, images: b
                 code, s = site.call("POST", f"/p/{slug}/api/montage/recipes", {"name": name, "recipe": recipe})
                 if code != 200:
                     raise DraftError("the recipe is valid but could not be saved: " + str(s.get("error", code)))
-            return {"name": name, "recipe": recipe, "plan": d["plan"], "attempts": attempt, "images": len(ctx["pics"]), "revised": bool(base)}
+            return {"name": name, "recipe": recipe, "plan": d["plan"], "attempts": attempt, "images": len(ctx["pics"]), "revised": bool(base),
+                    "warnings": [w for w in [length_warning(request, d["plan"])] if w]}
         problems = d.get("problems") or [d.get("error", f"HTTP {code}")]
         repair, last = {"answer": json.dumps(recipe)[:4000], "problems": problems}, "; ".join(problems[:3])
     raise DraftError("Claude's recipe did not pass the checker after one correction: " + (last or "unknown problem"))

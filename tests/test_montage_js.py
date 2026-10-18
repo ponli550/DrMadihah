@@ -168,6 +168,15 @@ class Card(unittest.TestCase):
         self.assertIn("checklist card: Alat", out["plan"])
         self.assertEqual(out["editors"], 0, "loaded cards start folded")
 
+    def test_a_picture_with_only_a_camera_id_for_a_name_says_so_and_keeps_the_name_underneath(self):
+        ids = Path(projects.create_project(self.home, "Ids", init_git=False)["path"])
+        shutil.copy(self.fx / "land.jpg", self.fx / "IMG_20261015_014614.jpg")
+        put(ids, self.fx / "IMG_20261015_014614.jpg", mtime=1_700_000_000_000)
+        put(ids, self.fx / "port.jpg", mtime=1_700_000_060_000)
+        rows = self.run_js("card", "ids")["view"]["rows"]
+        self.assertEqual([r["text"] for r in rows], [" 🖼 No caption yet", " 🖼 port.jpg"], "a readable name stays as it is")
+        self.assertEqual(rows[0]["sub"], "IMG_20261015_014614.jpg", "the id is still there to tell it apart")
+
     def test_the_join_choices_are_offered_and_reach_the_plan(self):
         card = self.run_js("card")["view"]["card"]
         for label in ("The look decides", "Hard cut", "Slide in", "Circle reveal", "Dip to black"):
