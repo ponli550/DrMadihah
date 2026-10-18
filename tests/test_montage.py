@@ -2476,6 +2476,89 @@ class JoinBetweenScenes(Fixtures):
 
 
 @NEED
+class LooksAsData(Fixtures):
+    """A recipe's `template` may be an object: a look written as data, on top of a built-in."""
+    LOOK = {"name": "Warm riso", "base": "clean", "bg": "#1b1410", "accent": "#ff6b4a", "fade": 0.6, "grain": 8, "vignette": True,
+            "grade": {"saturation": 0.85, "contrast": 1.05, "warmth": 0.6}}
+
+    def setUp(self):
+        super().setUp()
+        self.add("land.jpg")
+        self.clips = [{"media": "land.jpg", "hold": 2, "move": "still"}, {"quote": "Tiga", "hold": 2}]
+
+    def plan(self, look=None, **kw):
+        return montage.plan_for(recipe(self.clips, template=look if look is not None else self.LOOK, captions=False, **kw), self.root)
+
+    def problems(self, look):
+        with self.assertRaises(montage.RecipeError) as ctx:
+            self.plan(look)
+        return str(ctx.exception)
+
+    def test_a_look_takes_the_built_ins_pacing_and_changes_only_what_it_says(self):
+        p = self.plan()
+        self.assertEqual(p["template"], "Warm riso")
+        look, clean = p["look"], montage.TEMPLATES["clean"]
+        self.assertEqual((look["bg"], look["accent"], look["fade"], look["grain"], look["vignette"]), ("#1b1410", "#ff6b4a", 0.6, 8, True))
+        self.assertEqual((look["photo_hold"], look["moves"]), (clean["photo_hold"], clean["moves"]), "what it does not say comes from the base")
+        self.assertEqual(p["fade"], 0.6, "the crossfade is the look's")
+        self.assertIsNone(self.plan("clean")["look"], "a built-in carries no look of its own")
+
+    def test_the_grade_is_built_from_named_numbers_into_a_fixed_chain(self):
+        self.assertEqual(montage.grade_chain({"saturation": 0.8, "warmth": 0.5}),
+                         "eq=saturation=0.8,colorbalance=rs=0.030:bs=-0.030:rm=0.020:bm=-0.020")
+        self.assertEqual(montage.grade_chain({}), "")
+        self.assertEqual(montage.grade_chain({"contrast": 1.2, "gamma": 0.9}), "eq=contrast=1.2:gamma=0.9")
+
+    def test_a_filter_string_a_bad_value_and_an_unknown_field_are_refused_in_plain_words(self):
+        for look, says in (
+            ({**self.LOOK, "grade": "movie=/etc/passwd"}, "not a filter string"),
+            ({**self.LOOK, "grade": {"saturation": 0.8, "eq": "x"}}, "template.grade.eq: unknown"),
+            ({**self.LOOK, "grade": {"saturation": 9}}, "template.grade.saturation: a number from 0 to 2"),
+            ({**self.LOOK, "bg": "red"}, "template.bg: a colour like"),
+            ({**self.LOOK, "bg": "#12345"}, "template.bg"),
+            ({**self.LOOK, "fade": 5}, "template.fade: a number from 0 to 1.5"),
+            ({**self.LOOK, "fade": True}, "template.fade"),
+            ({**self.LOOK, "moves": ["fly"]}, "template.moves"),
+            ({**self.LOOK, "base": "nope"}, "template.base: must be one of"),
+            ({**self.LOOK, "zzz": 1}, "template.zzz: unknown field"),
+            ({k: v for k, v in self.LOOK.items() if k != "name"}, "template.name"),
+            ({**self.LOOK, "name": "x" * 31}, "template.name"),
+        ):
+            with self.subTest(look=look):
+                self.assertIn(says, self.problems(look))
+        with self.assertRaises(montage.RecipeError):
+            self.plan("nonsense")
+
+    def test_the_looks_join_background_and_effect_are_defaults_the_recipe_can_override(self):
+        look = {**self.LOOK, "join": "slide", "background": "glow", "effect": "dither"}
+        p = self.plan(look)
+        self.assertEqual((p["join"], p["background"], p["effect"]), ("slideleft", "glow", "dither"))
+        p = self.plan(look, join="wipe", background="grid")
+        self.assertEqual((p["join"], p["background"], p["effect"]), ("wipeleft", "grid", "dither"), "the recipe's own say wins, the rest stays")
+        self.assertEqual(self.plan()["background"], None)
+
+    def test_the_brief_documents_the_look_and_its_own_example_is_accepted(self):
+        import re
+        brief = montage.brief(self.root)
+        self.assertIn("A look of your own", brief)
+        example = json.loads(re.search(r"e\.g\. `(\{.*?\})`\. Fields", brief).group(1))
+        self.assertEqual(self.plan(example)["template"], "Warm riso")
+        for field in montage.LOOK_KEYS:
+            self.assertIn(f"`{field}`", brief, f"{field} is documented")
+
+    def test_a_card_is_drawn_on_the_looks_colour_and_the_grade_reaches_a_picture(self):
+        mono = {"name": "Mono", "base": "clean", "bg": "#1b1410", "grade": {"saturation": 0}}
+        job, out = self.render(recipe([{"quote": "Tiga", "hold": 2}, {"media": "land.jpg", "hold": 2, "move": "still"}], template=mono, captions=False, quality="draft"))
+        self.assertEqual(job["state"], "done", job["error"])
+        d = frame(out, 0.02, 216, 384)
+        corner = tuple(d[3 * 3: 3 * 3 + 3])
+        self.assertTrue(all(abs(a - b) <= 6 for a, b in zip(corner, (0x1b, 0x14, 0x10))), f"the card's background is the look's colour, got {corner}")
+        pic = frame(out, 3.2, 216, 384)
+        spread = max(max(pic[i:i + 3]) - min(pic[i:i + 3]) for i in range(0, len(pic), 3 * 7))
+        self.assertLessEqual(spread, 12, "saturation 0 makes the picture grey: red, green and blue agree")
+
+
+@NEED
 class BackgroundBehindCards(Fixtures):
     """`background`: a quiet gradient, grid or glow under the card text. Measured on the first frame, before any text has arrived."""
     W, H = 216, 384

@@ -771,7 +771,7 @@ function tempoFromTaps(times) {
 function createMontage(opts) {
   const BASE = opts.base, mount = opts.mount;
   const HEADERS = {"Content-Type": "application/json", "X-Requested-With": "umcares"};
-  let st = null, order = [], picked = new Set(), rows = [], ctl = null, timer = null;
+  let st = null, order = [], picked = new Set(), rows = [], ctl = null, timer = null, customLook = null;      // customLook: a look written as data in a loaded recipe, kept as it is
   let form = {format: "reels", template: "slowmo", title: "", captions: true, music: "", bpm: "", sync: false, speech: true, sound: true, tighten: false, transition: "", join: "", background: "", effect: "", depth: false, fxcuts: "", fxwords: false, max: "30"};
   let jobsBox = null, planBox = null, noticeBox = null, listBox = null, goBtn = null, draftBtn = null, shareBtn = null, runBtns = [];
 
@@ -869,7 +869,7 @@ function createMontage(opts) {
   }
   function buildRecipe() {
     syncForm();
-    const rec = {kind: "montage", title: form.title.trim() || opts.name || "Montage", format: form.format, template: form.template,
+    const rec = {kind: "montage", title: form.title.trim() || opts.name || "Montage", format: form.format, template: form.template === "__custom" && customLook ? customLook : form.template,
                  captions: form.captions, max_seconds: Number(form.max), clips: order.filter(r => picked.has(r)).map(r => isCard(r) ? cardClip(r) : {media: r})};
     if (form.title.trim()) rec.title_card = {text: form.title.trim()};
     if (form.speech) rec.speech = "follow";
@@ -896,7 +896,8 @@ function createMontage(opts) {
     });
     order = used.concat(order.filter(r => !isCard(r) && !used.includes(r)));
     picked = new Set(used);
-    form = {format: rec.format || "reels", template: rec.template || "slowmo", title: rec.title_card ? rec.title_card.text : "",
+    customLook = rec.template && typeof rec.template === "object" ? rec.template : null;
+    form = {format: rec.format || "reels", template: customLook ? "__custom" : (rec.template || "slowmo"), title: rec.title_card ? rec.title_card.text : "",
             captions: rec.captions !== false, music: rec.music && rec.music.file ? rec.music.file : "", bpm: rec.music && rec.music.bpm ? String(rec.music.bpm) : "", sync: !!(rec.music && rec.music.sync === "beat"), speech: rec.speech === "follow", sound: rec.clip_sound === "speech", tighten: rec.tighten === "gaps", transition: rec.transition || "", join: rec.join || "", background: rec.background || "", effect: rec.effect || "", depth: rec.depth === "card", fxcuts: rec.sfx && rec.sfx.cuts || "", fxwords: !!(rec.sfx && rec.sfx.words), max: String(rec.max_seconds || 30)};
     render();
     say("Recipe loaded. Change anything, then Preview or Make video.");
@@ -1135,7 +1136,7 @@ function createMontage(opts) {
     const select = (options, value) => { const s = el("select", {}); options.forEach(([v, label]) => s.append(el("option", {value: v}, label))); s.value = value; return s; };
     ctl = {
       format: select(Object.entries(st.formats).map(([k, f]) => [k, f.label]), form.format),
-      template: select(Object.entries(st.templates).map(([k, t]) => [k, t.label]), form.template),
+      template: select(Object.entries(st.templates).map(([k, t]) => [k, t.label]).concat(customLook ? [["__custom", "Custom: " + (customLook.label || customLook.name)]] : []), form.template),
       title: el("input", {type: "text", maxLength: 100, placeholder: "Title card text (optional)", value: form.title}),
       captions: el("input", {type: "checkbox", checked: form.captions}),
       music: select([["", "No music (add one when you post)"]].concat(st.catalog.filter(i => i.kind === "audio").map(i => [i.name, i.name])), form.music),
@@ -1203,7 +1204,7 @@ function createMontage(opts) {
     const savedBox = el("div", {}, ...saved); savedBox.setAttribute("data-part", "saved");
     // What the look is like is said under the list, not inside every option: a long option is cut off on a phone.
     const lookHint = el("div", {className: "dim hint"}, "");
-    const showHint = () => { const t = st.templates[ctl.template.value]; lookHint.textContent = t ? t.blurb : ""; };
+    const showHint = () => { const t = ctl.template.value === "__custom" && customLook ? {blurb: customLook.blurb || "A look from the loaded recipe."} : st.templates[ctl.template.value]; lookHint.textContent = t ? t.blurb : ""; };
     ctl.template.addEventListener("change", showHint); showHint();
     ctl.title.setAttribute("aria-label", "Title card text (optional)"); ctl.bpm.setAttribute("aria-label", "Beats per minute of the song, 50 to 200");
     const field = (label, control, hint) => el("label", {className: "field"}, el("span", {className: "dim"}, label), control, hint || "");

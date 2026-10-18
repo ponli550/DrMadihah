@@ -75,6 +75,81 @@ TEMPLATES = {
                 "grade": "", "bg": "#f1ead8", "accent": "#ffd23f", "moves": ["in", "out", "pan_right", "pan_left"], "style": "collage"},
 }
 
+# A recipe's `template` may be a built-in name or an object: a look of its own, written as data. It starts from a built-in (`base`) and
+# changes some of its numbers and colours; `grade` is a few named numbers, never a filter string (a filter string from a recipe could
+# read files or run commands in ffmpeg, so the chain is always built here).
+LOOK_NUMBERS = {"photo_hold": (0.8, 6), "video_max": (1, 8), "video_speed": (0.5, 1.5), "fade": (0, 1.5), "zoom": (0, 0.25), "grain": (0, 20)}
+LOOK_GRADE = {"saturation": (0, 2), "contrast": (0.5, 1.5), "brightness": (-0.5, 0.5), "gamma": (0.5, 1.5), "warmth": (-1, 1)}
+LOOK_KEYS = {"name", "base", "label", "blurb", "bg", "accent", "vignette", "moves", "grade", "join", "background", "effect", *LOOK_NUMBERS}
+HEX = re.compile(r"#[0-9a-fA-F]{6}")
+
+
+def grade_chain(g: dict) -> str:
+    """The ffmpeg filter chain for a named grade: saturation, contrast, brightness and gamma through `eq`, warmth through `colorbalance`
+    (positive is warmer: more red and less blue in the shadows and midtones, as the warm built-in looks do)."""
+    eq = ":".join(f"{k}={g[k]:g}" for k in ("saturation", "contrast", "brightness", "gamma") if k in g)
+    chain = [f"eq={eq}"] if eq else []
+    w = g.get("warmth", 0)
+    if w:
+        chain.append(f"colorbalance=rs={0.06 * w:.3f}:bs={-0.06 * w:.3f}:rm={0.04 * w:.3f}:bm={-0.04 * w:.3f}")
+    return ",".join(chain)
+
+
+def custom_look(spec: dict):
+    """A look written as data -> (the look as the renderer reads it, [problems]). Built on a built-in so everything it does not change
+    (pacing, camera moves, the kinetic or collage drawing style) is still defined."""
+    problems = []
+    for k in sorted(set(spec) - LOOK_KEYS):
+        problems.append(f"template.{k}: unknown field (allowed: {', '.join(sorted(LOOK_KEYS))})")
+    name = spec.get("name")
+    if not isinstance(name, str) or not 1 <= len(name.strip()) <= 30:
+        problems.append("template.name: the look's name, 1 to 30 characters")
+    base = spec.get("base", "clean")
+    if base not in TEMPLATES:
+        problems.append(f"template.base: must be one of {', '.join(TEMPLATES)}")
+    for k in ("label", "blurb"):
+        if k in spec and (not isinstance(spec[k], str) or not 1 <= len(spec[k]) <= 140):
+            problems.append(f"template.{k}: text of 1 to 140 characters")
+    for k in ("bg", "accent"):
+        if k in spec and not (isinstance(spec[k], str) and HEX.fullmatch(spec[k])):
+            problems.append(f"template.{k}: a colour like #14110f")
+    for k, (lo, hi) in LOOK_NUMBERS.items():
+        if k in spec and not _num(spec[k], lo, hi):
+            problems.append(f"template.{k}: a number from {lo} to {hi}")
+    if "vignette" in spec and not isinstance(spec["vignette"], bool):
+        problems.append("template.vignette: true or false")
+    if "moves" in spec and not (isinstance(spec["moves"], list) and spec["moves"] and all(m in MOVES for m in spec["moves"])):
+        problems.append(f"template.moves: a list of {', '.join(MOVES)}")
+    grade = spec.get("grade")
+    if grade is not None:
+        if not isinstance(grade, dict):
+            problems.append("template.grade: an object of numbers, e.g. {\"saturation\": 0.8, \"warmth\": 0.5}, not a filter string")
+        else:
+            for k in sorted(set(grade) - set(LOOK_GRADE)):
+                problems.append(f"template.grade.{k}: unknown (allowed: {', '.join(LOOK_GRADE)})")
+            for k, (lo, hi) in LOOK_GRADE.items():
+                if k in grade and not _num(grade[k], lo, hi):
+                    problems.append(f"template.grade.{k}: a number from {lo} to {hi}")
+    if problems:
+        return None, problems
+    look = dict(TEMPLATES[base])
+    for k in ("bg", "accent", "vignette", "moves", *LOOK_NUMBERS):
+        if k in spec:
+            look[k] = spec[k]
+    look["label"] = spec.get("label", name.strip())
+    look["blurb"] = spec.get("blurb", f"A custom look based on {base}.")
+    if grade is not None:
+        look["grade"] = grade_chain(grade)
+    look["name"] = name.strip()
+    look["defaults"] = {k: spec[k] for k in ("join", "background", "effect") if k in spec}      # used when the recipe itself says nothing
+    return look, []
+
+
+def template_of(plan: dict) -> dict:
+    """The look a validated recipe or a plan uses: its own, or the built-in it names."""
+    return plan.get("look") or TEMPLATES[plan["template"]]
+
+
 # How the camera moves over a photo (the words a recipe can use). Every move is eased (smoothstep), because a linear
 # move reads as mechanical: the movement starts slowly, is fastest in the middle, and settles.
 MOVES = ("in", "out", "pan_left", "pan_right", "still")
@@ -240,8 +315,14 @@ def validate(recipe, root) -> dict:
     fmt = recipe.get("format", "reels")
     if fmt not in FORMATS:
         problems.append(f"format: must be one of {', '.join(FORMATS)}")
-    tpl = recipe.get("template", "slowmo")
-    if tpl not in TEMPLATES:
+    tpl, look = recipe.get("template", "slowmo"), None
+    if isinstance(tpl, dict):
+        look, found = custom_look(tpl)
+        problems.extend(found)
+        tpl = look["name"] if look else "custom"
+        if look:
+            recipe = {**look["defaults"], **recipe}                    # what the look says about joins, backgrounds and effects, unless the recipe says otherwise
+    elif tpl not in TEMPLATES:
         problems.append(f"template: must be one of {', '.join(TEMPLATES)}")
     if not isinstance(recipe.get("captions", True), bool):
         problems.append("captions: must be true or false")
@@ -387,7 +468,7 @@ def validate(recipe, root) -> dict:
         problems.append(f"background: must be one of {', '.join(textcards.BACKGROUNDS)} (a quiet pattern behind the cards) or left out")
     if problems:
         raise RecipeError(problems)
-    return {"kind": "montage", "version": 1, "title": title.strip(), "format": fmt, "template": tpl,
+    return {"kind": "montage", "version": 1, "title": title.strip(), "format": fmt, "template": tpl, "look": look,
             "captions": recipe.get("captions", True), "max_seconds": max_s, "clips": clips, "cards": cards,
             "quality": recipe.get("quality", "final"), "speech": recipe.get("speech"), "clip_sound": recipe.get("clip_sound"), "transition": recipe.get("transition"), "depth": recipe.get("depth"), "effect": recipe.get("effect"), "join": recipe.get("join"), "background": recipe.get("background"), "tighten": recipe.get("tighten"), "sfx": recipe.get("sfx"), "tempo": tempo,
             "music": None if music_item is None else {**music, "_item": music_item}, "note": recipe.get("note")}
@@ -465,7 +546,7 @@ def resolve(validated: dict, root) -> dict:
     files give the same plan."""
     root = Path(root)
     r = validated
-    tpl, fmt = TEMPLATES[r["template"]], FORMATS[r["format"]]
+    tpl, fmt = template_of(r), FORMATS[r["format"]]
     draft = r.get("quality") == "draft"
     segs, warnings = [], []
     photos_seen = 0
@@ -583,7 +664,7 @@ def resolve(validated: dict, root) -> dict:
                  "fade_out": round(min(float(m.get("fade_out", 1.5)), total / 2), 3)}
     even = lambda n: max(2, int(round(n)) // 2 * 2)                      # x264 needs even sizes
     width, height = (even(fmt["width"] * DRAFT_SCALE), even(fmt["height"] * DRAFT_SCALE)) if draft else (fmt["width"], fmt["height"])
-    return {"title": r["title"], "format": r["format"], "template": r["template"], "quality": r.get("quality") or "final",
+    return {"title": r["title"], "format": r["format"], "template": r["template"], "look": r.get("look"), "quality": r.get("quality") or "final",
             "width": width, "height": height,
             "fps": fmt["fps"], "fade": round(fade, 3), "total": total, "transition": r.get("transition"), "depth": r.get("depth"), "effect": r.get("effect"), "background": r.get("background"),
             "join": JOINS.get(r.get("join") or "") if fade > 0 and r.get("join") not in (None, "cut") else None, "sfx": sfx_plan, "segments": segs, "duck": duck, "music": music, "sync": None if not sync else {k: v for k, v in sync.items() if k != "music_start"},
@@ -930,7 +1011,7 @@ def _encode_piece(plan) -> list:
 def _piece_command(ffmpeg, plan, seg, i, workdir: Path, out: Path):
     """The ffmpeg command(s) that render one piece of the timeline to `out`. Returns a list of (cmd, expected seconds)."""
     W, H, fps, d = plan["width"], plan["height"], plan["fps"], seg["duration"]
-    tpl = TEMPLATES[plan["template"]]
+    tpl = template_of(plan)
     fmt = FORMATS[plan["format"]]
     if seg["kind"] == "audiogram":
         return _audiogram_command(ffmpeg, plan, seg, i, workdir, out, tpl)
@@ -1679,6 +1760,13 @@ def brief(root, project_name: str = "") -> str:
         lines.append(f"| `{i['ref']}` | {i['name']}{' (prepared)' if i['prepared'] else ''} | {i['kind']} | {length} | {i['caption'] or '_none_'} |")
     lines += ["", "## Formats", ""] + [f"- `{k}`: {v['label']}" for k, v in FORMATS.items()]
     lines += ["", "## Templates (the look and the pacing)", ""] + [f"- `{k}`: {v['blurb']}" for k, v in TEMPLATES.items()]
+    lines += ["", "A look of your own: `template` may instead be an object that starts from one of the above and changes it, e.g. "
+              '`{"name": "Warm riso", "base": "clean", "bg": "#1b1410", "accent": "#ff6b4a", "fade": 0.6, "grain": 8, "vignette": true, '
+              '"grade": {"saturation": 0.85, "contrast": 1.05, "warmth": 0.6}, "join": "fade", "background": "glow"}`. '
+              f"Fields: `name` (required, 1 to 30 characters), `base` (default `clean`), `label`, `blurb`, `bg` and `accent` (colours like `#14110f`), `vignette`, `moves`, "
+              + ", ".join(f"`{k}` ({lo} to {hi})" for k, (lo, hi) in LOOK_NUMBERS.items())
+              + f"; `grade` is an object of numbers, never a filter string: " + ", ".join(f"`{k}` ({lo} to {hi})" for k, (lo, hi) in LOOK_GRADE.items())
+              + "; `join`, `background` and `effect` are defaults the recipe's own fields override."]
     lines += ["", "## Fields", "",
               "- `clips[]` (required, in order): `media`; optional `caption` (overrides the file's caption), `hold` (seconds on screen), "
               "`speed` (videos only, 0.25 to 2; below 1 is slow motion), `start` (videos only, seconds into the clip), "

@@ -150,6 +150,17 @@ class Card(unittest.TestCase):
         self.assertEqual(out["after"][:len(out["before"])], out["before"], "the first card is still in the list, in its place, after the reload")
         self.assertEqual(len(out["after"]), len(out["before"]) + 1, "and the new one is added after it")
 
+    def test_a_saved_recipe_with_a_look_of_its_own_loads_as_a_custom_choice_and_still_plans(self):
+        look = {"name": "Warm riso", "base": "clean", "bg": "#1b1410", "accent": "#ff6b4a", "grade": {"warmth": 0.6}}
+        recipe = {"kind": "montage", "title": "Mine", "format": "reels", "template": look,
+                  "clips": [{"checklist": {"title": "Alat", "items": ["A", "B"]}}]}
+        (self.root / "recipes").mkdir(exist_ok=True)
+        (self.root / "recipes" / "own-look.montage.json").write_text(json.dumps(recipe))
+        out = self.run_js("usecards")
+        self.assertIn("Custom: Warm riso", out["used"]["card"], "the look is offered as a choice")
+        self.assertEqual(out["used"]["values"]["template"], "__custom", "and chosen")
+        self.assertIn("checklist card: Alat", out["plan"], "the server accepted the look as it was sent back")
+
     def test_a_cards_row_says_what_it_shows(self):
         out = self.run_js("allcards")
         card = out["saved"]["card"]

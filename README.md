@@ -841,6 +841,17 @@ element one job and one level, make the primary action look primary, fewer choic
   video that is joined by copying. Measured: all ten render; the same two scenes' mid-join frames differ between slide, circle and fade, so the
   name really reaches ffmpeg (a test that first passed with the name ignored was rewritten to catch that). Both machines' ffmpeg (9.0.2 here,
   9.0.1 on the Air) have all nine transitions.
+- **A look of your own** (`"template"` as an object): the look is data, so a new one needs no code. It starts from a built-in (`base`, default
+  `clean`) and changes what it names: `bg` and `accent` (colours like `#1b1410`), `photo_hold`, `video_max`, `video_speed`, `fade`, `zoom`, `grain`,
+  `vignette`, `moves`, a `grade` and defaults for `join`, `background` and `effect` that the recipe's own fields override. `name` (1 to 30
+  characters) is required and is what shows as the look's name. `grade` is **named numbers only**: `saturation`, `contrast`, `brightness`, `gamma`
+  and `warmth` (a recipe cannot give an ffmpeg filter string, because filters such as `movie=` can read files, so the chain is built here and a
+  string is refused with that reason). Example: `{"name": "Warm riso", "base": "clean", "bg": "#1b1410", "accent": "#ff6b4a", "fade": 0.6, "grain": 8,
+  "vignette": true, "grade": {"saturation": 0.85, "contrast": 1.05, "warmth": 0.6}, "join": "fade", "background": "glow"}`. The look travels with the
+  recipe, so a saved recipe keeps it. The brief documents it, so `umcares draft` can write one from a style name ("a warm risograph look"). On the
+  page a loaded recipe's look appears as "Custom: <name>" in the Look list and is sent back unchanged; the page cannot yet *edit* a look. A look is
+  still built on one of the six built-ins, so it changes colour, pacing and finish but cannot add a new way of drawing (the kinetic and collage
+  styles are inherited from their base).
 - **Behind the cards** (`"background"`: `gradient`, `grid` or `glow`, the "Behind the cards" list in More options): a quiet pattern instead of the
   flat colour under every drawn card: the quote, announce and countdown cards, all six explainer cards, and the title and end cards (kinetic
   ones too). `gradient` drifts diagonally from the look's background towards a tint of its accent, `grid` is engineering-paper lines (the text colour at 13% opacity, so they can be seen),
