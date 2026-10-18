@@ -269,7 +269,7 @@ class Explain(unittest.TestCase):
         self.assertTrue(res["name"].startswith("claude-draft-"))
         self.assertEqual(res["images"], 0)
         prompt = text_of(ask.asked[0])
-        for must in ("https://example.org/ci", "Bahasa Melayu", "ONLY the fact sheet", "no pictures", "Explain: how CI/CD works"):
+        for must in ("https://example.org/ci", "Bahasa Melayu", "ONLY the fact sheet", "no pictures", "Explain: how CI/CD works", "never credit your own line"):
             self.assertIn(must, prompt)
         self.assertIn("how CI/CD works", text_of(research.asked[0]), "the topic is what is researched")
         self.assertEqual(len(web.montage_state(self.root)["recipes"]), 1)

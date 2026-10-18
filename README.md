@@ -628,6 +628,8 @@ are the model's reading of the web, and a page it could not open (one returned 4
 the on-screen words are in the language you ask for and nobody has checked that Malay; a framing line the model puts in a quote card
 ("by": "DNS") is attribution you should look at.
 
+Since that trial `explain`'s rules say a framing line is an `announce` card (or a `quote` with no `by`) and `quote`'s `by` names a real source in the sheet.
+
 #### Choosing the project: `--project` and the refuse rule
 
 The pipeline commands act on one folder on the remote (`UMC_REMOTE_ROOT`, the original DrMadihah project). With the web app
@@ -841,7 +843,7 @@ element one job and one level, make the primary action look primary, fewer choic
   9.0.1 on the Air) have all nine transitions.
 - **Behind the cards** (`"background"`: `gradient`, `grid` or `glow`, the "Behind the cards" list in More options): a quiet pattern instead of the
   flat colour under every drawn card: the quote, announce and countdown cards, all six explainer cards, and the title and end cards (kinetic
-  ones too). `gradient` drifts diagonally from the look's background towards a tint of its accent, `grid` is faint engineering-paper lines,
+  ones too). `gradient` drifts diagonally from the look's background towards a tint of its accent, `grid` is engineering-paper lines (the text colour at 13% opacity, so they can be seen),
   `glow` is a soft pool of accent light behind the middle. Pictures, clips and the collage look are untouched. Measured on the first frame:
   corners differ under a gradient, the middle is brighter under a glow, a grid is mostly flat between its lines; a test fails if the
   gradient is switched off.
@@ -898,8 +900,10 @@ element one job and one level, make the primary action look primary, fewer choic
   them (the tools scene is a ticked checklist, the deadline and productivity scenes are counting numbers with filling bars) renders 28.7 s of video
   in 11.6 s on this Mac.
   **Typing**: `{"typing": {"title": "sprint.ts", "text": "const sprint = await plan();\nship(sprint);"}}` is a code-editor window (a title bar with
-  three traffic-light dots and the optional title, a faint body) in which the text types itself in Menlo with a cursor; at most 8 lines of 44
-  characters, so the type stays readable on a phone (the size is worked out so the longest line fills the window). It is shown in at most 48
+  three traffic-light dots and the optional title, a faint body) in which the text types itself in Menlo with a cursor; lines of at most 80 characters, and a line longer than 34 is
+  **wrapped** (at a space, or just after an opening bracket or a comma, the rest indented two further), because the type size is worked out so the longest
+  line fills the window and a long line would shrink it to nothing on a phone; the wrapped code may be at most 8 lines, and it is the wrapped text that types. The
+  window is 92% of the width. It is shown in at most 48
   steps, each a PNG, and finishes typing a second before the piece ends however long it is held (so a longer hold types more slowly); with
   `sfx.words` a tick sounds as each line starts. **List**: `{"list": {"title": "Hari ini", "items": ["Standup 09:00", "Retro 16:00"], "from": "right"}}`
   is 2 to 6 rows (a plate each, up to 50 characters) that slide in one after another, eased, from the right (default) or the left: meeting

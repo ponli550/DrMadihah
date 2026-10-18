@@ -26,7 +26,8 @@ COUNT_STEPS = 24                   # a count is shown in at most this many steps
 COUNT_START = 0.4
 TYPE_STEPS = 48                    # typing is shown in at most this many pictures (each is a PNG the renderer must draw)
 TYPE_START = 0.6
-MAX_LINES, MAX_LINE = 8, 44        # a code window: lines, and characters a line (so the type stays big enough to read on a phone)
+MAX_LINES, MAX_LINE = 8, 80        # a code window: lines (after wrapping), and characters a line as written
+WRAP_COLS = 34                     # a line longer than this is wrapped, so the type stays big enough to read on a phone
 MONO = "Menlo-Regular"             # on every Mac; a character is 0.602 of the type size wide
 MONO_W = 0.602
 MAX_STEPS = 5
@@ -98,8 +99,10 @@ def check(v, kind: str, w: str, problems: list) -> None:
             problems.append(f"{w}.typing.text: the text that types itself, up to {MAX_LINES} lines of {MAX_LINE} characters")
         else:
             lines = text.rstrip("\n").split("\n")
-            if len(lines) > MAX_LINES or any(len(x) > MAX_LINE for x in lines):
-                problems.append(f"{w}.typing.text: at most {MAX_LINES} lines of {MAX_LINE} characters (it has to stay big enough to read on a phone)")
+            if any(len(x) > MAX_LINE for x in lines):
+                problems.append(f"{w}.typing.text: at most {MAX_LINE} characters a line")
+            elif len(wrap_code(text.rstrip("\n")).split("\n")) > MAX_LINES:
+                problems.append(f"{w}.typing.text: at most {MAX_LINES} lines once long lines are wrapped at {WRAP_COLS} characters (it has to stay big enough to read on a phone)")
         if "title" in v and (not isinstance(v["title"], str) or not v["title"].strip() or len(v["title"]) > 30):
             problems.append(f"{w}.typing.title: the window's title, 1 to 30 characters, e.g. sprint.ts")
         return
@@ -115,6 +118,31 @@ def check(v, kind: str, w: str, problems: list) -> None:
         problems.append(f"{w}.progress: it must count from one number to a different one")
     if v.get("unit") == "%" and _is_number(v.get("to")) and v["to"] > 100:
         problems.append(f"{w}.progress.to: a percentage goes up to 100")
+
+
+def wrap_code(text: str, cols: int = WRAP_COLS) -> str:
+    """The code with every line longer than `cols` wrapped: at the last space or opening bracket that fits (else mid-word), the rest indented two spaces
+    further than the line it continues, the way an editor wraps. A short line is untouched; so is a line indented so deep that
+    wrapping could not make progress."""
+    out = []
+    for line in text.split("\n"):
+        indent = len(line) - len(line.lstrip(" "))
+        cont = " " * (indent + 2)
+        if len(cont) >= cols - 4:
+            out.append(line)
+            continue
+        prefix = " " * indent
+        while len(line) > cols:
+            window = line[:cols + 1]
+            lo = len(prefix) + 1
+            cut = max(window.rfind(" ", lo), *(window.rfind(ch, lo, cols) + 1 for ch in "(,[{"))     # a space, or just after an opening bracket or a comma
+            if cut < lo + 3:
+                cut = cols                                      # nothing sensible to break at: break mid-word
+            out.append(line[:cut].rstrip(" "))
+            line = cont + line[cut:].lstrip(" ")
+            prefix = cont
+        out.append(line)
+    return "\n".join(out)
 
 
 def times(n: int, d: float) -> list:
@@ -214,7 +242,7 @@ def segment(c: dict) -> dict:
         return {"kind": "versus", "text": title or f"{before['label']} → {after['label']}", "title": title, "before": before, "after": after,
                 "duration": float(c.get("hold", round(0.8 + 0.55 * (len(before["items"]) + len(after["items"])) + 0.6 + 1.4, 2)))}
     if kind == "typing":
-        code = v["text"].rstrip("\n")
+        code = wrap_code(v["text"].rstrip("\n"))
         title = (v.get("title") or "").strip()
         default = round(TYPE_START + min(7.0, 0.5 + 0.04 * len(code)) + 1.0, 2)
         return {"kind": "typing", "text": title or code.split("\n")[0].strip(), "code": code, "title": title, "duration": float(c.get("hold", default))}
@@ -412,10 +440,10 @@ def piece_commands(base, ffmpeg, plan, seg, i, workdir, out, encode, tpl):
         code = seg["code"]
         lines_ = code.split("\n")
         longest = max(len(x) for x in lines_)
-        win_w = int(W * 0.86) // 2 * 2
+        win_w = int(W * 0.92) // 2 * 2
         win_x = (W - win_w) // 2
-        inner = int(W * 0.04)
-        size = int(min(H * 0.03, (win_w - 2 * inner) / (max(longest, 12) * MONO_W)))
+        inner = int(W * 0.035)
+        size = int(min(H * 0.032, (win_w - 2 * inner) / (max(longest, 12) * MONO_W * 1.06)))                  # a little slack: a line that fits to the pixel gets wrapped again by the text drawer
         line_h = int(size * 1.5)
         title_h = int(H * 0.05) // 2 * 2
         body_h = (len(lines_) * line_h + 2 * inner) // 2 * 2
