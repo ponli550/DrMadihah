@@ -174,5 +174,72 @@ class TypingAndList(unittest.TestCase):
         self.assertEqual(explainer.events(rows), explainer.times(3, 4.0))
 
 
+class FlowAndVersus(unittest.TestCase):
+    SIDE = {"label": "Dulu", "items": ["Manual"]}
+
+    def test_good_flow_and_versus_have_no_problems(self):
+        self.assertEqual(problems_of("flow", {"steps": ["Kod", "Binaan"]}), [])
+        self.assertEqual(problems_of("flow", {"title": "T", "steps": list("abcde")}), [])
+        self.assertEqual(problems_of("versus", {"before": self.SIDE, "after": {"label": "Kini", "items": ["Auto"]}}), [])
+        self.assertEqual(problems_of("versus", {"title": "T", "before": self.SIDE, "after": self.SIDE}), [])
+
+    def test_flow_problems_are_said_in_plain_words(self):
+        for bad, why in (
+            ("x", "an object like"),
+            ({"steps": ["only"]}, "2 to 5 steps"),
+            ({"steps": list("abcdef")}, "2 to 5 steps"),
+            ({"steps": ["a", "x" * 19]}, "1 to 18 characters"),
+            ({"steps": ["a", 3]}, "1 to 18 characters"),
+            ({"title": "", "steps": ["a", "b"]}, "flow.title"),
+            ({"steps": ["a", "b"], "colour": 1}, "unknown field"),
+        ):
+            with self.subTest(bad=bad):
+                self.assertTrue(any(why in p for p in problems_of("flow", bad)), problems_of("flow", bad))
+
+    def test_versus_problems_are_said_in_plain_words(self):
+        ok = {"label": "L", "items": ["a"]}
+        for bad, why in (
+            ({"after": ok}, "versus.before"),
+            ({"before": ok}, "versus.after"),
+            ({"before": "x", "after": ok}, "versus.before: an object"),
+            ({"before": {"items": ["a"]}, "after": ok}, "before.label"),
+            ({"before": {"label": "x" * 21, "items": ["a"]}, "after": ok}, "before.label"),
+            ({"before": {"label": "L", "items": []}, "after": ok}, "1 to 4 items"),
+            ({"before": {"label": "L", "items": list("abcde")}, "after": ok}, "1 to 4 items"),
+            ({"before": {"label": "L", "items": ["x" * 31]}, "after": ok}, "1 to 30 characters"),
+            ({"before": {"label": "L", "items": ["a"], "icon": 1}, "after": ok}, "unknown field"),
+            ({"title": "", "before": ok, "after": ok}, "versus.title"),
+        ):
+            with self.subTest(bad=bad):
+                self.assertTrue(any(why in p for p in problems_of("versus", bad)), problems_of("versus", bad))
+
+    def test_the_whole_pipeline_is_drawn_first_and_then_each_box_lights_in_turn(self):
+        drawn, lit = explainer.flow_times(4, 4.7)
+        self.assertEqual(drawn, sorted(drawn))
+        self.assertLess(drawn[-1], lit[0], "the pipeline is seen whole before it runs")
+        self.assertEqual(lit, sorted(set(lit)))
+        self.assertLessEqual(lit[-1], 4.7 - 1.0 + 0.01, "the last box has about a second lit before the piece ends")
+        drawn5, lit5 = explainer.flow_times(5, 2.5)
+        self.assertLess(lit5[-1], 2.5, "a short piece squeezes the run and never overruns")
+
+    def test_the_before_is_shown_first_then_dims_as_the_after_begins(self):
+        before, after, dim = explainer.versus_times(3, 3, 6.1)
+        self.assertEqual(before, sorted(set(before)))
+        self.assertLess(before[-1], after[0], "all the before comes first")
+        self.assertLess(before[-1], dim, "the before is complete when it dims")
+        self.assertLess(dim, after[0], "the dim starts just before the first after item")
+        self.assertLessEqual(after[-1] + 1.0, 6.1 + 0.01, "a second to read the last item")
+
+    def test_defaults_text_and_events(self):
+        flow = explainer.segment({"_card": "flow", "flow": {"steps": ["Kod", "Binaan", "Ujian"]}})
+        self.assertEqual((flow["text"], flow["title"]), ("Kod → Binaan → Ujian", ""))
+        self.assertEqual(explainer.segment({"_card": "flow", "flow": {"title": "T", "steps": ["a", "b"]}})["text"], "T")
+        self.assertEqual(explainer.segment({"_card": "flow", "flow": {"steps": ["a", "b"]}, "hold": 7})["duration"], 7.0)
+        vs = explainer.segment({"_card": "versus", "versus": {"before": {"label": "Dulu", "items": [" a "]}, "after": {"label": "Kini", "items": ["b", "c"]}}})
+        self.assertEqual((vs["text"], vs["before"]["items"], vs["after"]["items"]), ("Dulu → Kini", ["a"], ["b", "c"]))
+        self.assertEqual(len(explainer.events(flow)), 3, "a tick as each box lights")
+        self.assertEqual(len(explainer.events(vs)), 3, "a tick as each item arrives")
+
+
 if __name__ == "__main__":
     unittest.main()

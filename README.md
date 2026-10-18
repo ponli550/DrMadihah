@@ -843,7 +843,7 @@ element one job and one level, make the primary action look primary, fewer choic
   (defaults: a quote 3-8 s by length, an announcement 3 s + 0.5 s per chip, a countdown 0.8 s a number), count as clips for
   `max_seconds` (so a long list drops cards from the end with a warning), and show in the plan as `quote card: ...`. They are
   not in the page's Make-a-video card yet: write them in a recipe, or let `umcares draft` or Copy-brief-for-Claude use them.
-- **Explainer cards: checklist, progress, typing, list** (`explainer.py`). Built after
+- **Explainer cards: checklist, progress, typing, list, flow, versus** (`explainer.py`). Built after
   comparing us with a Remotion demo (a 24 s animated explainer): our text cards gave its story, timing and sound but none of its interface
   scenes, and these are the generic ones that are cheap in ffmpeg (no Node, no Chrome, nothing new on the Air). Same technique as the text cards:
   text drawn to PNGs by macOS, laid on the look's background with timed `overlay` expressions. Give exactly one of them instead of `media`:
@@ -867,6 +867,16 @@ element one job and one level, make the primary action look primary, fewer choic
   productivity bar, end card) is 36.9 s of video and renders in 18.2 s on this Mac, and 8 of its 9 scenes are now real scenes, not text. **What
   is still missing:** the spinning clock and anything one-off (a custom animation still means custom code, which is where Remotion would earn
   its place); the cards also have no page controls yet; none has been rendered on the Air's ffmpeg, and no tick sound has been heard.
+  (Updated 18 Oct: the page does have controls now, and the Air renders them; see the next two points.)
+  **Flow** `{"flow": {"title": "Dari kod ke pengguna", "steps": ["Kod", "Binaan", "Ujian", "Keluaran"]}}`: 2 to 5 boxes (up to 18 characters,
+  all the same width) joined by arrows. The whole pipeline is drawn first in dim grey, then each box lights up in the look's accent, its
+  arrow first, one after another, with a tick each; it is centred in the frame. **Versus** `{"versus": {"title": "Dulu dan kini", "before":
+  {"label": "Cara lama", "items": [...]}, "after": {"label": "Dengan CI/CD", "items": [...]}}}`: a before panel (a red ✗ per item, items sliding
+  in from the left) and, a beat after it is done, an after panel (green ✓, sliding in from the right) while a veil of the background colour
+  dims the before; 1 to 4 items of up to 30 characters each, headings up to 20. Red and green are fixed in every look (darkened as text on a
+  light one) because they mean wrong and right; the text is sized to the longest item so a row stays one line where it can. Both are in the
+  page's Add a card list, the brief and the tests. Made after the DevOps topic video, whose story needed a pipeline picture and a visible
+  contrast that the sliding lists could not give.
 - **The `kinetic` look (kinetic type)** is built in `kinetic.py` and reuses the normal picture composition: only the text is
   different. A caption or title becomes big bold words (upper case, `HelveticaNeue-CondensedBlack`, on both Macs) that pop in
   one line after another, stacked and centred, the **last line in the accent colour** (`#ffe14d`), over a darkened picture
