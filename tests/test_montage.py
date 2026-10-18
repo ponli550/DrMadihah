@@ -2476,6 +2476,76 @@ class JoinBetweenScenes(Fixtures):
 
 
 @NEED
+class RisoEffect(Fixtures):
+    """`effect: riso`: a two-ink print on warm paper. Measured on pixels: the paper colour, a few tonal steps, two inks out of register, a still grain."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        ff("-f", "lavfi", "-i", "color=c=black:s=640x360,geq=lum='255-255*X/W':cb=128:cr=128", "-frames:v", "1", str(cls.fx / "ramp.jpg"))
+        ff("-f", "lavfi", "-i", "color=c=white:s=640x360,drawbox=x=200:y=60:w=240:h=240:color=black:t=fill", "-frames:v", "1", str(cls.fx / "ink.jpg"))
+
+    def setUp(self):
+        super().setUp()
+        self.add("ramp.jpg", "ink.jpg")
+
+    def shot(self, name, at=1.0, effect="riso", hold=3):
+        for f in self.root.joinpath("exports").glob("*"):
+            f.unlink()
+        job, out = self.render(recipe([{"media": name, "move": "still", "hold": hold}], template="punchy", captions=False, effect=effect))
+        self.assertEqual(job["state"], "done", job["error"])
+        return frame(out, at, 216, 384)
+
+    @staticmethod
+    def px(d, x, y, w=216):
+        i = (y * w + x) * 3
+        return tuple(d[i:i + 3])
+
+    def row(self, d, y=192, w=216):
+        return [self.px(d, x, y, w) for x in range(w)]
+
+    def test_riso_is_an_effect_the_recipe_and_the_look_can_name(self):
+        self.assertIn("riso", montage.EFFECTS)
+        self.assertEqual(montage.plan_for(recipe([{"media": "ramp.jpg"}], effect="riso"), self.root)["effect"], "riso")
+        self.assertEqual(montage.plan_for(recipe([{"media": "ramp.jpg"}], template={"name": "Print", "effect": "riso"}), self.root)["effect"], "riso")
+
+    def test_white_becomes_warm_paper_and_black_becomes_a_heavy_overprint_of_both_inks(self):
+        row = self.row(self.shot("ramp.jpg"))
+        paper = montage.RISO_PAPER
+        lightest = max(row, key=sum)
+        self.assertTrue(all(abs(a - b) <= 28 for a, b in zip(lightest, paper)), f"the lightest part is the paper colour {paper}, got {lightest}")
+        self.assertGreater(lightest[0], lightest[2] + 6, "paper is warm, not white: red above blue")
+        darkest = min(row, key=sum)
+        self.assertLess(sum(darkest), 330, f"the darkest part carries both inks, got {darkest}")
+
+    def test_tones_come_in_a_few_steps_not_a_smooth_ramp(self):
+        d = self.shot("ramp.jpg")
+        levels = set()
+        for x in range(0, 216, 6):                             # a column's mean over 80 rows: the grain (random from run to run) averages out
+            px = [self.px(d, x, y) for y in range(150, 230)]
+            levels.add(round(sum(sum(c) for c in px) / len(px) / 3 / 12))
+        self.assertLessEqual(len(levels), 10, f"a print has a handful of strengths, found {len(levels)} grey levels along the ramp (a smooth ramp gives 16)")
+        self.assertGreaterEqual(len(levels), 5, "but it is not flat")
+
+    def test_the_second_ink_is_out_of_register_so_an_edge_has_a_pink_side_and_a_blue_side(self):
+        row = self.row(self.shot("ink.jpg"))
+        lum = [sum(c) for c in row]
+        dark = [i for i, v in enumerate(lum) if v < 200]
+        self.assertTrue(dark, "the black square printed")
+        left, right = dark[0], dark[-1]
+        self.assertTrue(any(c[0] > c[2] + 25 for c in row[left - 3:left + 3] if sum(c) > 200), f"pink where only the first ink reaches: {row[left - 3:left + 3]}")
+        self.assertTrue(any(c[2] > c[0] + 25 for c in row[right - 3:right + 4] if sum(c) > 200), f"blue where only the second ink reaches: {row[right - 3:right + 4]}")
+
+    def test_the_grain_is_fixed_to_the_print_and_does_not_flicker_on_a_still_picture(self):
+        for f in self.root.joinpath("exports").glob("*"):
+            f.unlink()
+        job, out = self.render(recipe([{"media": "ramp.jpg", "move": "still", "hold": 3}], template="punchy", captions=False, effect="riso"))
+        self.assertEqual(job["state"], "done", job["error"])
+        a, b = frame(out, 0.5, 216, 384), frame(out, 2.0, 216, 384)
+        self.assertLess(sum(abs(x - y) for x, y in zip(a, b)) / len(a), 2.0, "the same still picture at two times is the same print")
+
+
+@NEED
 class LooksAsData(Fixtures):
     """A recipe's `template` may be an object: a look written as data, on top of a built-in."""
     LOOK = {"name": "Warm riso", "base": "clean", "bg": "#1b1410", "accent": "#ff6b4a", "fade": 0.6, "grain": 8, "vignette": True,

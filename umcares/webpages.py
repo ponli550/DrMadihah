@@ -1147,7 +1147,7 @@ function createMontage(opts) {
       tighten: el("input", {type: "checkbox", checked: form.tighten}),
       fxwords: el("input", {type: "checkbox", checked: form.fxwords}),
       depth: el("input", {type: "checkbox", checked: form.depth}),
-      effect: select([["", "No picture effect"], ["dither", "Dither (chunky retro pixels)"], ["glitch", "Glitch (a burst at every cut)"], ["neon", "Neon (glowing outlines)"]], form.effect),
+      effect: select([["", "No picture effect"], ["dither", "Dither (chunky retro pixels)"], ["glitch", "Glitch (a burst at every cut)"], ["neon", "Neon (glowing outlines)"], ["riso", "Riso (two-ink print on paper)"]], form.effect),
       fxcuts: select([["", "No sound effects on cuts"], ["whoosh", "Whoosh on every cut"], ["pop", "Pop on every cut"], ["hit", "Hit on every cut"]], form.fxcuts),
       bpm: el("input", {type: "text", inputMode: "decimal", maxLength: 6, autocomplete: "off", placeholder: "BPM, a number from 50 to 200", value: form.bpm}),
       cut: select([["", "Plain cuts"], ["zoom", "Zoom through (punch in, then settle)"], ["zoom_in", "Zoom in at the end of each piece"], ["zoom_out", "Settle in at the start of each piece"], ["flip", "3D card flip (best on hard cuts)"]], form.transition),

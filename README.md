@@ -858,7 +858,7 @@ element one job and one level, make the primary action look primary, fewer choic
   `glow` is a soft pool of accent light behind the middle. Pictures, clips and the collage look are untouched. Measured on the first frame:
   corners differ under a gradient, the middle is brighter under a glow, a grid is mostly flat between its lines; a test fails if the
   gradient is switched off.
-- **Picture effects** (`"effect": "dither" | "glitch" | "neon"`, the "Picture effect" list): from the "20 animation styles" post saved in
+- **Picture effects** (`"effect": "dither" | "glitch" | "neon" | "riso"`, the "Picture effect" list): from the "20 animation styles" post saved in
   sekerinshotto; the three of them that ffmpeg can do alone, no new dependency. Applied to photo and video pieces (not cards, the paper
   collage or audiograms), with any look, `transition` and `depth`; the captions are drawn on top, so they stay clean. Timing-neutral.
   **Dither**: the picture is drawn 180 pixels across, each colour channel is cut to 6 levels (216 colours) with a 4x4 ordered
@@ -866,7 +866,15 @@ element one job and one level, make the primary action look primary, fewer choic
   grey comes out as two levels in a repeating pattern (4 levels per channel looked noisy with olive fringes on skin, so it is 6). **Glitch**: a
   burst of colour split, sideways tearing of some bands and noise for 0.14 s as every piece starts and again every 0.9 s (so it lands on
   each cut); between bursts the picture is untouched. **Neon**: the picture is darkened, its outlines are found, lit as a cyan-white
-  line with a magenta glow. Measured on the Air with six real photos (18 s, 1080x1920): **render 35 s dither, 49 s glitch, 97 s neon**
+  line with a magenta glow. **Riso** (from the same saved posts' "risograph print"): the picture becomes luminance, then two inks as a
+  two-drum risograph lays them: fluorescent pink in four strengths over the dark and mid tones, blue in three over the darkest only, the blue
+  layer shifted about 0.6% of the width right and 0.4% of the height down (so every edge has a pink side and a blue side), multiplied onto warm
+  paper (243, 237, 220) with a fixed grain (no flicker on a still picture). It is built from `lutrgb`, `blend` and `noise` alone, no per-pixel
+  expressions, so it is cheap: 1 s to render a 2 s still at 1080x1920 here (not timed on the Air). Because the inks follow luminance, a saturated
+  colour keeps its darkness but not its hue (a pure red turns purple-pink), which is how a two-colour print behaves; faces and skies come out as
+  pink and blue tones. It shares the 12 Mbit/s effect cap. Measured: the lightest part is the paper colour, the darkest is a heavy overprint,
+  a grey ramp comes out in a handful of colour classes, an edge has a pink side and a blue side, and two frames of a still picture are the
+  same print; each of those tests fails when its part is removed. Measured on the Air with six real photos (18 s, 1080x1920): **render 35 s dither, 49 s glitch, 97 s neon**
   against about 37 s for a plain final (neon is the slow one, about 2.6x). **Size is the catch:** noise and thin outlines are expensive at
   CRF 14, so uncapped the glitch reel came out at **63 Mbit/s and the neon one at 36** (a plain final is 6.6; the judge flagged both as
   unusually heavy), and an effect final is now capped at 12 Mbit/s: measured **33.8 MB (glitch) and 34.3 MB (neon) against 14.8 MB for a

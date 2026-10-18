@@ -86,7 +86,7 @@ class RealPage(unittest.TestCase):
     def test_the_picture_effect_list_is_in_the_fold_and_the_fold_says_when_one_is_on(self):
         self.open_options()
         self.assertTrue(self.ev("!!document.querySelector('#montage details.opts [data-ctl=effect]')"), "inside More options")
-        self.assertEqual(self.ev("Array.from(document.querySelector('#montage [data-ctl=effect]').options).map(o => o.value).join(',')"), ",dither,glitch,neon")
+        self.assertEqual(self.ev("Array.from(document.querySelector('#montage [data-ctl=effect]').options).map(o => o.value).join(',')"), ",dither,glitch,neon,riso")
         self.ev("(() => { const e = document.querySelector('#montage [data-ctl=effect]'); e.value = 'neon'; e.dispatchEvent(new Event('change', {bubbles: true})); })()")
         self.assertIn("neon effect", self.ev("document.querySelector('#montage details.opts > summary').textContent"))
         self.ev("(() => { const e = document.querySelector('#montage [data-ctl=effect]'); e.value = ''; e.dispatchEvent(new Event('change', {bubbles: true})); })()")

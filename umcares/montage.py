@@ -161,7 +161,7 @@ TRANSITIONS = ZOOM_TRANSITIONS + ("flip",)        # flip: a piece swings in arou
 JOINS = {"cut": None, "fade": "fade", "slide": "slideleft", "slideup": "slideup", "wipe": "wipeleft", "circle": "circleopen", "zoom": "zoomin",
          "blur": "hblur", "pixel": "pixelize", "dip": "fadeblack"}
 JOIN_TIME = 0.45                                  # seconds a join takes (at most 40% of the shorter piece)
-EFFECTS = ("dither", "glitch", "neon")             # picture effects, done in ffmpeg alone: ordered-dither pixels, glitch bursts, neon outlines
+EFFECTS = ("dither", "glitch", "neon", "riso")             # picture effects, done in ffmpeg alone: ordered-dither pixels, glitch bursts, neon outlines
 DEPTHS = ("card",)                                # card: each picture is a smaller card that sways in perspective over a blurred copy of itself
 FLIP_TIME = 0.4                                   # seconds a card flip takes, in and out (at most a third of a short piece)
 FLIP_EDGE = 0.94                                  # how far edge-on the card gets at the very start: 1 would be a line (the maths has no solution)
@@ -925,6 +925,9 @@ def _card_fragment(src: str, out: str, fps: int, d: float, W: int, H: int) -> st
 DITHER_WIDTH = 180                                # the dither is drawn this many pixels across and enlarged, so the dots are big and chunky
 DITHER_LEVELS = 6                                 # levels per colour channel: 216 colours (4 looked noisy, with olive fringes on skin)
 BAYER = (0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5)    # a 4x4 ordered-dither matrix
+RISO_PAPER, RISO_INK1, RISO_INK2 = (243, 237, 220), (255, 72, 176), (0, 120, 191)    # warm paper, fluorescent pink, blue: how a two-drum risograph prints
+RISO_LEVELS = 4                                   # an ink is laid down in this many strengths (a print has no smooth tones)
+RISO_SLIP = (0.006, 0.004)                        # how far the second drum is out of register, as a fraction of the width and height
 GLITCH_EVERY, GLITCH_FOR = 0.9, 0.14              # seconds between glitch bursts (one starts every piece) and how long each lasts
 
 
@@ -957,6 +960,20 @@ def _effect_fragment(src: str, out: str, name: str, W: int, H: int) -> str:
                 f"[nw1]dilation,colorchannelmixer=rr=0.35:gg=1:bb=1,{G}[ncore];"
                 f"[nw2]gblur=sigma={sigma},{boost(6)},colorchannelmixer=rr=1:gg=0.15:bb=0.9,{G}[nglow];"
                 f"[nd][ncore]blend=all_mode=screen,{G}[nt];[nt][nglow]blend=all_mode=screen,format=yuv420p{out}")
+    if name == "riso":
+        # luminance, then two inks: the pink takes the dark and mid tones in four strengths, the blue only the darkest, a little out of register;
+        # the layers multiply onto warm paper, and a fixed grain (no `t` flag, so it does not flicker) sits over it all
+        grey = "colorchannelmixer=rr=.3:rg=.59:rb=.11:gr=.3:gg=.59:gb=.11:br=.3:bg=.59:bb=.11"
+        L = RISO_LEVELS
+        ink = lambda col, dens: ":".join(f"{c}='255-{255 - v}*({dens})'" for c, v in zip("rgb", col))
+        d1 = f"floor((255-val)/255*{L}+0.5)/{L}"
+        d2 = f"floor(clip((170-val)/170,0,1)*{L - 1}+0.5)/{L - 1}"
+        dx, dy = max(2, round(W * RISO_SLIP[0])), max(2, round(H * RISO_SLIP[1]))
+        pr, pg, pb = (round(c / 255, 4) for c in RISO_PAPER)
+        return (f"{src}{G},eq=contrast=1.12,{grey},split=2[ra][rb];"
+                f"[ra]lutrgb={ink(RISO_INK1, d1)},{G}[rink1];"
+                f"[rb]lutrgb={ink(RISO_INK2, d2)},crop={W - dx}:{H - dy}:0:0,pad={W}:{H}:{dx}:{dy}:color=white,{G}[rink2];"
+                f"[rink1][rink2]blend=all_mode=multiply,{G},colorchannelmixer=rr={pr}:gg={pg}:bb={pb},noise=alls=9:allf=u,format=yuv420p{out}")
     return f"{src}null{out}"
 
 
@@ -1794,7 +1811,7 @@ def brief(root, project_name: str = "") -> str:
               "- `tighten`: `\"gaps\"` cuts the dead air out of talking video clips: each phrase is kept with a little either side, pauses up to about 0.8 s stay, longer silences are cut and the phrases joined (jump cuts), and the clip keeps its own sound. A clip can opt in or out with `\"tighten\": true|false`. It finds speech-like sound, not words, so it cannot remove a repeated take.",
               "- `transition`: `\"zoom\"` (punch in at the end of a piece and settle at the start of the next, a zoom cut), `\"zoom_in\"` or `\"zoom_out\"` (just one half), or `\"flip\"` (a 3D card flip: each piece swings out around its vertical axis and the next swings in, through black; it suits hard cuts). Applies to photos and clips, never changes any timing. "
               "A video clip can also take `move`: `\"in\"` or `\"out\"` to zoom slowly over its whole length.",
-              "- `effect`: `\"dither\"` (chunky ordered-dither pixels, 216 colours), `\"glitch\"` (a short burst of colour split, sideways tearing and noise as every piece starts and about every 0.9 s) or `\"neon\"` (glowing outlines over a darkened picture). Applies to photos and clips, works with any look, never changes any timing; captions stay clean and on top.",
+              "- `effect`: `\"dither\"` (chunky ordered-dither pixels, 216 colours), `\"glitch\"` (a short burst of colour split, sideways tearing and noise as every piece starts and about every 0.9 s) `\"neon\"` (glowing outlines over a darkened picture) or `\"riso\"` (a two-ink risograph print: pink and blue in a few strengths, a little out of register, on warm paper with fixed grain). Applies to photos and clips, works with any look, never changes any timing; captions stay clean and on top.",
               "- `depth`: `\"card\"` shows each photo and clip as a smaller card that sways in 3D perspective over a darkened, blurred copy of itself. It is a flat picture tilted, not a depth map, so nothing parallaxes. It also works with `transition`.",
               "- `speech`: `\"follow\"` starts each video clip (that has no explicit `start`) where people speak, so a long clip's excerpt holds the words, not dead air. It finds speech-like sound, not words.",
               "- `quality`: `\"final\"` (default), `\"share\"` (the same video at full size in a much smaller file, for a slow link or posting; a little less fine detail: a photo reel came out at 15% of the final's size) or `\"draft\"` (half size, no grain: a fast preview).",
