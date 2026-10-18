@@ -274,7 +274,7 @@ def piece_commands(base, ffmpeg, plan, seg, i, workdir, out, encode, tpl):
     accent = tpl["accent"]
     acc_text = textcards.accent_text(accent, bg)
     shadow = ink == textcards.LIGHT
-    inputs = ["-f", "lavfi", "-i", f"color=c={bg}:s={W}x{H}:r={fps}:d={d}"]
+    inputs = ["-f", "lavfi", "-i", textcards.backdrop(plan.get("background"), bg, accent, W, H, fps, d)]
     pad = max(4, int(W * 0.06))
     parts, cur, n_in = [], "[0:v]", 1
 

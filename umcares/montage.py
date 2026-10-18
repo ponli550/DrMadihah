@@ -81,6 +81,11 @@ MOVES = ("in", "out", "pan_left", "pan_right", "still")
 VIDEO_MOVES = ("in", "out")                       # a video clip can zoom over its whole length; panning is for photos
 ZOOM_TRANSITIONS = ("zoom", "zoom_in", "zoom_out")  # zoom cuts: push in at the end of a piece (zoom_in), settle at its start (zoom_out), or both (zoom)
 TRANSITIONS = ZOOM_TRANSITIONS + ("flip",)        # flip: a piece swings in around its vertical axis in perspective, and swings out before the next
+# How scenes are joined: ffmpeg's own xfade transitions. A join overlaps the two pieces (like a crossfading look does), so every time is still worked out by
+# the renderer. "cut" is no overlap at all, even in a look that crossfades.
+JOINS = {"cut": None, "fade": "fade", "slide": "slideleft", "slideup": "slideup", "wipe": "wipeleft", "circle": "circleopen", "zoom": "zoomin",
+         "blur": "hblur", "pixel": "pixelize", "dip": "fadeblack"}
+JOIN_TIME = 0.45                                  # seconds a join takes (at most 40% of the shorter piece)
 EFFECTS = ("dither", "glitch", "neon")             # picture effects, done in ffmpeg alone: ordered-dither pixels, glitch bursts, neon outlines
 DEPTHS = ("card",)                                # card: each picture is a smaller card that sways in perspective over a blurred copy of itself
 FLIP_TIME = 0.4                                   # seconds a card flip takes, in and out (at most a third of a short piece)
@@ -106,7 +111,7 @@ DUCK_IN, DUCK_OUT = 0.25, 0.4  # seconds the music takes to dip before a phrase 
 NICE = prepare.NICE
 THREADS = prepare.THREADS
 ALLOWED_TOP = {"kind", "version", "title", "format", "template", "clips", "captions", "title_card", "end_card", "music",
-               "max_seconds", "note", "quality", "speech", "clip_sound", "transition", "tighten", "sfx", "depth", "effect"}
+               "max_seconds", "note", "quality", "speech", "clip_sound", "transition", "tighten", "sfx", "depth", "effect", "join", "background"}
 ALLOWED_CLIP = {"media", "caption", "hold", "speed", "start", "zoom", "move", "quote", "by", "announce", "countdown", "checklist", "progress", "typing", "list", "flow", "versus", "audiogram", "image", "tighten"}
 ALLOWED_ANNOUNCE = {"title", "date", "time", "place", "note"}
 CONTENT_KINDS = ("photo", "video", "quote", "announce", "countdown", "checklist", "progress", "typing", "list", "flow", "versus", "audiogram")      # what counts as a clip of the video (cards at the ends do not)
@@ -373,11 +378,18 @@ def validate(recipe, root) -> dict:
             for k, lo, hi in (("start", 0, 3600), ("fade_out", 0, 10)):
                 if k in music and not _num(music[k], lo, hi):
                     problems.append(f"music.{k}: must be a number from {lo} to {hi}")
+    join = recipe.get("join")
+    if join not in (None, *JOINS):
+        problems.append(f"join: must be one of {', '.join(JOINS)} (how scenes are joined) or left out")
+    elif join not in (None, "cut") and (tempo or (isinstance(music, dict) and music.get("sync") == "beat")):
+        problems.append('join: sliding, wiping and fading between scenes overlaps them, so it cannot be combined with cutting to the beat or to a tempo (use "join": "cut" or take the sync out)')
+    if recipe.get("background") not in (None, *textcards.BACKGROUNDS):
+        problems.append(f"background: must be one of {', '.join(textcards.BACKGROUNDS)} (a quiet pattern behind the cards) or left out")
     if problems:
         raise RecipeError(problems)
     return {"kind": "montage", "version": 1, "title": title.strip(), "format": fmt, "template": tpl,
             "captions": recipe.get("captions", True), "max_seconds": max_s, "clips": clips, "cards": cards,
-            "quality": recipe.get("quality", "final"), "speech": recipe.get("speech"), "clip_sound": recipe.get("clip_sound"), "transition": recipe.get("transition"), "depth": recipe.get("depth"), "effect": recipe.get("effect"), "tighten": recipe.get("tighten"), "sfx": recipe.get("sfx"), "tempo": tempo,
+            "quality": recipe.get("quality", "final"), "speech": recipe.get("speech"), "clip_sound": recipe.get("clip_sound"), "transition": recipe.get("transition"), "depth": recipe.get("depth"), "effect": recipe.get("effect"), "join": recipe.get("join"), "background": recipe.get("background"), "tighten": recipe.get("tighten"), "sfx": recipe.get("sfx"), "tempo": tempo,
             "music": None if music_item is None else {**music, "_item": music_item}, "note": recipe.get("note")}
 
 
@@ -515,6 +527,10 @@ def resolve(validated: dict, root) -> dict:
         segs.append({"kind": "end", "text": c["text"].strip(), "subtitle": (c.get("subtitle") or "").strip(),
                      "duration": float(c.get("hold", CARD_HOLD))})
     fade = tpl["fade"]
+    if r.get("join") == "cut":
+        fade = 0.0                                                      # a hard cut, even in a look that crossfades
+    elif r.get("join"):
+        fade = JOIN_TIME
     sync = _beat_sync(r, root, segs, warnings, fmt["fps"])
     if sync:
         fade = 0.0                                                      # on the beat means hard cuts
@@ -569,7 +585,8 @@ def resolve(validated: dict, root) -> dict:
     width, height = (even(fmt["width"] * DRAFT_SCALE), even(fmt["height"] * DRAFT_SCALE)) if draft else (fmt["width"], fmt["height"])
     return {"title": r["title"], "format": r["format"], "template": r["template"], "quality": r.get("quality") or "final",
             "width": width, "height": height,
-            "fps": fmt["fps"], "fade": round(fade, 3), "total": total, "transition": r.get("transition"), "depth": r.get("depth"), "effect": r.get("effect"), "sfx": sfx_plan, "segments": segs, "duck": duck, "music": music, "sync": None if not sync else {k: v for k, v in sync.items() if k != "music_start"},
+            "fps": fmt["fps"], "fade": round(fade, 3), "total": total, "transition": r.get("transition"), "depth": r.get("depth"), "effect": r.get("effect"), "background": r.get("background"),
+            "join": JOINS.get(r.get("join") or "") if fade > 0 and r.get("join") not in (None, "cut") else None, "sfx": sfx_plan, "segments": segs, "duck": duck, "music": music, "sync": None if not sync else {k: v for k, v in sync.items() if k != "music_start"},
             "warnings": warnings,
             "recipe": {k: v for k, v in r.items() if k not in ("clips", "cards", "music")}}
 
@@ -930,7 +947,7 @@ def _piece_command(ffmpeg, plan, seg, i, workdir: Path, out: Path):
     steps = []
     glide = lambda start, dur: f"pow(1-min(1,max(0,(t-{start})/{dur})),3)"          # 1 -> 0 along an ease-out curve
     if seg["kind"] in ("title", "end") and kin:
-        inputs = ["-f", "lavfi", "-i", f"color=c={tpl['bg']}:s={W}x{H}:r={fps}:d={d}"]
+        inputs = ["-f", "lavfi", "-i", textcards.backdrop(plan.get("background"), tpl["bg"], tpl["accent"], W, H, fps, d)]
         more, graph, lines, times, y_end = kinetic.overlay(workdir, f"seg{i}", seg["text"], W, H, fps, d, tpl["accent"], period, 1, "[0:v]", "[o]",
                                                            centre=0.44 if seg["subtitle"] else 0.5)
         inputs += more
@@ -954,7 +971,7 @@ def _piece_command(ffmpeg, plan, seg, i, workdir: Path, out: Path):
         title_y = int(H * 0.30) if has_sub else (H - title_h) // 2
         lift = max(6, int(H * 0.018))                                              # how far a line glides up as it arrives
         big = _text_png(workdir, seg["text"], f"seg{i}-t", W, title_h, size=int(H * 0.055), valign="bottom" if has_sub else "middle", pad=margin)
-        inputs = ["-f", "lavfi", "-i", f"color=c={tpl['bg']}:s={W}x{H}:r={fps}:d={d}", "-loop", "1", "-framerate", str(fps), "-t", str(d), "-i", str(big)]
+        inputs = ["-f", "lavfi", "-i", textcards.backdrop(plan.get("background"), tpl["bg"], tpl["accent"], W, H, fps, d), "-loop", "1", "-framerate", str(fps), "-t", str(d), "-i", str(big)]
         out_fade = f"fade=t=out:st={max(0.3, d - 0.6):g}:d=0.4:alpha=1"
         graph = (f"[1:v]format=rgba,fade=t=in:st=0.15:d=0.5:alpha=1,{out_fade}[t1];"
                  f"[0:v][t1]overlay=0:'{title_y}+{lift}*{glide(0.15, 0.6)}':format=auto")
@@ -1125,7 +1142,7 @@ def render(plan: dict, root, out: Path, ctl: Control, on_pct=lambda p: None) -> 
             for k in range(1, len(pieces)):
                 acc += segs[k - 1]["duration"] - fade
                 out_l = f"[x{k}]"
-                chain.append(f"{label}[{k}:v]xfade=transition=fade:duration={fade}:offset={round(acc, 3)}{out_l}")
+                chain.append(f"{label}[{k}:v]xfade=transition={plan.get('join') or 'fade'}:duration={fade}:offset={round(acc, 3)}{out_l}")
                 label = out_l
             vgraph = ";".join(chain)
             quick = plan.get("quality") == "draft"
@@ -1678,6 +1695,8 @@ def brief(root, project_name: str = "") -> str:
               "`{\"list\": {\"title\": \"Hari ini\", \"items\": [\"Standup 09:00\", \"Retro 16:00\"], \"from\": \"right\"}}` (rows that slide in one after another, 2 to 6 of up to 50 characters, from `right` (default) or `left`; the title is optional), `{\"flow\": {\"title\": \"Dari kod ke pengguna\", \"steps\": [\"Kod\", \"Binaan\", \"Ujian\", \"Keluaran\"]}}` (a pipeline: 2 to 5 boxes of up to 18 characters joined by arrows that light up one after another; the title is optional) and "
               "`{\"versus\": {\"title\": \"Sebelum dan selepas\", \"before\": {\"label\": \"Cara lama\", \"items\": [\"Uji manual\"]}, \"after\": {\"label\": \"Kini\", \"items\": [\"Ujian automatik\"]}}}` (a before panel with red crosses, then an after panel with green ticks while the before dims; 1 to 4 items of up to 30 characters each side, labels up to 20; use it to show a change). "
               "They work in every look, take only `hold`, and can be dropped to fit `max_seconds` like any clip.",
+              "- `join`: how scenes are joined, one of `cut` (hard cut, even in a look that crossfades), `fade`, `slide` (the next scene slides in from the right), `slideup`, `wipe`, `circle` (a circle opens), `zoom`, `blur`, `pixel`, `dip` (through black). Left out, the look decides. A join overlaps the two scenes for 0.45 s, so it cannot be used with `music.sync` or a `bpm` (those need hard cuts). It works between pictures, clips and cards alike.",
+              "- `background`: a quiet pattern behind every drawn card instead of the flat colour, one of `gradient` (a diagonal drift towards a tint of the accent), `grid` (faint lines) or `glow` (a soft pool of light in the middle). Applies to text, explainer, title and end cards; left out is flat.",
               "- `captions`: true draws each clip's caption on screen; `title_card` / `end_card`: `{text, subtitle?, hold?}`.",
               "- `music`: `{file, start?, fade_out?, sync?}` or null. `\"sync\": \"beat\"` finds the song's beat, makes every piece a whole number of beats long and starts the song on a beat, so every cut lands on one (hard cuts; the plan reports the BPM, or warns when the song has no steady beat). Use only royalty-free music; a commercial song gets a posted video muted or blocked.",
               "- `music: {\"bpm\": 75}` (no file) cuts to that tempo with NO audio: every piece is a whole number of beats from the first frame, so a song added later in the app (a trending sound that cannot be downloaded) lines up if it is started on a beat. Use it when the song's BPM is known and its file is not.",

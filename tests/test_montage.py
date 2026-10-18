@@ -2391,6 +2391,148 @@ class ExplainerCards(Fixtures):
 
 
 @NEED
+class JoinBetweenScenes(Fixtures):
+    """`join`: how scenes are joined. An overlap like a crossfade, with any of ffmpeg's xfade transitions; the renderer still works out every time."""
+
+    def setUp(self):
+        super().setUp()
+        self.add("land.jpg", "port.jpg")
+        self.clips = [{"media": "land.jpg", "hold": 2, "move": "still"}, {"media": "port.jpg", "hold": 2, "move": "still"}, {"quote": "Tiga", "hold": 2}]
+
+    def plan(self, tpl="punchy", **kw):
+        return montage.plan_for(recipe(self.clips, template=tpl, captions=False, **kw), self.root)
+
+    # ---------------------------------------------------------------- the recipe
+    def test_a_wrong_join_is_refused_and_every_known_one_is_accepted(self):
+        with self.assertRaises(montage.RecipeError) as ctx:
+            self.plan(join="spin")
+        self.assertIn("join", str(ctx.exception))
+        for name in montage.JOINS:
+            with self.subTest(join=name):
+                self.assertEqual(montage.plan_for(recipe(self.clips, template="punchy", join=name), self.root)["join"], montage.JOINS[name], "the plan carries the transition ffmpeg will use")
+
+    def test_a_join_cannot_be_combined_with_cutting_to_a_beat_or_a_tempo(self):
+        for music in ({"bpm": 100}, {"bpm": 100, "sync": "beat"}):
+            with self.subTest(music=music):
+                with self.assertRaises(montage.RecipeError) as ctx:
+                    self.plan(join="slide", music=music)
+                self.assertIn("cannot be combined with cutting to the beat", str(ctx.exception))
+        self.assertIsNone(self.plan(join="cut", music={"bpm": 100})["join"], "a hard cut is fine on the beat")
+
+    # ---------------------------------------------------------------- the plan
+    def test_a_join_overlaps_the_scenes_by_its_time_and_the_total_shortens_by_exactly_that(self):
+        plain, slid = self.plan(), self.plan(join="slide")
+        self.assertEqual((plain["fade"], plain["join"]), (0.0, None), "punchy is hard cuts")
+        self.assertEqual((slid["fade"], slid["join"]), (montage.JOIN_TIME, "slideleft"))
+        self.assertAlmostEqual(plain["total"] - slid["total"], 2 * montage.JOIN_TIME, places=2, msg="three pieces, two joins")
+
+    def test_cut_removes_the_crossfade_a_look_would_have_had_and_unset_leaves_the_look_alone(self):
+        clean = self.plan("clean")
+        self.assertGreater(clean["fade"], 0)
+        self.assertEqual((self.plan("clean", join="cut")["fade"], self.plan("clean", join="cut")["join"]), (0.0, None))
+        self.assertEqual(self.plan("clean", join="fade")["fade"], montage.JOIN_TIME, "a named join sets its own time, not the look's")
+        self.assertIsNone(clean["join"], "unset: the look's own plain crossfade")
+
+    def test_a_cut_sound_lands_in_the_middle_of_a_join(self):
+        p = self.plan(join="wipe", sfx={"cuts": "whoosh"})
+        cuts = [e["t"] for e in p["sfx"]["events"] if e["kind"] == "cut"]
+        self.assertEqual(cuts, [round(s["start"] + montage.JOIN_TIME / 2, 3) for s in p["segments"][1:]])
+
+    # ---------------------------------------------------------------- what it does
+    def test_every_join_renders_a_video_as_long_as_the_plan_says(self):
+        for name in montage.JOINS:
+            with self.subTest(join=name):
+                for f in self.root.joinpath("exports").glob("*"):
+                    f.unlink()
+                rec = recipe(self.clips, template="punchy", captions=False, join=name, quality="draft")
+                job, out = self.render(rec)
+                self.assertEqual(job["state"], "done", f"{name}: {job['error']}")
+                self.assertAlmostEqual(stats(out)["dur"], montage.plan_for(rec, self.root)["total"], delta=0.2)
+
+    def test_in_the_middle_of_a_join_the_frame_is_neither_scene_and_in_a_cut_it_is_one_of_them(self):
+        w, h = 216, 384
+        diff = lambda a, b: sum(abs(x - y) for x, y in zip(a, b)) / len(a)
+        mids = {}
+        for name, mixed in (("slide", True), ("cut", False), ("circle", True), ("fade", True)):
+            with self.subTest(join=name):
+                for f in self.root.joinpath("exports").glob("*"):
+                    f.unlink()
+                rec = recipe(self.clips, template="punchy", captions=False, join=name)
+                job, out = self.render(rec)
+                self.assertEqual(job["state"], "done", job["error"])
+                plan = montage.plan_for(rec, self.root)
+                second = plan["segments"][1]["start"]
+                a, b = frame(out, second - 0.3, w, h), frame(out, second + plan["fade"] + 0.3, w, h)
+                mid = mids[name] = frame(out, second + max(plan["fade"], 0.05) * 0.5, w, h)
+                apart = diff(a, b)
+                self.assertGreater(apart, 8, "the two scenes really differ")
+                if mixed:
+                    self.assertGreater(diff(mid, a), 3, "it is no longer the first scene")
+                    self.assertGreater(diff(mid, b), 3, "and not yet the second")
+                else:
+                    self.assertLess(min(diff(mid, a), diff(mid, b)), 4, "a hard cut shows one scene or the other")
+        for x, y in (("slide", "fade"), ("circle", "fade"), ("slide", "circle")):
+            self.assertGreater(diff(mids[x], mids[y]), 6, f"{x} and {y} are different transitions: the name is what ffmpeg is told")
+
+
+@NEED
+class BackgroundBehindCards(Fixtures):
+    """`background`: a quiet gradient, grid or glow under the card text. Measured on the first frame, before any text has arrived."""
+    W, H = 216, 384
+
+    def setUp(self):
+        super().setUp()
+        self.add("land.jpg")
+
+    def first_frame(self, clip, background=None, **kw):
+        for f in self.root.joinpath("exports").glob("*"):
+            f.unlink()
+        extra = {"background": background} if background else {}
+        job, out = self.render(recipe([clip], template="kinetic", captions=False, **extra, **kw))
+        self.assertEqual(job["state"], "done", job["error"])
+        return frame(out, 0.02, self.W, self.H)
+
+    def px(self, d, x, y):
+        i = (y * self.W + x) * 3
+        return tuple(d[i:i + 3])
+
+    def test_a_wrong_background_is_refused_and_each_known_one_is_accepted(self):
+        with self.assertRaises(montage.RecipeError) as ctx:
+            montage.plan_for(recipe([{"quote": "Hi", "hold": 2}], template="kinetic", background="stripes"), self.root)
+        self.assertIn("background", str(ctx.exception))
+        for name in ("gradient", "grid", "glow"):
+            self.assertEqual(montage.plan_for(recipe([{"quote": "Hi", "hold": 2}], template="kinetic", background=name), self.root)["background"], name)
+
+    def test_without_a_background_the_card_is_one_flat_colour(self):
+        d = self.first_frame({"quote": "x", "hold": 2})
+        self.assertEqual(self.px(d, 3, 3), self.px(d, self.W - 4, self.H - 4))
+
+    def test_a_gradient_changes_from_corner_to_corner_on_the_text_cards_and_the_explainer_cards(self):
+        for clip in ({"quote": "x", "hold": 2}, {"checklist": {"title": "T", "items": ["a", "b"]}}):
+            with self.subTest(clip=list(clip)[0]):
+                d = self.first_frame(clip, "gradient")
+                a, b = self.px(d, 3, 3), self.px(d, self.W - 4, self.H - 4)
+                self.assertGreater(sum(abs(x - y) for x, y in zip(a, b)), 12, "the two corners are different colours")
+
+    def test_a_glow_is_brighter_in_the_middle_than_at_the_edge(self):
+        d = self.first_frame({"quote": "x", "hold": 2}, "glow")
+        mid, edge = self.px(d, 6, int(self.H * 0.45)), self.px(d, 3, self.H - 4)
+        self.assertGreater(sum(mid) - sum(edge), 20)
+
+    def test_a_grid_draws_lines_and_leaves_the_cells_flat(self):
+        d = self.first_frame({"quote": "x", "hold": 2}, "grid")
+        row = [self.px(d, x, 40) for x in range(self.W)]
+        self.assertGreater(len(set(row)), 1, "there are lines")
+        self.assertGreater(row.count(max(set(row), key=row.count)), self.W * 0.75, "mostly flat between them")
+
+    def test_the_title_and_end_cards_take_the_background_too(self):
+        job, out = self.render(recipe([{"media": "land.jpg", "hold": 2}], template="kinetic", background="gradient", title_card={"text": "Hi"}))
+        self.assertEqual(job["state"], "done", job["error"])
+        d = frame(out, 0.02, self.W, self.H)
+        self.assertGreater(sum(abs(x - y) for x, y in zip(self.px(d, 3, 3), self.px(d, self.W - 4, self.H - 4))), 12)
+
+
+@NEED
 class ThreeD(Fixtures):
     """The card flip between pieces (not into the first piece, not out of the last) and the swaying card look: measured on a bright square, since both turn the picture about its vertical axis."""
 
