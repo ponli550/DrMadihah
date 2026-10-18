@@ -780,6 +780,60 @@ function createMontage(opts) {
   function el(tag, props, ...kids) {
     const e = document.createElement(tag); Object.assign(e, props || {}); kids.forEach(k => e.append(k)); return e;
   }
+
+  // ---- cards: pieces with no picture. They sit in the same ordered list as the pictures (as the token "card:<n>"), so ticking, reordering,
+  // Preview, Make and Save treat them like any other piece. Each field is kept as the text typed; the server's own checks say what is wrong.
+  const isCard = r => typeof r === "string" && r.startsWith("card:");
+  let cards = {}, cardSeq = 0;
+  const lines = t => String(t || "").split("\n").map(x => x.trim()).filter(Boolean);
+  const nonEmpty = o => { Object.keys(o).forEach(k => { if (o[k] === "" || o[k] === undefined) delete o[k]; }); return o; };
+  const num = t => (String(t).trim() === "" ? undefined : Number(t));
+  const CARD_KINDS = {
+    quote: {label: "Quote", icon: "❝", help: "A big quotation, with who said it.",
+      fields: [{k: "quote", label: "Quote", type: "textarea", rows: 3, max: 160}, {k: "by", label: "Who said it (optional)", max: 60}],
+      toClip: v => nonEmpty({quote: v.quote.trim(), by: v.by.trim()}), fromClip: c => ({quote: c.quote, by: c.by || ""}), shows: v => v.quote},
+    announce: {label: "Announcement", icon: "📣", help: "A title with the date, time, place and a note.",
+      fields: [{k: "title", label: "Title", max: 80}, {k: "date", label: "Date (optional)", max: 60}, {k: "time", label: "Time (optional)", max: 60},
+               {k: "place", label: "Place (optional)", max: 60}, {k: "note", label: "Note (optional)", max: 60}],
+      toClip: v => ({announce: nonEmpty({title: v.title.trim(), date: v.date.trim(), time: v.time.trim(), place: v.place.trim(), note: v.note.trim()})}),
+      fromClip: c => Object.assign({title: "", date: "", time: "", place: "", note: ""}, c.announce), shows: v => v.title},
+    countdown: {label: "Countdown", icon: "⏱", help: "3, 2, 1 in equal shares of the piece.",
+      fields: [{k: "n", label: "Counts down from", type: "select", options: [["2", "2"], ["3", "3"], ["4", "4"], ["5", "5"]]}],
+      toClip: v => ({countdown: Number(v.n)}), fromClip: c => ({n: String(c.countdown)}), shows: v => v.n + ", " + (v.n - 1) + " … 1"},
+    checklist: {label: "Checklist", icon: "✅", help: "Items arrive one after another, each ticked.",
+      fields: [{k: "title", label: "Title", max: 80}, {k: "items", label: "Items (one a line, 2 to 6)", type: "textarea", rows: 4}],
+      toClip: v => ({checklist: {title: v.title.trim(), items: lines(v.items)}}),
+      fromClip: c => ({title: c.checklist.title || "", items: (c.checklist.items || []).join("\n")}), shows: v => v.title},
+    progress: {label: "Progress", icon: "📈", help: "A number counts up while a bar fills.",
+      fields: [{k: "label", label: "Label", max: 40}, {k: "from", label: "From", mode: "decimal"}, {k: "to", label: "To", mode: "decimal"},
+               {k: "unit", label: "Unit", type: "select", options: [["%", "Percent (%)"], ["", "None"]]}],
+      toClip: v => ({progress: nonEmpty({label: v.label.trim(), from: num(v.from), to: num(v.to), unit: v.unit})}),
+      fromClip: c => ({label: c.progress.label || "", from: c.progress.from === undefined ? "0" : String(c.progress.from), to: c.progress.to === undefined ? "" : String(c.progress.to), unit: c.progress.unit || ""}),
+      shows: v => v.label + " → " + v.to + v.unit},
+    typing: {label: "Typing window", icon: "⌨", help: "A code window in which text types itself.",
+      fields: [{k: "title", label: "Window title (optional), e.g. sprint.ts", max: 30}, {k: "text", label: "Text (up to 8 lines of 44 characters)", type: "textarea", rows: 5, mono: true}],
+      toClip: v => ({typing: nonEmpty({title: v.title.trim(), text: v.text.replace(/\s+$/, "")})}),
+      fromClip: c => ({title: c.typing.title || "", text: c.typing.text || ""}), shows: v => v.title || v.text.split("\n")[0]},
+    list: {label: "Sliding list", icon: "📋", help: "Rows slide in one after another.",
+      fields: [{k: "title", label: "Title (optional)", max: 80}, {k: "items", label: "Rows (one a line, 2 to 6)", type: "textarea", rows: 4},
+               {k: "from", label: "Slides in from", type: "select", options: [["right", "The right"], ["left", "The left"]]}],
+      toClip: v => ({list: nonEmpty({title: v.title.trim(), items: lines(v.items), from: v.from})}),
+      fromClip: c => ({title: c.list.title || "", items: (c.list.items || []).join("\n"), from: c.list.from || "right"}), shows: v => v.title || lines(v.items)[0] || ""},
+  };
+  const cardKindOf = clip => Object.keys(CARD_KINDS).find(k => clip && clip[k] !== undefined);
+  function blankCard(kind) {
+    const v = {};
+    CARD_KINDS[kind].fields.forEach(f => { v[f.k] = f.type === "select" ? f.options[0][0] : ""; });
+    if (kind === "countdown") v.n = "3";
+    if (kind === "progress") { v.from = "0"; v.unit = "%"; }
+    return v;
+  }
+  function addCardToken(kind, value, open) {
+    const token = "card:" + (++cardSeq);
+    cards[token] = {kind, value: value || blankCard(kind), open: !!open};
+    return token;
+  }
+  const cardClip = token => CARD_KINDS[cards[token].kind].toClip(cards[token].value);
   async function call(method, path, body) {
     const r = await fetch(BASE + path, {method, headers: method === "GET" ? undefined : HEADERS, body});
     let d = {}; try { d = await r.json(); } catch (e) {}
@@ -791,9 +845,9 @@ function createMontage(opts) {
     if (opts.downloader) opts.downloader.watch(st.exports);
     const refs = st.catalog.filter(i => i.kind !== "audio").map(i => i.ref);
     const known = new Set(order);
-    order = order.filter(r => refs.includes(r)).concat(refs.filter(r => !known.has(r)));
+    order = order.filter(r => isCard(r) || refs.includes(r)).concat(refs.filter(r => !known.has(r)));            // a card is not in the catalog: keep it
     refs.forEach(r => { if (!known.has(r)) picked.add(r); });
-    Array.from(picked).forEach(r => { if (!refs.includes(r)) picked.delete(r); });
+    Array.from(picked).forEach(r => { if (!isCard(r) && !refs.includes(r)) picked.delete(r); });
   }
   function syncForm() {
     if (!ctl) return;
@@ -803,7 +857,7 @@ function createMontage(opts) {
   function buildRecipe() {
     syncForm();
     const rec = {kind: "montage", title: form.title.trim() || opts.name || "Montage", format: form.format, template: form.template,
-                 captions: form.captions, max_seconds: Number(form.max), clips: order.filter(r => picked.has(r)).map(r => ({media: r}))};
+                 captions: form.captions, max_seconds: Number(form.max), clips: order.filter(r => picked.has(r)).map(r => isCard(r) ? cardClip(r) : {media: r})};
     if (form.title.trim()) rec.title_card = {text: form.title.trim()};
     if (form.speech) rec.speech = "follow";
     if (form.sound) rec.clip_sound = "speech";
@@ -817,9 +871,15 @@ function createMontage(opts) {
     return rec;
   }
   function useRecipe(rec) {
-    const byRef = m => st.catalog.find(i => i.ref === m || i.name === m || (m.length >= 8 && i.ref.startsWith(m.slice(0, 12))));
-    const used = (rec.clips || []).map(c => byRef(c.media)).filter(Boolean).map(i => i.ref);
-    order = used.concat(order.filter(r => !used.includes(r)));
+    const byRef = m => typeof m === "string" ? st.catalog.find(i => i.ref === m || i.name === m || (m.length >= 8 && i.ref.startsWith(m.slice(0, 12)))) : undefined;
+    cards = {};                                                                  // the recipe's cards replace the ones on the page
+    const used = [];
+    (rec.clips || []).forEach(c => {
+      const kind = cardKindOf(c);
+      if (kind) used.push(addCardToken(kind, CARD_KINDS[kind].fromClip(c), false));
+      else { const it = byRef(c.media); if (it) used.push(it.ref); }
+    });
+    order = used.concat(order.filter(r => !isCard(r) && !used.includes(r)));
     picked = new Set(used);
     form = {format: rec.format || "reels", template: rec.template || "slowmo", title: rec.title_card ? rec.title_card.text : "",
             captions: rec.captions !== false, music: rec.music && rec.music.file ? rec.music.file : "", bpm: rec.music && rec.music.bpm ? String(rec.music.bpm) : "", sync: !!(rec.music && rec.music.sync === "beat"), speech: rec.speech === "follow", sound: rec.clip_sound === "speech", tighten: rec.tighten === "gaps", transition: rec.transition || "", effect: rec.effect || "", depth: rec.depth === "card", fxcuts: rec.sfx && rec.sfx.cuts || "", fxwords: !!(rec.sfx && rec.sfx.words), max: String(rec.max_seconds || 30)};
@@ -839,10 +899,57 @@ function createMontage(opts) {
     [order[i], order[j]] = [order[j], order[i]];
     renderList();
   }
+  // A card's row: tick, icon, kind and what it says; arrows; and a fold with its fields (a new card opens it).
+  function cardRow(token) {
+    const card = cards[token], spec = CARD_KINDS[card.kind];
+    const check = el("input", {type: "checkbox", checked: picked.has(token)});
+    check.setAttribute("data-ctl", "pick");
+    rows.push({ref: token, check});
+    const says = el("span", {className: "dim"}, "");
+    const showSays = () => { const t = String(spec.shows(card.value) || "").trim(); says.textContent = t ? " · " + (t.length > 40 ? t.slice(0, 40) + "…" : t) : " · empty"; };
+    showSays();
+    const up = el("button", {type: "button", className: "mv", title: "Move earlier"}, "↑");
+    const down = el("button", {type: "button", className: "mv", title: "Move later"}, "↓");
+    up.setAttribute("aria-label", "Move earlier"); down.setAttribute("aria-label", "Move later");
+    up.addEventListener("click", () => move(token, -1));
+    down.addEventListener("click", () => move(token, 1));
+    const toggle = el("button", {type: "button", className: "mv"}, card.open ? "Done" : "Edit");
+    toggle.setAttribute("data-ctl", "card-edit");
+    toggle.addEventListener("click", () => { syncForm(); card.open = !card.open; renderList(); });
+    const kids = [el("div", {className: "row"}, el("label", {className: "pickline"}, check, " " + spec.icon + " " + spec.label, says), el("span", {}, up, down)),
+                  el("div", {className: "cardbar"}, toggle)];
+    if (card.open) {
+      const box = el("div", {className: "cardbox"});
+      box.setAttribute("data-part", "card-editor");
+      box.append(el("div", {className: "dim hint"}, spec.help));
+      spec.fields.forEach(f => {
+        let input;
+        if (f.type === "select") { input = el("select", {}); f.options.forEach(([v, label]) => input.append(el("option", {value: v}, label))); input.value = card.value[f.k]; }
+        else if (f.type === "textarea") input = el("textarea", {rows: f.rows || 3, value: card.value[f.k], className: f.mono ? "mono" : ""});
+        else { input = el("input", {type: "text", maxLength: f.max || 80, value: card.value[f.k]}); if (f.mode) input.inputMode = f.mode; }
+        input.setAttribute("data-ctl", "cf-" + f.k);
+        const set = () => { card.value[f.k] = input.value; showSays(); };
+        input.addEventListener("input", set); input.addEventListener("change", set);
+        box.append(el("label", {className: "field"}, el("span", {className: "dim"}, f.label), input));
+      });
+      const remove = el("button", {type: "button", className: "danger"}, "Remove card");
+      remove.addEventListener("click", () => { syncForm(); delete cards[token]; order = order.filter(r => r !== token); picked.delete(token); renderList(); });
+      box.append(el("div", {className: "vfoot"}, remove));
+      kids.push(box);
+    }
+    return el("div", {className: "urow cardrow"}, ...kids);
+  }
+  function addCard() {
+    syncForm();
+    const token = addCardToken(ctl.cardKind.value, null, true);
+    order.push(token); picked.add(token);
+    renderList();
+  }
   function renderList() {
     rows = [];
     const byRef = {}; st.catalog.forEach(i => { byRef[i.ref] = i; });
     listBox.replaceChildren(...order.map((ref, idx) => {
+      if (isCard(ref)) return cardRow(ref);
       const i = byRef[ref];
       const check = el("input", {type: "checkbox", checked: picked.has(ref)});
       check.setAttribute("data-ctl", "pick");
@@ -1028,7 +1135,10 @@ function createMontage(opts) {
       bpm: el("input", {type: "text", inputMode: "decimal", maxLength: 6, autocomplete: "off", placeholder: "BPM, a number from 50 to 200", value: form.bpm}),
       cut: select([["", "Plain cuts"], ["zoom", "Zoom through (punch in, then settle)"], ["zoom_in", "Zoom in at the end of each piece"], ["zoom_out", "Settle in at the start of each piece"], ["flip", "3D card flip (best on hard cuts)"]], form.transition),
       max: select([["15", "up to 15 s"], ["30", "up to 30 s"], ["45", "up to 45 s"], ["60", "up to 60 s"], ["90", "up to 90 s"]], form.max),
+      cardKind: select(Object.entries(CARD_KINDS).map(([k, c]) => [k, c.icon + " " + c.label]), "quote"),
+      cardAdd: el("button", {type: "button", className: "alt"}, "Add card"),
     };
+    ctl.cardAdd.addEventListener("click", addCard);
     Object.keys(ctl).forEach(k => { if (ctl[k] && ctl[k].setAttribute) ctl[k].setAttribute("data-ctl", k); });     // controls are found by name (tests, and anything that styles them), not by position
     // a plain text box that keeps only digits and a dot: a number box lets "e" in, and then refuses everything typed after it
     ctl.bpm.addEventListener("input", () => { const v = ctl.bpm.value.replace(/[^0-9.]/g, ""); if (v !== ctl.bpm.value) ctl.bpm.value = v; });
@@ -1117,7 +1227,8 @@ function createMontage(opts) {
         field("Format", ctl.format), field("Look", ctl.template, lookHint), ctl.title,
         tick(ctl.captions, "Show captions on screen"),
         field("Music", ctl.music, el("div", {className: "dim hint"}, "Music: pick a song from this list (no typing). To add one, press “Add a song” at the top of the page."))),
-      group("Pictures and clips", el("div", {className: "dim hint"}, "Tick the ones to include. The arrows change the order."), listBox),
+      group("Pictures and clips", el("div", {className: "dim hint"}, "Tick the ones to include. The arrows change the order."), listBox,
+        el("div", {className: "addcard"}, field("Add a card (a quote, an announcement, a countdown or an explainer scene)", ctl.cardKind), ctl.cardAdd)),
       more, planBox,
       ...(saved.length ? [el("details", {className: "opts"}, el("summary", {}, "Saved recipes (" + saved.length + ")"), savedBox)] : []),
       bar, jobsBox));

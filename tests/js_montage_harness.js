@@ -163,6 +163,55 @@ const check = (i, v) => { pickBoxes()[i].checked = v; };
     [0, 1, 2].forEach(i => check(i, false));
     await press(button("Make video"));
     out.view = view();
+  } else if (scenario === "allcards" || scenario === "cardops") {
+    // type into a field the way a person does: the value changes, then the page hears an input event
+    const type = (name, v) => { const e = named("ctl", name).slice(-1)[0]; e.value = v; if (e._l.input) e._l.input(); if (e._l.change) e._l.change(); };
+    const nPictures = pickBoxes().length;                                                    // the pictures that were there before any card was added
+    const add = async kind => { const k = ctlOf("cardKind"); k.value = kind; if (k._l.change) await k._l.change(); await press(ctlOf("cardAdd")); };
+    if (scenario === "allcards") {
+      await add("quote"); type("cf-quote", "Belajar tanpa henti."); type("cf-by", "Dr Madihah");
+      await add("announce"); type("cf-title", "Hackathon CyberDSA"); type("cf-date", "12 Okt 2026"); type("cf-place", "Dewan A");
+      await add("countdown"); type("cf-n", "4");
+      await add("checklist"); type("cf-title", "Alat yang tepat"); type("cf-items", "Task Board\n  Version Control  \n\nFocus Timer\n");
+      await add("progress"); type("cf-label", "Produktiviti"); type("cf-from", "22"); type("cf-to", "100"); type("cf-unit", "%");
+      await add("typing"); type("cf-title", "sprint.ts"); type("cf-text", "const a = 1;\n  ship(a);\n");
+      await add("list"); type("cf-title", "Hari ini"); type("cf-items", "Standup 09:00\nRetro 16:00"); type("cf-from", "left");
+      pickBoxes().slice(0, nPictures).forEach(b => { b.checked = false; });                // leave out the pictures: only the cards
+    } else {
+      await add("quote"); type("cf-quote", "Satu");
+      await add("quote"); type("cf-quote", "Dua");
+      await add("quote"); type("cf-quote", "Tiga");
+      const rowsNow = () => view().rows.map(r => r.text);
+      out.before = rowsNow();
+      const downs = all(card(), n => n.tag === "button" && n.textContent === "↑");
+      await press(downs[downs.length - 1]);                                                  // "Tiga" moves above "Dua"
+      out.moved = view().card;
+      const removes = all(card(), n => n.tag === "button" && n.textContent === "Remove card");
+      await press(removes[0]);                                                               // one card is removed
+      out.afterRemove = view().card;
+      pickBoxes().slice(0, nPictures).forEach(b => { b.checked = false; });                  // only the cards are ticked
+      ctlOf("template").value = "punchy";
+    }
+    await press(button("Save recipe…"));
+    out.saved = view();
+  } else if (scenario === "cardsurvive") {
+    const k = ctlOf("cardKind"); k.value = "quote"; if (k._l.change) await k._l.change(); await press(ctlOf("cardAdd"));
+    const q = named("ctl", "cf-quote").slice(-1)[0]; q.value = "Tahan uji"; if (q._l.input) q._l.input();
+    out.before = view().rows.map(r => r.text);
+    await press(button("Quick draft (half size, fast)"));                                    // making a video reloads the page's data from the server
+    const t0 = Date.now();
+    while (Date.now() - t0 < 120000) { const v = view(); if (v.video) break; await sleep(150); }
+    await sleep(400);
+    out.video = !!view().video;
+    await press(ctlOf("cardAdd"));                                                          // the next edit redraws the list from the reloaded data
+    out.after = view().rows.map(r => r.text);
+  } else if (scenario === "usecards") {
+    const use = all(card(), n => n.tag === "button" && n.textContent === "Use")[0];
+    await press(use);
+    out.used = view();
+    out.editors = all(card(), n => n.attrs && n.attrs["data-part"] === "card-editor").length;
+    await press(all(card(), n => n.tag === "button" && n.textContent === "Preview plan")[0]);
+    out.plan = view().plan;
   } else if (scenario === "save") {
     ctlOf("template").value = "melancholy";
     await press(button("Save recipe…"));

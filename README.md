@@ -731,6 +731,13 @@ element one job and one level, make the primary action look primary, fewer choic
   what is switched on, so closed it hides nothing. **Make video** and **Preview plan** sit in a bar that stays at the bottom of the screen
   while you edit (and settles into place when you scroll past it); the other actions (Quick draft, Save recipe, Copy brief) are behind **⋯**.
 - *The library* draws a card only for folders that hold something; empty folders are one line at the end.
+- *Cards in the Make a video card*: under the pictures, **Add a card** takes a kind (quote, announcement, countdown, checklist, progress, typing
+  window, sliding list) and adds it as a row in the same list, so it is ticked, reordered with the arrows, edited in place (a new card opens its
+  fields; **Done** folds them) and removed (**Remove card**) like a picture is left out. The fields are plain labelled boxes, one set per kind, and
+  what the page builds is exactly the clip a recipe would hold (empty optional fields are left out, items are one a line with blanks and spaces
+  trimmed, code keeps its indentation); the server's own checks say what is wrong in Preview. Cards go through Preview, Make, Quick draft, Save
+  recipe and **Use** (a saved recipe with cards loads its cards back in order; before, **Use** crashed on any clip without a picture, such as a
+  quote). Not in the page: a card's `hold` (the renderer works the length out; write `hold` in a recipe to set it).
 - *Tests find the page's controls by name* (`data-ctl="template"`, `data-part="plan"`), never by position, so the layout can change without
   breaking them; every form control has a label a screen reader can read.
 - *Finished videos* are one card each: the video's first-frame picture, its name with the tick for "check this one", its details (length,
