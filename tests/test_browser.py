@@ -114,6 +114,8 @@ class RealPage(unittest.TestCase):
         "progress": {"cf-label": "Produktiviti", "cf-to": "100"},
         "typing": {"cf-title": "sprint.ts", "cf-text": "const a = 1;"},
         "list": {"cf-title": "Hari ini", "cf-items": "Standup 09:00\nRetro 16:00"},
+        "flow": {"cf-title": "Dari kod ke pengguna", "cf-steps": "Kod\nBinaan\nUjian"},
+        "versus": {"cf-title": "Sebelum dan selepas", "cf-blabel": "Cara lama", "cf-bitems": "Uji manual", "cf-alabel": "Kini", "cf-aitems": "Ujian automatik"},
     }
 
     def add_card(self, kind):
@@ -129,18 +131,20 @@ class RealPage(unittest.TestCase):
                            "const d = Array.from(document.querySelectorAll('#montage [data-ctl=card-edit]')).find(x => x.textContent === 'Edit'); if (d) { d.click(); return true; } return false; })()"):
                 break
 
-    def test_all_seven_kinds_of_card_can_be_added_and_the_server_plans_every_one(self):
+    def test_every_kind_of_card_can_be_added_and_the_server_plans_every_one(self):
         try:
             for kind in self.CARD_FIELDS:
                 self.add_card(kind)
+            self.ev("(() => { const m = document.querySelector('#montage [data-ctl=max]'); m.value = '90'; m.dispatchEvent(new Event('change', {bubbles: true})); })()")   # nine cards are more than 30 s
             self.ev("Array.from(document.querySelectorAll('#montage button')).find(b => b.textContent === 'Preview plan').click()")
             end = time.time() + 20
-            while time.time() < end and "list card" not in (self.ev("document.querySelector('#montage [data-part=plan]').innerText") or ""):
+            while time.time() < end and "versus card" not in (self.ev("document.querySelector('#montage [data-part=plan]').innerText") or ""):
                 time.sleep(0.3)
             plan = self.ev("document.querySelector('#montage [data-part=plan]').innerText")
             for kind in self.CARD_FIELDS:
                 self.assertIn(f"{kind} card:", plan, plan)
         finally:
+            self.ev("(() => { const m = document.querySelector('#montage [data-ctl=max]'); m.value = '30'; m.dispatchEvent(new Event('change', {bubbles: true})); })()")
             self.remove_all_cards()
 
     def test_every_card_field_has_a_label_and_is_big_enough_to_tap(self):

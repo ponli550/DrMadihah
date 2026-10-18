@@ -6,7 +6,9 @@ for the scenes of an animated explainer that a text card cannot do:
   * checklist   a title, then items arriving one after another, each followed by a tick;
   * progress    a label, a number that counts up and a bar that fills as it does;
   * typing      a code-editor window (traffic-light dots, a title bar) in which text types itself;
-  * list        rows that slide in from the side one after another: meeting invites, notifications.
+  * list        rows that slide in from the side one after another: meeting invites, notifications;
+  * flow        2 to 5 steps as boxes joined by arrows that light up one after another: a pipeline;
+  * versus      a "before" panel (red crosses) and an "after" panel (green ticks): the before dims when the after arrives.
 
 As everywhere in the montage, the recipe says WHAT to show and the renderer works out every time: when each item arrives follows from how
 many there are and how long the piece is, the count is eased and sampled, and nothing here is a number the recipe has to compute.
@@ -15,7 +17,7 @@ from __future__ import annotations
 
 from . import kinetic, textcards, textimg
 
-KINDS = ("checklist", "progress", "typing", "list")
+KINDS = ("checklist", "progress", "typing", "list", "flow", "versus")
 MAX_ITEMS = 6
 ITEM_STEP = 0.6                    # seconds from one item to the next (less when the piece is short)
 FIRST_ITEM = 0.7                   # the title has landed by then
@@ -27,7 +29,12 @@ TYPE_START = 0.6
 MAX_LINES, MAX_LINE = 8, 44        # a code window: lines, and characters a line (so the type stays big enough to read on a phone)
 MONO = "Menlo-Regular"             # on every Mac; a character is 0.602 of the type size wide
 MONO_W = 0.602
-ALLOWED = {"checklist": {"title", "items"}, "progress": {"label", "to", "from", "unit"}, "typing": {"text", "title"}, "list": {"title", "items", "from"}}
+MAX_STEPS = 5
+RED, GREEN = "#ff5f56", "#27c93f"       # what is wrong and what is right keep their colours in every look (darkened as text on a light one)
+NBSP = "\u00a0"
+ALLOWED = {"checklist": {"title", "items"}, "progress": {"label", "to", "from", "unit"}, "typing": {"text", "title"}, "list": {"title", "items", "from"},
+           "flow": {"title", "steps"}, "versus": {"title", "before", "after"}}
+SIDE_ALLOWED = {"label", "items"}
 
 
 # ------------------------------------------------------------------ the recipe
@@ -39,7 +46,9 @@ def check(v, kind: str, w: str, problems: list) -> None:
     """Problems with the value of a `checklist` or `progress` clip, in the montage's own wording."""
     if not isinstance(v, dict):
         example = {"checklist": '{"title": "Tools", "items": ["Board", "Git"]}', "progress": '{"label": "Done", "to": 100, "unit": "%"}',
-                   "typing": '{"title": "sprint.ts", "text": "const x = 1;"}', "list": '{"title": "Hari ini", "items": ["Standup 09:00", "Retro 16:00"]}'}[kind]
+                   "typing": '{"title": "sprint.ts", "text": "const x = 1;"}', "list": '{"title": "Hari ini", "items": ["Standup 09:00", "Retro 16:00"]}',
+                   "flow": '{"steps": ["Kod", "Binaan", "Ujian", "Keluaran"]}',
+                   "versus": '{"before": {"label": "Dulu", "items": ["Manual"]}, "after": {"label": "Kini", "items": ["Automatik"]}}'}[kind]
         problems.append(f"{w}.{kind}: an object like {example}")
         return
     for k in sorted(set(v) - ALLOWED[kind]):
@@ -55,6 +64,33 @@ def check(v, kind: str, w: str, problems: list) -> None:
             problems.append(f"{w}.{kind}.items: each item is text of 1 to {longest} characters")
         if kind == "list" and v.get("from", "right") not in ("right", "left"):
             problems.append(f"{w}.list.from: right or left (the side the rows slide in from)")
+        return
+    if kind == "flow":
+        if "title" in v and (not isinstance(v["title"], str) or not v["title"].strip() or len(v["title"]) > 60):
+            problems.append(f"{w}.flow.title: text of 1 to 60 characters")
+        steps = v.get("steps")
+        if not isinstance(steps, list) or not 2 <= len(steps) <= MAX_STEPS:
+            problems.append(f"{w}.flow.steps: a list of 2 to {MAX_STEPS} steps")
+        elif any(not isinstance(x, str) or not x.strip() or len(x) > 18 for x in steps):
+            problems.append(f"{w}.flow.steps: each step is text of 1 to 18 characters (they sit in boxes)")
+        return
+    if kind == "versus":
+        if "title" in v and (not isinstance(v["title"], str) or not v["title"].strip() or len(v["title"]) > 60):
+            problems.append(f"{w}.versus.title: text of 1 to 60 characters")
+        for side in ("before", "after"):
+            part = v.get(side)
+            if not isinstance(part, dict):
+                problems.append(f"{w}.versus.{side}: an object like {{\"label\": \"Dulu\", \"items\": [\"Manual\"]}}")
+                continue
+            for k in sorted(set(part) - SIDE_ALLOWED):
+                problems.append(f"{w}.versus.{side}.{k}: unknown field (allowed: items, label)")
+            if not isinstance(part.get("label"), str) or not part["label"].strip() or len(part["label"]) > 20:
+                problems.append(f"{w}.versus.{side}.label: text of 1 to 20 characters")
+            its = part.get("items")
+            if not isinstance(its, list) or not 1 <= len(its) <= 4:
+                problems.append(f"{w}.versus.{side}.items: a list of 1 to 4 items")
+            elif any(not isinstance(x, str) or not x.strip() or len(x) > 30 for x in its):
+                problems.append(f"{w}.versus.{side}.items: each item is text of 1 to 30 characters")
         return
     if kind == "typing":
         text = v.get("text")
@@ -144,10 +180,39 @@ def line_starts(text: str) -> list:
     return out
 
 
+def flow_times(n: int, d: float) -> tuple:
+    """(when each of n boxes is drawn dim, when each lights up): the whole pipeline is seen first, then it runs, a second left to see it whole."""
+    drawn = [round(0.25 + 0.1 * k, 3) for k in range(n)]
+    first = round(0.25 + 0.1 * n + 0.35, 3)
+    step = min(0.7, max(0.3, (d - first - 1.0) / max(1, n)))
+    return drawn, [round(first + k * step, 3) for k in range(n)]
+
+
+def versus_times(nb: int, na: int, d: float) -> tuple:
+    """(arrival of each before item, arrival of each after item, when the before dims): the after begins a beat after the before is done."""
+    first, gap = 0.8, 0.6
+    step = min(0.55, max(0.25, (d - first - gap - 1.1) / max(1, nb + na)))
+    before = [round(first + k * step, 3) for k in range(nb)]
+    start_after = first + nb * step + gap
+    after = [round(start_after + k * step, 3) for k in range(na)]
+    return before, after, round(start_after - 0.3, 3)
+
+
 def segment(c: dict) -> dict:
     """The plan's segment for an explainer clip."""
     kind = c["_card"]
     v = c[kind]
+    if kind == "flow":
+        steps = [x.strip() for x in v["steps"]]
+        title = (v.get("title") or "").strip()
+        return {"kind": "flow", "text": title or " → ".join(steps), "title": title, "steps": steps,
+                "duration": float(c.get("hold", round(0.25 + 0.1 * len(steps) + 0.35 + 0.6 * len(steps) + 1.3, 2)))}
+    if kind == "versus":
+        side = lambda p: {"label": p["label"].strip(), "items": [x.strip() for x in p["items"]]}
+        before, after = side(v["before"]), side(v["after"])
+        title = (v.get("title") or "").strip()
+        return {"kind": "versus", "text": title or f"{before['label']} → {after['label']}", "title": title, "before": before, "after": after,
+                "duration": float(c.get("hold", round(0.8 + 0.55 * (len(before["items"]) + len(after["items"])) + 0.6 + 1.4, 2)))}
     if kind == "typing":
         code = v["text"].rstrip("\n")
         title = (v.get("title") or "").strip()
@@ -171,6 +236,11 @@ def events(seg: dict) -> list:
         return [round(t + TICK_DELAY, 3) for t in times(len(seg["items"]), d)]
     if seg["kind"] == "list":
         return times(len(seg["items"]), d)
+    if seg["kind"] == "flow":
+        return flow_times(len(seg["steps"]), d)[1]
+    if seg["kind"] == "versus":
+        b, a, _ = versus_times(len(seg["before"]["items"]), len(seg["after"]["items"]), d)
+        return b + a
     if seg["kind"] == "typing":
         start, T = type_window(d)
         n = max(1, len(seg["code"]))
@@ -265,6 +335,79 @@ def piece_commands(base, ffmpeg, plan, seg, i, workdir, out, encode, tpl):
             slide = f"{side}*W*pow(1-min(1,max(0,(t-{at:g})/0.5)),3)"          # eased: it arrives fast and settles
             parts.append(f"{cur}[r{j}]overlay=x='{slide}':y={y - pad}:format=auto{nxt}")
             cur = nxt
+    elif seg["kind"] == "flow":
+        n = len(seg["steps"])
+        if seg["title"]:
+            title, th = textcards._png(workdir, f"seg{i}-title", seg["title"], W, int(H * 0.13), pad, size=int(H * 0.05), font=textcards.SANS, color=ink,
+                                       valign="middle", shadow=shadow)
+            put(add(title), "ttl", 0.0, 0, f"{int(H * 0.15) - pad}+{textcards._lift(0.0, 0.5, lift)}", 0.35)
+            top = 0.3
+        else:
+            top = 0.22
+        pitch = int(min(H * 0.15, H * 0.62 / n))
+        chip_h = int(pitch * 0.6)
+        size = int(min(H * 0.05, chip_h * 0.6))
+        top = max(top, 0.5 - n * pitch / 2 / H + (0.04 if seg["title"] else 0.0))                      # the pipeline sits in the middle of the frame
+        width = max(len(x) for x in seg["steps"]) + 4
+        dim_plate, dim_text, dim_arrow = _mix(ink, bg, 0.16), _mix(ink, bg, 0.55), _mix(ink, bg, 0.35)
+        drawn, lit = flow_times(n, d)
+        for k, step in enumerate(seg["steps"]):
+            y = int(H * top) + k * pitch
+            label = step.strip().center(width, NBSP)                                        # every box the same width
+            if k:
+                arrow = lambda colour, name: textcards._png(workdir, f"seg{i}-{name}{k}", "↓", W, pitch - chip_h, pad, size=int((pitch - chip_h) * 0.8), font=textcards.SANS,
+                                                          color=colour, valign="middle", shadow=False)[0]
+                put(add(arrow(dim_arrow, "ad")), f"ad{k}", drawn[k], 0, f"{y - (pitch - chip_h) - pad}", 0.25)
+                put(add(arrow(acc_text, "aa")), f"aa{k}", lit[k] - 0.05, 0, f"{y - (pitch - chip_h) - pad}", 0.15)
+            dim_png, _ = textcards._png(workdir, f"seg{i}-d{k}", label, W, chip_h, pad, size=size, font=textcards.SANS, color=dim_text, valign="middle",
+                                        plate=True, plate_color=dim_plate, plate_alpha=1.0, shadow=False)
+            put(add(dim_png), f"dp{k}", drawn[k], 0, f"{y - pad}+{textcards._lift(drawn[k], 0.35, lift)}", 0.25)
+            lit_png, _ = textcards._png(workdir, f"seg{i}-l{k}", label, W, chip_h, pad, size=size, font=textcards.SANS, color=textcards.DARK, valign="middle",
+                                        plate=True, plate_color=accent, plate_alpha=1.0, shadow=False)
+            put(add(lit_png), f"lp{k}", lit[k], 0, f"{y - pad}", 0.15)
+    elif seg["kind"] == "versus":
+        nb, na = len(seg["before"]["items"]), len(seg["after"]["items"])
+        t_before, t_after, t_dim = versus_times(nb, na, d)
+        red, green = textcards.accent_text(RED, bg), textcards.accent_text(GREEN, bg)
+        row = int(H * 0.075)
+        margin = int(W * 0.1)
+        longest = max(len(x) for x in seg["before"]["items"] + seg["after"]["items"])
+        avail = W - 2 * (margin + int(H * 0.032 * 1.3))                                    # what the text may fill: the same margin is kept on both sides
+        size = int(max(H * 0.026, min(H * 0.032, avail / (longest * 0.55))))               # sized to the longest item so a row stays one line where it can
+        mark_w = int(size * 1.3)
+        if seg["title"]:
+            title, th = textcards._png(workdir, f"seg{i}-title", seg["title"], W, int(H * 0.12), pad, size=int(H * 0.045), font=textcards.SANS, color=ink,
+                                       valign="middle", shadow=shadow)
+            put(add(title), "ttl", 0.0, 0, f"{int(H * 0.11) - pad}+{textcards._lift(0.0, 0.5, lift)}", 0.35)
+        block = (nb + na + 3.4) * row + int(H * 0.03)                                                    # both panels, one above the other, centred in the frame
+        before_top = max(0.2, 0.5 - block / 2 / H + (0.03 if seg["title"] else 0.0))
+        after_top = before_top + ((nb + 1.7) * row + int(H * 0.03)) / H
+        panels = [("before", "✗", red, before_top, t_before, -1), ("after", "✓", green, after_top, t_after, 1)]
+        for name, mark, colour, top, arrivals, side in panels:
+            part = seg[name]
+            head, _ = textcards._png(workdir, f"seg{i}-{name}-h", f"{mark}{NBSP}{NBSP}{part['label']}", W, int(row * 1.1), margin, size=int(size * 1.35), font=textcards.SANS,
+                                     color=colour, align="left", valign="middle", shadow=shadow)
+            hat = arrivals[0] - 0.35 if name == "before" else t_dim
+            put(add(head), f"{name}h", max(0.1, hat), 0, f"{int(H * top) - margin}", 0.3)
+            for j, (item, at) in enumerate(zip(part["items"], arrivals)):
+                y = int(H * top) + int(row * 1.15) + j * row
+                text_pad = margin + mark_w
+                png, _ = textcards._png(workdir, f"seg{i}-{name}-i{j}", item, W, row, text_pad, size=size, font=textcards.SANS, color=ink, align="left", valign="middle", shadow=shadow)
+                idx = add(png)
+                parts.append(f"[{idx}:v]format=rgba[{name}r{j}]")
+                nxt = f"[c{len(parts)}]"
+                parts.append(f"{cur}[{name}r{j}]overlay=x='{side}*W*pow(1-min(1,max(0,(t-{at:g})/0.45)),3)':y={y - text_pad}:format=auto{nxt}")
+                cur = nxt
+                mk, _ = textcards._png(workdir, f"seg{i}-{name}-m{j}", mark, W, row, margin, size=int(size * 1.15), font=textcards.SANS, color=colour, align="left", valign="middle", shadow=shadow)
+                put(add(mk), f"{name}m{j}", at + 0.25, 0, f"{y - margin}", 0.15)
+        # when the after arrives the before steps back: a veil of the background colour over its panel
+        veil_h = int((after_top - before_top) * H + row * 0.1)
+        inputs.extend(["-f", "lavfi", "-i", f"color=c={bg}:s={W}x{veil_h}:r={fps}:d={d}"])
+        n_in += 1
+        parts.append(f"[{n_in - 1}:v]format=rgba,colorchannelmixer=aa=0.62,fade=t=in:st={t_dim:g}:d=0.4:alpha=1[veil]")
+        nxt = f"[c{len(parts)}]"
+        parts.append(f"{cur}[veil]overlay=0:{int(H * before_top) - int(row * 0.2)}:format=auto{nxt}")
+        cur = nxt
     elif seg["kind"] == "typing":
         code = seg["code"]
         lines_ = code.split("\n")

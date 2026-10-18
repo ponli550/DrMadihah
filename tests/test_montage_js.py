@@ -125,9 +125,11 @@ class Card(unittest.TestCase):
             {"progress": {"label": "Produktiviti", "from": 22, "to": 100, "unit": "%"}},
             {"typing": {"title": "sprint.ts", "text": "const a = 1;\n  ship(a);"}},
             {"list": {"title": "Hari ini", "items": ["Standup 09:00", "Retro 16:00"], "from": "left"}},
+            {"flow": {"title": "Dari kod ke pengguna", "steps": ["Kod", "Binaan", "Ujian", "Keluaran"]}},
+            {"versus": {"title": "Sebelum dan selepas", "before": {"label": "Cara lama", "items": ["Uji manual", "Ralat manusia"]}, "after": {"label": "Kini", "items": ["Ujian automatik"]}}},
         ])
         plan = montage.plan_for(self.saved(out), self.root)
-        self.assertEqual([s["kind"] for s in plan["segments"]], ["quote", "announce", "countdown", "checklist", "progress", "typing", "list"],
+        self.assertEqual([s["kind"] for s in plan["segments"]], ["quote", "announce", "countdown", "checklist", "progress", "typing", "list", "flow", "versus"],
                          "the server accepts exactly what the page built")
 
     def test_empty_optional_fields_are_left_out_and_blank_lines_and_spaces_are_cleaned(self):
@@ -151,7 +153,7 @@ class Card(unittest.TestCase):
     def test_a_cards_row_says_what_it_shows(self):
         out = self.run_js("allcards")
         card = out["saved"]["card"]
-        for says in ("Belajar tanpa henti.", "Hackathon CyberDSA", "Alat yang tepat", "Produktiviti", "sprint.ts", "Hari ini"):
+        for says in ("Belajar tanpa henti.", "Hackathon CyberDSA", "Alat yang tepat", "Produktiviti", "sprint.ts", "Hari ini", "Dari kod ke pengguna", "Sebelum dan selepas"):
             self.assertIn(says, card)
 
     def test_a_saved_recipe_with_cards_loads_back_and_a_clip_without_media_no_longer_breaks_Use(self):

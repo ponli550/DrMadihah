@@ -2331,9 +2331,55 @@ class ExplainerCards(Fixtures):
                 counts = [self.pixels(frame(out, t + 0.55, w, h), w, h, (0.0, 0.26, 1.0, 0.9), near) for t in at]     # row k is in, row k+1 (0.6 s later) is not yet
                 self.assertEqual(counts, sorted(set(counts)), f"each row arrives after the one before: {counts}")
 
+    def test_flow_and_versus_are_in_the_plan_with_their_tick_sounds(self):
+        p = montage.plan_for(self.rec({"flow": {"title": "Dari kod", "steps": ["Kod", "Binaan", "Ujian", "Keluaran"]}}, sfx={"words": "tick"}), self.root)
+        seg = p["segments"][0]
+        self.assertEqual((seg["kind"], seg["text"], seg["steps"]), ("flow", "Dari kod", ["Kod", "Binaan", "Ujian", "Keluaran"]))
+        self.assertEqual(len(p["sfx"]["events"]), 4, "a tick as each box lights")
+        v = {"versus": {"before": {"label": "Dulu", "items": ["a", "b"]}, "after": {"label": "Kini", "items": ["c"]}}}
+        p = montage.plan_for(self.rec(v, sfx={"words": "tick"}), self.root)
+        self.assertEqual((p["segments"][0]["kind"], p["segments"][0]["text"]), ("versus", "Dulu → Kini"))
+        self.assertEqual(len(p["sfx"]["events"]), 3, "a tick as each item arrives")
+        with self.assertRaises(montage.RecipeError) as ctx:
+            montage.plan_for(self.rec({"flow": {"steps": ["only"]}}), self.root)
+        self.assertIn("clips[0].flow.steps", str(ctx.exception))
+
+    def test_flow_boxes_are_drawn_dim_first_and_each_lights_in_the_looks_accent_in_turn(self):
+        steps = ["Kod", "Binaan", "Ujian", "Keluaran"]
+        out = self.made({"flow": {"steps": steps}})
+        w, h = 216, 384
+        d = montage.plan_for(self.rec({"flow": {"steps": steps}}), self.root)["segments"][0]["duration"]
+        drawn, lit = explainer.flow_times(len(steps), d)
+        ar, ag, ab = self.colour("accent")
+        accent = lambda p: abs(p[0] - ar) < 40 and abs(p[1] - ag) < 40 and abs(p[2] - ab) < 40
+        box = (0.2, 0.2, 0.8, 0.8)
+        counts = [self.pixels(frame(out, t + 0.45, w, h), w, h, box, accent) for t in lit]
+        self.assertEqual(counts, sorted(set(counts)), f"each box adds a lit box: {counts}")
+        self.assertEqual(self.pixels(frame(out, drawn[-1] + 0.4, w, h), w, h, box, accent), 0, "before it runs the pipeline is all dim")
+        grey = lambda p: max(p) - min(p) < 14 and 30 < max(p) < 140
+        self.assertGreater(self.pixels(frame(out, drawn[-1] + 0.4, w, h), w, h, box, grey), 300, "but it is already there to see")
+
+    def test_versus_shows_red_crosses_first_then_green_ticks_while_the_before_dims(self):
+        v = {"versus": {"before": {"label": "Dulu", "items": ["Uji manual", "Ralat manusia", "Lambat"]}, "after": {"label": "Kini", "items": ["Automatik", "Pantas", "Tenang"]}}}
+        out = self.made(v)
+        w, h = 216, 384
+        d = montage.plan_for(self.rec(v), self.root)["segments"][0]["duration"]
+        before, after, dim = explainer.versus_times(3, 3, d)
+        red = lambda p: p[0] > 200 and p[1] < 130 and p[2] < 130
+        green = lambda p: p[1] > 170 and p[0] < 110 and p[2] < 130
+        whole = (0.0, 0.0, 1.0, 1.0)
+        at_done = frame(out, before[-1] + 0.6, w, h)
+        self.assertGreater(self.pixels(at_done, w, h, whole, red), 20, "the red crosses are there")
+        self.assertEqual(self.pixels(at_done, w, h, whole, green), 0, "no green yet: the before comes first")
+        late = frame(out, after[-1] + 0.7, w, h)
+        self.assertGreater(self.pixels(late, w, h, whole, green), 20, "then the green ticks")
+        self.assertLess(self.pixels(late, w, h, whole, red), self.pixels(at_done, w, h, whole, red) * 0.3, "and the before has stepped back (dimmed)")
+
     def test_both_cards_render_in_every_look_and_format(self):
         clips = [{"checklist": {"title": "Tools", "items": ["Board", "Git", "Timer"]}}, {"progress": {"label": "Done", "from": 20, "to": 90, "unit": "%"}},
-                 {"typing": {"title": "a.py", "text": "x = 1\ny = 2"}}, {"list": {"title": "Today", "items": ["Standup", "Retro"]}}]
+                 {"typing": {"title": "a.py", "text": "x = 1\ny = 2"}}, {"list": {"title": "Today", "items": ["Standup", "Retro"]}},
+                 {"flow": {"title": "Pipeline", "steps": ["Code", "Build", "Test"]}},
+                 {"versus": {"before": {"label": "Before", "items": ["Manual"]}, "after": {"label": "After", "items": ["Automatic"]}}}]
         for tpl in montage.TEMPLATES:
             with self.subTest(template=tpl):
                 job, out = self.render(recipe(clips, template=tpl, quality="draft"))

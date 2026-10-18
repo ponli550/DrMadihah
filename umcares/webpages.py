@@ -820,6 +820,19 @@ function createMontage(opts) {
       toClip: v => ({list: nonEmpty({title: v.title.trim(), items: lines(v.items), from: v.from})}),
       fromClip: c => ({title: c.list.title || "", items: (c.list.items || []).join("\n"), from: c.list.from || "right"}), shows: v => v.title || lines(v.items)[0] || ""},
   };
+  Object.assign(CARD_KINDS, {
+    flow: {label: "Flow diagram", icon: "🔀", help: "Boxes joined by arrows that light up one after another, like a pipeline.",
+      fields: [{k: "title", label: "Title (optional)", max: 60}, {k: "steps", label: "Steps (one a line, 2 to 5, up to 18 characters)", type: "textarea", rows: 4}],
+      toClip: v => ({flow: nonEmpty({title: v.title.trim(), steps: lines(v.steps)})}),
+      fromClip: c => ({title: c.flow.title || "", steps: (c.flow.steps || []).join("\n")}), shows: v => v.title || lines(v.steps).join(" → ")},
+    versus: {label: "Before and after", icon: "⇄", help: "A before panel with red crosses, then an after panel with green ticks.",
+      fields: [{k: "title", label: "Title (optional)", max: 60}, {k: "blabel", label: "Before: heading", max: 20}, {k: "bitems", label: "Before: items (one a line, 1 to 4)", type: "textarea", rows: 3},
+               {k: "alabel", label: "After: heading", max: 20}, {k: "aitems", label: "After: items (one a line, 1 to 4)", type: "textarea", rows: 3}],
+      toClip: v => ({versus: nonEmpty({title: v.title.trim(), before: {label: v.blabel.trim(), items: lines(v.bitems)}, after: {label: v.alabel.trim(), items: lines(v.aitems)}})}),
+      fromClip: c => ({title: c.versus.title || "", blabel: (c.versus.before || {}).label || "", bitems: ((c.versus.before || {}).items || []).join("\n"),
+                       alabel: (c.versus.after || {}).label || "", aitems: ((c.versus.after || {}).items || []).join("\n")}),
+      shows: v => v.title || (v.blabel + " → " + v.alabel)},
+  });
   const cardKindOf = clip => Object.keys(CARD_KINDS).find(k => clip && clip[k] !== undefined);
   function blankCard(kind) {
     const v = {};
@@ -972,7 +985,7 @@ function createMontage(opts) {
       planBox.replaceChildren(el("div", {}, p.segments.length + " pieces · " + secs(p.total) + " · " + (p.fade ? "crossfades" : "hard cuts") + (p.transition ? " · " + (p.transition === "flip" ? "card flips" : p.transition.replace("_", " ") + " cuts") : "") + (p.depth ? " · tilted cards" : "") + (p.effect ? " · " + p.effect + " effect" : "") + (p.sfx ? " · " + p.sfx.events + " sound effects" : "")),
         ...(p.sync ? [el("div", {className: "dim"}, (p.sync.tempo_only ? "♪ cuts on a " + p.sync.bpm + " BPM grid, no audio: add the song in the app and start it on a beat at the first frame, " : "♪ on the beat: about " + Math.round(p.sync.bpm) + " BPM, ") + "a cut every " + p.sync.beats_per_cut + " beats")] : []),
         ...p.warnings.map(w => el("div", {className: "dim"}, "⚠ " + w)),
-        ...p.segments.map(s => el("div", {className: "dim"}, secs(s.start) + "  " + (["title", "end", "quote", "announce", "countdown", "checklist", "progress", "typing", "list"].includes(s.kind) ? s.kind + " card: " + s.text : s.name + (s.text ? " — " + s.text : "")) + "  (" + secs(s.duration) + ")" + (s.speech ? "  🗣 " + secs(s.speech) + " of speech" : "") + (s.sound ? "  🔊 sound kept" : "") + (s.cuts ? "  ✂ " + s.cuts + (s.cuts === 1 ? " jump cut, " : " jump cuts, ") + secs(s.trimmed) + " of dead air removed" : ""))));
+        ...p.segments.map(s => el("div", {className: "dim"}, secs(s.start) + "  " + (["title", "end", "quote", "announce", "countdown", "checklist", "progress", "typing", "list", "flow", "versus"].includes(s.kind) ? s.kind + " card: " + s.text : s.name + (s.text ? " — " + s.text : "")) + "  (" + secs(s.duration) + ")" + (s.speech ? "  🗣 " + secs(s.speech) + " of speech" : "") + (s.sound ? "  🔊 sound kept" : "") + (s.cuts ? "  ✂ " + s.cuts + (s.cuts === 1 ? " jump cut, " : " jump cuts, ") + secs(s.trimmed) + " of dead air removed" : ""))));
       say("");
       if (planBox.scrollIntoView) planBox.scrollIntoView({block: "nearest", behavior: "smooth"});
     } catch (e) { planBox.replaceChildren(); say("Cannot make this yet: " + e.message, e.problems, true); }

@@ -176,6 +176,8 @@ const check = (i, v) => { pickBoxes()[i].checked = v; };
       await add("progress"); type("cf-label", "Produktiviti"); type("cf-from", "22"); type("cf-to", "100"); type("cf-unit", "%");
       await add("typing"); type("cf-title", "sprint.ts"); type("cf-text", "const a = 1;\n  ship(a);\n");
       await add("list"); type("cf-title", "Hari ini"); type("cf-items", "Standup 09:00\nRetro 16:00"); type("cf-from", "left");
+      await add("flow"); type("cf-title", "Dari kod ke pengguna"); type("cf-steps", "Kod\nBinaan\n\n Ujian \nKeluaran");
+      await add("versus"); type("cf-title", "Sebelum dan selepas"); type("cf-blabel", "Cara lama"); type("cf-bitems", "Uji manual\nRalat manusia"); type("cf-alabel", "Kini"); type("cf-aitems", "Ujian automatik")
       pickBoxes().slice(0, nPictures).forEach(b => { b.checked = false; });                // leave out the pictures: only the cards
     } else {
       await add("quote"); type("cf-quote", "Satu");
