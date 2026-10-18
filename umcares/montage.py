@@ -36,7 +36,7 @@ import threading
 import time
 from pathlib import Path
 
-from . import beats, captions, judge, kinetic, prepare, sfx, speech, textcards, textimg, uploads
+from . import beats, captions, explainer, judge, kinetic, prepare, sfx, speech, textcards, textimg, uploads
 from .layout import kind_of
 
 FORMATS = {
@@ -107,9 +107,9 @@ NICE = prepare.NICE
 THREADS = prepare.THREADS
 ALLOWED_TOP = {"kind", "version", "title", "format", "template", "clips", "captions", "title_card", "end_card", "music",
                "max_seconds", "note", "quality", "speech", "clip_sound", "transition", "tighten", "sfx", "depth", "effect"}
-ALLOWED_CLIP = {"media", "caption", "hold", "speed", "start", "zoom", "move", "quote", "by", "announce", "countdown", "audiogram", "image", "tighten"}
+ALLOWED_CLIP = {"media", "caption", "hold", "speed", "start", "zoom", "move", "quote", "by", "announce", "countdown", "checklist", "progress", "audiogram", "image", "tighten"}
 ALLOWED_ANNOUNCE = {"title", "date", "time", "place", "note"}
-CONTENT_KINDS = ("photo", "video", "quote", "announce", "countdown", "audiogram")      # what counts as a clip of the video (cards at the ends do not)
+CONTENT_KINDS = ("photo", "video", "quote", "announce", "countdown", "checklist", "progress", "audiogram")      # what counts as a clip of the video (cards at the ends do not)
 ALLOWED_CARD = {"text", "subtitle", "hold"}
 ALLOWED_MUSIC = {"file", "start", "fade_out", "sync", "bpm"}
 
@@ -261,9 +261,9 @@ def validate(recipe, root) -> dict:
             continue
         for k in sorted(set(c) - ALLOWED_CLIP):
             problems.append(f"{w}.{k}: unknown field (allowed: {', '.join(sorted(ALLOWED_CLIP))})")
-        given = [k for k in ("media", *textcards.KINDS, "audiogram") if k in c]
+        given = [k for k in ("media", *textcards.KINDS, *explainer.KINDS, "audiogram") if k in c]
         if len(given) != 1:
-            problems.append(f"{w}: give exactly one of media, quote, announce, countdown or audiogram")
+            problems.append(f"{w}: give exactly one of media, quote, announce, countdown, checklist, progress or audiogram")
             continue
         if "image" in c and given[0] != "audiogram":
             problems.append(f"{w}.image: only an audiogram has an image")
@@ -410,6 +410,8 @@ def _check_text_clip(c: dict, kind: str, w: str, problems: list) -> None:
     elif kind == "countdown":
         if isinstance(v, bool) or not isinstance(v, int) or not 2 <= v <= 5:
             problems.append(f"{w}.countdown: a whole number from 2 to 5 (it counts down to 1)")
+    elif kind in explainer.KINDS:
+        explainer.check(v, kind, w, problems)
 
 
 def _audiogram_segment(c: dict, r: dict, root: Path) -> dict:
@@ -432,6 +434,8 @@ def _audiogram_segment(c: dict, r: dict, root: Path) -> dict:
 
 def _text_segment(c: dict) -> dict:
     kind = c["_card"]
+    if kind in explainer.KINDS:
+        return explainer.segment(c)
     if kind == "quote":
         text = c["quote"].strip()
         return {"kind": "quote", "text": text, "by": (c.get("by") or "").strip(),
@@ -913,6 +917,8 @@ def _piece_command(ffmpeg, plan, seg, i, workdir: Path, out: Path):
     fmt = FORMATS[plan["format"]]
     if seg["kind"] == "audiogram":
         return _audiogram_command(ffmpeg, plan, seg, i, workdir, out, tpl)
+    if seg["kind"] in explainer.KINDS:                       # no picture either: an idea shown step by step, drawn the same way in every look
+        return explainer.piece_commands(_base, ffmpeg, plan, seg, i, workdir, out, _encode_piece(plan), tpl)
     if seg["kind"] in textcards.KINDS:                        # no picture: drawn the same way in every look
         return textcards.piece_commands(_base, ffmpeg, plan, seg, i, workdir, out, _encode_piece(plan), tpl)
     if tpl.get("style") == "collage":                        # a different way of drawing the whole piece
@@ -1663,10 +1669,12 @@ def brief(root, project_name: str = "") -> str:
               "- A clip can also be an audiogram: `{\"audiogram\": \"<a song or voice file>\", \"image\": \"<optional picture>\", \"caption\": \"a name\", \"start\": 0, \"hold\": 8}`. "
               "It draws the audio as a moving waveform (over the darkened picture if given, else on the look's colour), shows the caption below, and its sound is always heard "
               "with the music dipping under it. It is never slowed, so cut to a tempo it fills whole cuts and its sound just ends early if it is shorter.",
-              "- A clip with no picture is a text card; give exactly one of `media`, `quote`, `announce`, `countdown` or `audiogram`:",
+              "- A clip with no picture is a text card; give exactly one of `media`, `quote`, `announce`, `countdown`, `checklist`, `progress` or `audiogram`:",
               "  `{\"quote\": \"text up to 160 characters\", \"by\": \"who said it\", \"hold\": 4}`; "
               "`{\"announce\": {\"title\": \"Hackathon CyberDSA\", \"date\": \"12 Okt 2026\", \"time\": \"9 pagi\", \"place\": \"Dewan A\", \"note\": \"Percuma\"}}` "
               "(title plus chips; every field but the title is optional); `{\"countdown\": 3}` (a whole number from 2 to 5, counts down to 1, one number per equal share, so on the beat when cut to one). "
+              "Two cards show an idea step by step, for an explainer: `{\"checklist\": {\"title\": \"Alat yang tepat\", \"items\": [\"Task Board\", \"Version Control\", \"Focus Timer\"]}}` (2 to 6 items, each up to 40 characters, arriving one after another, each followed by a tick) and "
+              "`{\"progress\": {\"label\": \"Produktiviti\", \"from\": 0, \"to\": 100, \"unit\": \"%\"}}` (a number counts up while a bar fills; with unit `%` the bar fills to that percentage, otherwise to the end). "
               "They work in every look, take only `hold`, and can be dropped to fit `max_seconds` like any clip.",
               "- `captions`: true draws each clip's caption on screen; `title_card` / `end_card`: `{text, subtitle?, hold?}`.",
               "- `music`: `{file, start?, fade_out?, sync?}` or null. `\"sync\": \"beat\"` finds the song's beat, makes every piece a whole number of beats long and starts the song on a beat, so every cut lands on one (hard cuts; the plan reports the BPM, or warns when the song has no steady beat). Use only royalty-free music; a commercial song gets a posted video muted or blocked.",

@@ -836,6 +836,19 @@ element one job and one level, make the primary action look primary, fewer choic
   (defaults: a quote 3-8 s by length, an announcement 3 s + 0.5 s per chip, a countdown 0.8 s a number), count as clips for
   `max_seconds` (so a long list drops cards from the end with a warning), and show in the plan as `quote card: ...`. They are
   not in the page's Make-a-video card yet: write them in a recipe, or let `umcares draft` or Copy-brief-for-Claude use them.
+- **Explainer cards: checklist, progress** (`explainer.py`; phase 1 of the explainer set; typing and sliding-list cards come next). Built after
+  comparing us with a Remotion demo (a 24 s animated explainer): our text cards gave its story, timing and sound but none of its interface
+  scenes, and these are the generic ones that are cheap in ffmpeg (no Node, no Chrome, nothing new on the Air). Same technique as the text cards:
+  text drawn to PNGs by macOS, laid on the look's background with timed `overlay` expressions. Give exactly one of them instead of `media`:
+  `{"checklist": {"title": "Alat yang tepat", "items": ["Task Board", "Version Control", "Focus Timer"]}}` (2 to 6 items of up to 40 characters,
+  arriving one after another, each followed a moment later by an accent tick; the arrival times follow from how many there are and how long the
+  piece is, never from the recipe) and `{"progress": {"label": "Produktiviti", "from": 0, "to": 100, "unit": "%"}}` (a number counts up, eased,
+  while a bar fills; with unit `%` the bar fills to that percentage, with anything else to the end; the number is shown in at most 24 steps, each a
+  PNG, and lands exactly on `to` the instant the bar is full). With `sfx.words` a tick sounds as each item is ticked and when a count lands.
+  Defaults: a checklist 0.9 s + 0.6 s an item + 1.2 s to read it; a progress card 3.4 s; `hold` overrides. They work in every look, count as clips
+  for `max_seconds`, and are not in the page's card yet (recipe, `umcares draft` or Copy-brief). Measured: rebuilding the demo's 9 scenes with
+  them (the tools scene is a ticked checklist, the deadline and productivity scenes are counting numbers with filling bars) renders 28.7 s of video
+  in 11.6 s on this Mac. Still text only: the clock, the code window, the notification pile and the sliding invites (phase 2 does the last two).
 - **The `kinetic` look (kinetic type)** is built in `kinetic.py` and reuses the normal picture composition: only the text is
   different. A caption or title becomes big bold words (upper case, `HelveticaNeue-CondensedBlack`, on both Macs) that pop in
   one line after another, stacked and centred, the **last line in the accent colour** (`#ffe14d`), over a darkened picture

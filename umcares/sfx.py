@@ -15,7 +15,7 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-from . import kinetic, prepare
+from . import explainer, kinetic, prepare
 
 CUT_SOUNDS = ("whoosh", "pop", "hit")
 WORD_SOUNDS = ("tick", "pop")
@@ -76,6 +76,8 @@ def events(segs: list, total: float, fade: float, spec: dict, kinetic_look: bool
             if s["kind"] == "countdown":
                 per = d / max(1, int(s["count"]))
                 out += [{"t": round(start + k * per, 3), "kind": "word", "sound": words} for k in range(int(s["count"]))]
+            elif s["kind"] in explainer.KINDS:
+                out += [{"t": round(start + t, 3), "kind": "word", "sound": words} for t in explainer.events(s)]
             elif kinetic_look and s.get("text") and s["kind"] in ("photo", "video", "title", "end", "announce"):
                 lines = kinetic.lines_for(kinetic.split_words(s["text"]))
                 out += [{"t": round(start + t, 3), "kind": "word", "sound": words} for t in kinetic.schedule(len(lines), d, period)]

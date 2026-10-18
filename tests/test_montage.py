@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from umcares import captions, kinetic, montage, prepare, projects, sfx, textimg, uploads
+from umcares import captions, explainer, kinetic, montage, prepare, projects, sfx, textimg, uploads
 from tests.test_prepare import make_conformant, put
 
 FF, FP = prepare.find_tool("ffmpeg"), prepare.find_tool("ffprobe")
@@ -2189,6 +2189,107 @@ class QueueSurvivesRestart(Fixtures):
             proc.wait(10)
             proc.stderr.close()
         self.assertFalse(self.queue_file().exists())
+
+
+@NEED
+class ExplainerCards(Fixtures):
+    """checklist and progress cards, measured on pixels: items arrive one at a time and each is ticked; the bar and the number grow together."""
+
+    def rec(self, clip, **kw):
+        return recipe([clip], template="punchy", captions=False, **kw)
+
+    def colour(self, name):
+        h = montage.TEMPLATES["punchy"][name].lstrip("#")
+        return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+    def pixels(self, d, w, h, box, test):
+        x0, y0, x1, y1 = box
+        return sum(1 for y in range(int(y0 * h), int(y1 * h)) for x in range(int(x0 * w), int(x1 * w)) if test(d[(y * w + x) * 3:(y * w + x) * 3 + 3]))
+
+    def made(self, clip, **kw):
+        job, out = self.render(self.rec(clip, **kw))
+        self.assertEqual(job["state"], "done", job["error"])
+        return out
+
+    # ---------------------------------------------------------------- the plan
+    def test_the_plan_has_the_cards_with_a_length_the_renderer_worked_out_and_a_tick_sound_per_item(self):
+        clip = {"checklist": {"title": "Alat yang tepat", "items": ["Task Board", "Version Control", "Focus Timer"]}}
+        p = montage.plan_for(self.rec(clip, sfx={"words": "tick"}), self.root)
+        seg = p["segments"][0]
+        self.assertEqual((seg["kind"], seg["text"], seg["items"]), ("checklist", "Alat yang tepat", ["Task Board", "Version Control", "Focus Timer"]))
+        self.assertGreater(seg["duration"], 3.0)
+        self.assertEqual([e["kind"] for e in p["sfx"]["events"]], ["word"] * 3, "a tick as each item is ticked")
+        pp = montage.plan_for(self.rec({"progress": {"label": "Produktiviti", "to": 100, "unit": "%"}}), self.root)["segments"][0]
+        self.assertEqual((pp["kind"], pp["text"], pp["to"]), ("progress", "Produktiviti", 100.0))
+
+    def test_a_card_is_one_of_the_clip_kinds_and_a_wrong_one_is_refused_in_the_montages_words(self):
+        with self.assertRaises(montage.RecipeError) as ctx:
+            montage.plan_for(self.rec({"checklist": {"title": "T", "items": ["only one"]}}), self.root)
+        self.assertIn("clips[0].checklist.items", str(ctx.exception))
+        with self.assertRaises(montage.RecipeError) as ctx:
+            montage.plan_for(self.rec({"checklist": {"title": "T", "items": ["a", "b"]}, "quote": "x"}), self.root)
+        self.assertIn("exactly one", str(ctx.exception))
+        with self.assertRaises(montage.RecipeError) as ctx:
+            montage.plan_for(self.rec({"progress": {"label": "L", "to": 5}, "zoom": True}), self.root)
+        self.assertIn("not to a progress card", str(ctx.exception))
+
+    # ---------------------------------------------------------------- what is on the screen
+    def test_checklist_items_arrive_one_after_another_and_each_gets_a_tick(self):
+        items = ["Task Board", "Version Control", "Focus Timer", "Catatan Docs"]
+        out = self.made({"checklist": {"title": "Alat yang tepat", "items": items}})
+        w, h = 216, 384
+        at = explainer.times(len(items), montage.plan_for(self.rec({"checklist": {"title": "T", "items": items}}), self.root)["segments"][0]["duration"])
+        ink = lambda p: min(p) > 200
+        ar, ag, ab = self.colour("accent")
+        accent = lambda p: abs(p[0] - ar) < 40 and abs(p[1] - ag) < 40 and abs(p[2] - ab) < 40
+        words, ticks = [], []
+        for t in at:
+            d = frame(out, t + 0.75, w, h)                       # item arrived, its tick has followed
+            words.append(self.pixels(d, w, h, (0.0, 0.3, 1.0, 0.9), ink))
+            ticks.append(self.pixels(d, w, h, (0.0, 0.3, 0.3, 0.9), accent))
+        self.assertEqual(words, sorted(set(words)), f"each item adds text: {words}")
+        self.assertEqual(ticks, sorted(set(ticks)), f"each item adds a tick: {ticks}")
+        before = self.pixels(frame(out, 0.15, w, h), w, h, (0.0, 0.3, 1.0, 0.9), ink)
+        self.assertLess(before, words[0], "nothing of the list is there before the first item")
+
+    def test_the_progress_bar_fills_with_the_count_and_stops_at_the_percentage(self):
+        w, h = 216, 384
+        for goal, expect in ((100, 1.0), (50, 0.5)):
+            with self.subTest(goal=goal):
+                out = self.made({"progress": {"label": "Done", "to": goal, "unit": "%"}})
+                start, T = explainer.count_window(3.4)
+                ar, ag, ab = self.colour("accent")
+                accent = lambda p: abs(p[0] - ar) < 45 and abs(p[1] - ag) < 45 and abs(p[2] - ab) < 45
+                row = (0.0, 0.62 + 0.012, 1.0, 0.62 + 0.016)
+                bar_w = 0.8 * w
+                rows = max(1, int(row[3] * h) - int(row[1] * h))
+                share = lambda t: self.pixels(frame(out, t, w, h), w, h, row, accent) / rows / bar_w
+                early, mid, late, end = (share(start + T * f) for f in (0.25, 0.5, 0.95, 1.2))
+                self.assertLess(early, mid, f"{early} -> {mid}")
+                self.assertLess(mid, max(late, end) + 0.001)
+                self.assertAlmostEqual(end, expect, delta=0.1, msg=f"final fill for {goal}%: {end}")
+                for f in self.root.joinpath("exports").glob("*"):
+                    f.unlink()
+
+    def test_the_number_changes_while_it_counts_and_is_still_once_it_has_landed(self):
+        out = self.made({"progress": {"label": "Done", "to": 100, "unit": "%"}})
+        w, h = 216, 384
+        start, T = explainer.count_window(3.4)
+        region = lambda t: frame(out, t, w, h)[int(0.36 * h) * w * 3:int(0.56 * h) * w * 3]
+        diff = lambda a, b: sum(abs(x - y) for x, y in zip(a, b)) / len(a)
+        self.assertGreater(diff(region(start + 0.2), region(start + T * 0.8)), 1.0, "the number is changing while it counts")
+        self.assertLess(diff(region(start + T + 0.3), region(start + T + 0.7)), 0.2, "and holds still once it has landed")
+
+    def test_both_cards_render_in_every_look_and_format(self):
+        clips = [{"checklist": {"title": "Tools", "items": ["Board", "Git", "Timer"]}}, {"progress": {"label": "Done", "from": 20, "to": 90, "unit": "%"}}]
+        for tpl in montage.TEMPLATES:
+            with self.subTest(template=tpl):
+                job, out = self.render(recipe(clips, template=tpl, quality="draft"))
+                self.assertEqual(job["state"], "done", f"{tpl}: {job['error']}")
+        for fmt, size in (("square", 324), ("wide", 576)):
+            with mock.patch.dict(montage.FORMATS[fmt], width=size, height=324):
+                job, out = self.render(recipe(clips, format=fmt, quality="draft"))
+            self.assertEqual(job["state"], "done", f"{fmt}: {job['error']}")
 
 
 @NEED
