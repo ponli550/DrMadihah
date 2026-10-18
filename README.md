@@ -814,6 +814,12 @@ element one job and one level, make the primary action look primary, fewer choic
   video that is joined by copying. Measured: all ten render; the same two scenes' mid-join frames differ between slide, circle and fade, so the
   name really reaches ffmpeg (a test that first passed with the name ignored was rewritten to catch that). Both machines' ffmpeg (9.0.2 here,
   9.0.1 on the Air) have all nine transitions.
+- **Behind the cards** (`"background"`: `gradient`, `grid` or `glow`, the "Behind the cards" list in More options): a quiet pattern instead of the
+  flat colour under every drawn card: the quote, announce and countdown cards, all six explainer cards, and the title and end cards (kinetic
+  ones too). `gradient` drifts diagonally from the look's background towards a tint of its accent, `grid` is faint engineering-paper lines,
+  `glow` is a soft pool of accent light behind the middle. Pictures, clips and the collage look are untouched. Measured on the first frame:
+  corners differ under a gradient, the middle is brighter under a glow, a grid is mostly flat between its lines; a test fails if the
+  gradient is switched off.
 - **Picture effects** (`"effect": "dither" | "glitch" | "neon"`, the "Picture effect" list): from the "20 animation styles" post saved in
   sekerinshotto; the three of them that ffmpeg can do alone, no new dependency. Applied to photo and video pieces (not cards, the paper
   collage or audiograms), with any look, `transition` and `depth`; the captions are drawn on top, so they stay clean. Timing-neutral.

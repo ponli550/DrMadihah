@@ -2476,6 +2476,63 @@ class JoinBetweenScenes(Fixtures):
 
 
 @NEED
+class BackgroundBehindCards(Fixtures):
+    """`background`: a quiet gradient, grid or glow under the card text. Measured on the first frame, before any text has arrived."""
+    W, H = 216, 384
+
+    def setUp(self):
+        super().setUp()
+        self.add("land.jpg")
+
+    def first_frame(self, clip, background=None, **kw):
+        for f in self.root.joinpath("exports").glob("*"):
+            f.unlink()
+        extra = {"background": background} if background else {}
+        job, out = self.render(recipe([clip], template="kinetic", captions=False, **extra, **kw))
+        self.assertEqual(job["state"], "done", job["error"])
+        return frame(out, 0.02, self.W, self.H)
+
+    def px(self, d, x, y):
+        i = (y * self.W + x) * 3
+        return tuple(d[i:i + 3])
+
+    def test_a_wrong_background_is_refused_and_each_known_one_is_accepted(self):
+        with self.assertRaises(montage.RecipeError) as ctx:
+            montage.plan_for(recipe([{"quote": "Hi", "hold": 2}], template="kinetic", background="stripes"), self.root)
+        self.assertIn("background", str(ctx.exception))
+        for name in ("gradient", "grid", "glow"):
+            self.assertEqual(montage.plan_for(recipe([{"quote": "Hi", "hold": 2}], template="kinetic", background=name), self.root)["background"], name)
+
+    def test_without_a_background_the_card_is_one_flat_colour(self):
+        d = self.first_frame({"quote": "x", "hold": 2})
+        self.assertEqual(self.px(d, 3, 3), self.px(d, self.W - 4, self.H - 4))
+
+    def test_a_gradient_changes_from_corner_to_corner_on_the_text_cards_and_the_explainer_cards(self):
+        for clip in ({"quote": "x", "hold": 2}, {"checklist": {"title": "T", "items": ["a", "b"]}}):
+            with self.subTest(clip=list(clip)[0]):
+                d = self.first_frame(clip, "gradient")
+                a, b = self.px(d, 3, 3), self.px(d, self.W - 4, self.H - 4)
+                self.assertGreater(sum(abs(x - y) for x, y in zip(a, b)), 12, "the two corners are different colours")
+
+    def test_a_glow_is_brighter_in_the_middle_than_at_the_edge(self):
+        d = self.first_frame({"quote": "x", "hold": 2}, "glow")
+        mid, edge = self.px(d, 6, int(self.H * 0.45)), self.px(d, 3, self.H - 4)
+        self.assertGreater(sum(mid) - sum(edge), 20)
+
+    def test_a_grid_draws_lines_and_leaves_the_cells_flat(self):
+        d = self.first_frame({"quote": "x", "hold": 2}, "grid")
+        row = [self.px(d, x, 40) for x in range(self.W)]
+        self.assertGreater(len(set(row)), 1, "there are lines")
+        self.assertGreater(row.count(max(set(row), key=row.count)), self.W * 0.75, "mostly flat between them")
+
+    def test_the_title_and_end_cards_take_the_background_too(self):
+        job, out = self.render(recipe([{"media": "land.jpg", "hold": 2}], template="kinetic", background="gradient", title_card={"text": "Hi"}))
+        self.assertEqual(job["state"], "done", job["error"])
+        d = frame(out, 0.02, self.W, self.H)
+        self.assertGreater(sum(abs(x - y) for x, y in zip(self.px(d, 3, 3), self.px(d, self.W - 4, self.H - 4))), 12)
+
+
+@NEED
 class ThreeD(Fixtures):
     """The card flip between pieces (not into the first piece, not out of the last) and the swaying card look: measured on a bright square, since both turn the picture about its vertical axis."""
 

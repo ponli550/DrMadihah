@@ -119,6 +119,10 @@ const check = (i, v) => { pickBoxes()[i].checked = v; };
     ctlOf("join").value = "slide";
     await press(button("Preview plan"));
     out.view = view();
+  } else if (scenario === "background") {
+    ctlOf("background").value = "glow";
+    await press(button("Preview plan"));
+    out.view = view();
   } else if (scenario === "threed") {
     ctlOf("cut").value = "flip";
     ctlOf("depth").checked = true;

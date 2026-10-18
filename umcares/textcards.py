@@ -61,6 +61,27 @@ def _lift(start: float, dur: float, px: int) -> str:
     return f"{px}*pow(1-min(1,max(0,(t-{start:g})/{dur:g})),3)"
 
 
+BACKGROUNDS = ("gradient", "grid", "glow")
+
+
+def _blend(a: str, b: str, share: float) -> str:
+    """The colour `share` of the way from b to a (hex in, hex out)."""
+    x, y = a.lstrip("#"), b.lstrip("#")
+    return "#" + "".join(f"{round(int(y[i:i + 2], 16) + (int(x[i:i + 2], 16) - int(y[i:i + 2], 16)) * share):02x}" for i in (0, 2, 4))
+
+
+def backdrop(kind, bg: str, accent: str, W: int, H: int, fps, d) -> str:
+    """The lavfi source a card is drawn on: the flat colour, or a quiet gradient, grid or glow of the same colour (kind from the recipe)."""
+    if kind == "gradient":      # a diagonal drift from the background towards a tint of the accent
+        return f"gradients=s={W}x{H}:r={fps}:d={d}:c0={bg}:c1={_blend(accent, bg, 0.16)}:x0=0:y0=0:x1={W}:y1={H}:speed=0"
+    if kind == "glow":          # a soft pool of accent light behind the middle of the card
+        return f"gradients=s={W}x{H}:r={fps}:d={d}:c0={_blend(accent, bg, 0.22)}:c1={bg}:x0={W // 2}:y0={int(H * 0.45)}:x1={W // 2}:y1={int(H * 0.45 + W * 0.9)}:type=radial:speed=0"
+    if kind == "grid":          # faint lines, an engineering-paper look
+        cell = max(8, W // 12)
+        return f"color=c={bg}:s={W}x{H}:r={fps}:d={d},drawgrid=w={cell}:h={cell}:t=1:c={_blend(accent, bg, 0.5)[:7]}@0.10"
+    return f"color=c={bg}:s={W}x{H}:r={fps}:d={d}"
+
+
 def piece_commands(base, ffmpeg, plan, seg, i, workdir, out, encode, tpl):
     """ffmpeg command for one text card, as [(command, expected seconds)]."""
     W, H, fps, d = plan["width"], plan["height"], plan["fps"], seg["duration"]
@@ -68,7 +89,7 @@ def piece_commands(base, ffmpeg, plan, seg, i, workdir, out, encode, tpl):
     accent = tpl["accent"]                                   # plates and fills
     acc_text = accent_text(accent, bg)                       # accent as the colour of text
     shadow = ink == LIGHT                                    # a shadow helps light type and smears dark type
-    inputs = ["-f", "lavfi", "-i", f"color=c={bg}:s={W}x{H}:r={fps}:d={d}"]
+    inputs = ["-f", "lavfi", "-i", backdrop(plan.get("background"), bg, accent, W, H, fps, d)]
     pad = max(4, int(W * 0.06))
     parts, cur, n_in = [], "[0:v]", 1
 

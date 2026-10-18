@@ -174,6 +174,12 @@ class Card(unittest.TestCase):
             self.assertIn(label, card)
         self.assertIn("slide in joins", self.run_js("join")["view"]["plan"], "the choice reached the server and came back in the plan")
 
+    def test_the_background_choices_are_offered_and_a_chosen_one_reaches_the_plan(self):
+        card = self.run_js("card")["view"]["card"]
+        for label in ("Behind the cards", "Flat colour", "Soft gradient", "Fine grid", "Glow in the middle"):
+            self.assertIn(label, card)
+        self.assertIn("glow background", self.run_js("background")["view"]["plan"], "the choice reached the server and came back in the plan")
+
     def test_the_3d_choices_are_offered_and_reach_the_plan(self):
         card = self.run_js("card")["view"]["card"]
         self.assertIn("3D card flip", card)
