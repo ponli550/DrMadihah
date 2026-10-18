@@ -855,7 +855,12 @@ element one job and one level, make the primary action look primary, fewer choic
 - **Behind the cards** (`"background"`: `gradient`, `grid` or `glow`, the "Behind the cards" list in More options): a quiet pattern instead of the
   flat colour under every drawn card: the quote, announce and countdown cards, all six explainer cards, and the title and end cards (kinetic
   ones too). `gradient` drifts diagonally from the look's background towards a tint of its accent, `grid` is engineering-paper lines (the text colour at 13% opacity, so they can be seen),
-  `glow` is a soft pool of accent light behind the middle. Pictures, clips and the collage look are untouched. Measured on the first frame:
+  `glow` is a soft pool of accent light behind the middle. `glass` is
+  soft light in three hues (the accent with its colour channels rotated) and two small bright dots, under one large plate covering the
+  middle of the frame (7% side margins, 10% top and bottom) that veils what is behind it lighter, blurs it, and has a thin light edge, so
+  the dot in the margin is sharp and the one under the plate is a smear (measured 603 against 221 on one frame). One frame is made and blurred
+  once and then repeated for the length of the piece, so it costs almost nothing (6 s for a three-card render here). Known flaw: the
+  before-and-after card's dimming veil is a flat slab of the background colour that runs past the plate's edges, and a wide title can too. Pictures, clips and the collage look are untouched. Measured on the first frame:
   corners differ under a gradient, the middle is brighter under a glow, a grid is mostly flat between its lines; a test fails if the
   gradient is switched off.
 - **Picture effects** (`"effect": "dither" | "glitch" | "neon" | "riso"`, the "Picture effect" list): from the "20 animation styles" post saved in

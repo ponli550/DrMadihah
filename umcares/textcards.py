@@ -61,7 +61,7 @@ def _lift(start: float, dur: float, px: int) -> str:
     return f"{px}*pow(1-min(1,max(0,(t-{start:g})/{dur:g})),3)"
 
 
-BACKGROUNDS = ("gradient", "grid", "glow")
+BACKGROUNDS = ("gradient", "grid", "glow", "glass")
 
 
 def _blend(a: str, b: str, share: float) -> str:
@@ -79,6 +79,23 @@ def backdrop(kind, bg: str, accent: str, W: int, H: int, fps, d) -> str:
     if kind == "grid":          # faint lines, an engineering-paper look
         cell = max(8, W // 12)
         return f"color=c={bg}:s={W}x{H}:r={fps}:d={d},drawgrid=w={cell}:h={cell}:t={max(1, W // 360)}:c={ink_for(bg)[:7]}@0.13"
+    if kind == "glass":         # soft coloured light, with a frosted plate over most of the frame: the light is blurred and veiled inside it
+        rot = lambda c, k: "#" + c.lstrip("#")[2 * k:] + c.lstrip("#")[:2 * k]               # the accent with its channels rotated: two more hues
+        blobs = ((accent, 0.28, 0.28, 0.24), (rot(accent, 1), 0.80, 0.72, 0.32), (rot(accent, 2), 0.74, 0.16, 0.22))
+        parts = []
+        for k, (col, cx, cy, size) in enumerate(blobs):
+            parts.append(f"gradients=s={W}x{H}:r={fps}:d=1:c0={_blend(col, bg, 0.34)}:c1={bg}:x0={int(W * cx)}:y0={int(H * cy)}:x1={int(W * cx)}:y1={int(H * cy + W * size * 2.4)}"
+                         f":type=radial:speed=0[g{k}]")
+        for k, (cx, cy) in enumerate(((0.035, 0.88), (0.80, 0.88)), start=len(blobs)):                    # two small bright dots, one in the margin and one under the plate:
+            parts.append(f"gradients=s={W}x{H}:r={fps}:d=1:c0={_blend(accent, '#ffffff', 0.75)}:c1={bg}:x0={int(W * cx)}:y0={int(H * cy)}:x1={int(W * cx)}:y1={int(H * cy + W * 0.03)}"
+                         f":type=radial:speed=0[g{k}]")                                                    # sharp outside the plate, a smear inside it: that is the frost
+        px, py = int(W * 0.07) // 2 * 2, int(H * 0.10) // 2 * 2
+        pw, ph = (W - 2 * px) // 2 * 2, int(H * 0.80) // 2 * 2
+        frames = max(1, round(float(d) * float(fps)))
+        return (";".join(parts) + f";[g0][g1]blend=all_mode=lighten[m];[m][g2]blend=all_mode=lighten[m2];[m2][g3]blend=all_mode=lighten[m3];[m3][g4]blend=all_mode=lighten,trim=end_frame=1,split[sh][bl];"
+                f"[bl]gblur=sigma={max(8, W // 18)}:steps=2,crop={pw}:{ph}:{px}:{py}[fr];[sh][fr]overlay={px}:{py},"
+                f"drawbox=x={px}:y={py}:w={pw}:h={ph}:color=white@0.07:t=fill,drawbox=x={px}:y={py}:w={pw}:h={ph}:color=white@0.28:t={max(1, W // 540)},"
+                f"loop=loop=-1:size=1,setpts=N/({fps}*TB),trim=end_frame={frames}")
     return f"color=c={bg}:s={W}x{H}:r={fps}:d={d}"
 
 

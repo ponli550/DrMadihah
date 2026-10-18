@@ -196,7 +196,7 @@ class Card(unittest.TestCase):
 
     def test_the_background_choices_are_offered_and_a_chosen_one_reaches_the_plan(self):
         card = self.run_js("card")["view"]["card"]
-        for label in ("Behind the cards", "Flat colour", "Soft gradient", "Fine grid", "Glow in the middle"):
+        for label in ("Behind the cards", "Flat colour", "Soft gradient", "Fine grid", "Glow in the middle", "Frosted glass"):
             self.assertIn(label, card)
         self.assertIn("glow background", self.run_js("background")["view"]["plan"], "the choice reached the server and came back in the plan")
 

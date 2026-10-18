@@ -2653,7 +2653,7 @@ class BackgroundBehindCards(Fixtures):
         with self.assertRaises(montage.RecipeError) as ctx:
             montage.plan_for(recipe([{"quote": "Hi", "hold": 2}], template="kinetic", background="stripes"), self.root)
         self.assertIn("background", str(ctx.exception))
-        for name in ("gradient", "grid", "glow"):
+        for name in ("gradient", "grid", "glow", "glass"):
             self.assertEqual(montage.plan_for(recipe([{"quote": "Hi", "hold": 2}], template="kinetic", background=name), self.root)["background"], name)
 
     def test_without_a_background_the_card_is_one_flat_colour(self):
@@ -2678,6 +2678,32 @@ class BackgroundBehindCards(Fixtures):
         flat = max(set(row), key=row.count)
         self.assertGreater(max(sum(c) for c in row) - sum(flat), 60, "the lines can be seen: well above the flat colour, not a hair off it")
         self.assertGreater(row.count(max(set(row), key=row.count)), self.W * 0.75, "mostly flat between them")
+
+    def test_glass_is_soft_coloured_light_under_a_frosted_plate_with_a_visible_edge(self):
+        d = self.first_frame({"quote": "x", "hold": 2}, "glass")
+        px, py = int(self.W * 0.07) // 2 * 2, int(self.H * 0.10) // 2 * 2
+        flat = self.px(self.first_frame({"quote": "x", "hold": 2}), 3, 3)
+        lum = lambda c: sum(c)
+        self.assertGreater(max(lum(self.px(d, x, y)) for x in (3, self.W - 4) for y in (3, self.H // 2, self.H - 4)), lum(flat) + 25, "soft coloured light, not a flat colour")
+        row = self.H // 2
+        edge = lum(self.px(d, px, row))
+        self.assertGreater(edge, lum(self.px(d, px - 5, row)) + 20, "the plate has a visible light edge")
+        self.assertGreater(edge, lum(self.px(d, px + 5, row)) + 12, "that is brighter than the plate's own face")
+        veiled = [lum(self.px(d, px + 6, y)) - lum(self.px(d, px - 6, y)) for y in range(py + 10, self.H - py - 10, 24)]
+        self.assertGreater(sum(veiled) / len(veiled), 30, "the face of the plate is veiled lighter than the light around it (47 measured, 11 without the veil)")
+
+    def test_what_is_behind_the_plate_is_blurred_and_what_is_beside_it_is_not(self):
+        d = self.first_frame({"quote": "x", "hold": 2}, "glass")
+        y = int(self.H * 0.88)
+        outside, inside = sum(self.px(d, int(self.W * 0.035), y)), sum(self.px(d, int(self.W * 0.80), y))
+        self.assertGreater(outside, inside * 1.5, f"the same bright dot is sharp in the margin ({outside}) and a smear under the plate ({inside})")
+
+    def test_glass_runs_for_exactly_the_length_of_the_piece_under_every_card_kind(self):
+        clips = [{"quote": "x", "hold": 2}, {"checklist": {"title": "T", "items": ["a", "b"]}, "hold": 2.5}, {"typing": {"text": "x = 1"}, "hold": 2.5}]
+        rec = recipe(clips, template="kinetic", captions=False, background="glass", quality="draft")
+        job, out = self.render(rec)
+        self.assertEqual(job["state"], "done", job["error"])
+        self.assertAlmostEqual(stats(out)["dur"], montage.plan_for(rec, self.root)["total"], delta=0.2)
 
     def test_the_title_and_end_cards_take_the_background_too(self):
         job, out = self.render(recipe([{"media": "land.jpg", "hold": 2}], template="kinetic", background="gradient", title_card={"text": "Hi"}))
