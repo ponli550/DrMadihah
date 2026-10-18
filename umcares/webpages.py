@@ -772,7 +772,7 @@ function createMontage(opts) {
   const BASE = opts.base, mount = opts.mount;
   const HEADERS = {"Content-Type": "application/json", "X-Requested-With": "umcares"};
   let st = null, order = [], picked = new Set(), rows = [], ctl = null, timer = null;
-  let form = {format: "reels", template: "slowmo", title: "", captions: true, music: "", bpm: "", sync: false, speech: true, sound: true, tighten: false, transition: "", effect: "", depth: false, fxcuts: "", fxwords: false, max: "30"};
+  let form = {format: "reels", template: "slowmo", title: "", captions: true, music: "", bpm: "", sync: false, speech: true, sound: true, tighten: false, transition: "", join: "", effect: "", depth: false, fxcuts: "", fxwords: false, max: "30"};
   let jobsBox = null, planBox = null, noticeBox = null, listBox = null, goBtn = null, draftBtn = null, shareBtn = null, runBtns = [];
 
   const mb = n => n < 1048576 ? Math.max(1, Math.round(n / 1024)) + " KB" : (n / 1048576).toFixed(1) + " MB";
@@ -864,7 +864,7 @@ function createMontage(opts) {
   }
   function syncForm() {
     if (!ctl) return;
-    form = {format: ctl.format.value, template: ctl.template.value, title: ctl.title.value, captions: !!ctl.captions.checked, music: ctl.music.value, sync: !!ctl.sync.checked, speech: !!ctl.speech.checked, sound: !!ctl.sound.checked, tighten: !!ctl.tighten.checked, transition: ctl.cut.value, effect: ctl.effect.value, depth: !!ctl.depth.checked, fxcuts: ctl.fxcuts.value, fxwords: !!ctl.fxwords.checked, bpm: ctl.bpm.value.trim(), max: ctl.max.value};
+    form = {format: ctl.format.value, template: ctl.template.value, title: ctl.title.value, captions: !!ctl.captions.checked, music: ctl.music.value, sync: !!ctl.sync.checked, speech: !!ctl.speech.checked, sound: !!ctl.sound.checked, tighten: !!ctl.tighten.checked, transition: ctl.cut.value, join: ctl.join.value, effect: ctl.effect.value, depth: !!ctl.depth.checked, fxcuts: ctl.fxcuts.value, fxwords: !!ctl.fxwords.checked, bpm: ctl.bpm.value.trim(), max: ctl.max.value};
     rows.forEach(r => { if (r.check.checked) picked.add(r.ref); else picked.delete(r.ref); });
   }
   function buildRecipe() {
@@ -878,6 +878,7 @@ function createMontage(opts) {
     if (form.transition) rec.transition = form.transition;
     if (form.depth) rec.depth = "card";
     if (form.effect) rec.effect = form.effect;
+    if (form.join) rec.join = form.join;
     if (form.fxcuts || form.fxwords) rec.sfx = Object.assign({}, form.fxcuts ? {cuts: form.fxcuts} : {}, form.fxwords ? {words: "tick"} : {});
     if (form.music) rec.music = form.sync ? {file: form.music, sync: "beat"} : {file: form.music};
     else if (form.bpm) rec.music = {bpm: Number(form.bpm), sync: "beat"};
@@ -895,7 +896,7 @@ function createMontage(opts) {
     order = used.concat(order.filter(r => !isCard(r) && !used.includes(r)));
     picked = new Set(used);
     form = {format: rec.format || "reels", template: rec.template || "slowmo", title: rec.title_card ? rec.title_card.text : "",
-            captions: rec.captions !== false, music: rec.music && rec.music.file ? rec.music.file : "", bpm: rec.music && rec.music.bpm ? String(rec.music.bpm) : "", sync: !!(rec.music && rec.music.sync === "beat"), speech: rec.speech === "follow", sound: rec.clip_sound === "speech", tighten: rec.tighten === "gaps", transition: rec.transition || "", effect: rec.effect || "", depth: rec.depth === "card", fxcuts: rec.sfx && rec.sfx.cuts || "", fxwords: !!(rec.sfx && rec.sfx.words), max: String(rec.max_seconds || 30)};
+            captions: rec.captions !== false, music: rec.music && rec.music.file ? rec.music.file : "", bpm: rec.music && rec.music.bpm ? String(rec.music.bpm) : "", sync: !!(rec.music && rec.music.sync === "beat"), speech: rec.speech === "follow", sound: rec.clip_sound === "speech", tighten: rec.tighten === "gaps", transition: rec.transition || "", join: rec.join || "", effect: rec.effect || "", depth: rec.depth === "card", fxcuts: rec.sfx && rec.sfx.cuts || "", fxwords: !!(rec.sfx && rec.sfx.words), max: String(rec.max_seconds || 30)};
     render();
     say("Recipe loaded. Change anything, then Preview or Make video.");
   }
@@ -982,7 +983,7 @@ function createMontage(opts) {
     try {
       const d = await call("POST", "/api/montage", JSON.stringify({recipe: buildRecipe(), dry_run: true}));
       const p = d.plan;
-      planBox.replaceChildren(el("div", {}, p.segments.length + " pieces · " + secs(p.total) + " · " + (p.fade ? "crossfades" : "hard cuts") + (p.transition ? " · " + (p.transition === "flip" ? "card flips" : p.transition.replace("_", " ") + " cuts") : "") + (p.depth ? " · tilted cards" : "") + (p.effect ? " · " + p.effect + " effect" : "") + (p.sfx ? " · " + p.sfx.events + " sound effects" : "")),
+      planBox.replaceChildren(el("div", {}, p.segments.length + " pieces · " + secs(p.total) + " · " + (p.join ? ({slideleft: "slide in", slideup: "slide up", wipeleft: "wipe", circleopen: "circle reveal", zoomin: "zoom", hblur: "blur", pixelize: "pixelate", fadeblack: "dip to black", fade: "fade"}[p.join] || p.join) + " joins" : p.fade ? "crossfades" : "hard cuts") + (p.transition ? " · " + (p.transition === "flip" ? "card flips" : p.transition.replace("_", " ") + " cuts") : "") + (p.depth ? " · tilted cards" : "") + (p.effect ? " · " + p.effect + " effect" : "") + (p.sfx ? " · " + p.sfx.events + " sound effects" : "")),
         ...(p.sync ? [el("div", {className: "dim"}, (p.sync.tempo_only ? "♪ cuts on a " + p.sync.bpm + " BPM grid, no audio: add the song in the app and start it on a beat at the first frame, " : "♪ on the beat: about " + Math.round(p.sync.bpm) + " BPM, ") + "a cut every " + p.sync.beats_per_cut + " beats")] : []),
         ...p.warnings.map(w => el("div", {className: "dim"}, "⚠ " + w)),
         ...p.segments.map(s => el("div", {className: "dim"}, secs(s.start) + "  " + (["title", "end", "quote", "announce", "countdown", "checklist", "progress", "typing", "list", "flow", "versus"].includes(s.kind) ? s.kind + " card: " + s.text : s.name + (s.text ? " — " + s.text : "")) + "  (" + secs(s.duration) + ")" + (s.speech ? "  🗣 " + secs(s.speech) + " of speech" : "") + (s.sound ? "  🔊 sound kept" : "") + (s.cuts ? "  ✂ " + s.cuts + (s.cuts === 1 ? " jump cut, " : " jump cuts, ") + secs(s.trimmed) + " of dead air removed" : ""))));
@@ -1148,6 +1149,8 @@ function createMontage(opts) {
       bpm: el("input", {type: "text", inputMode: "decimal", maxLength: 6, autocomplete: "off", placeholder: "BPM, a number from 50 to 200", value: form.bpm}),
       cut: select([["", "Plain cuts"], ["zoom", "Zoom through (punch in, then settle)"], ["zoom_in", "Zoom in at the end of each piece"], ["zoom_out", "Settle in at the start of each piece"], ["flip", "3D card flip (best on hard cuts)"]], form.transition),
       max: select([["15", "up to 15 s"], ["30", "up to 30 s"], ["45", "up to 45 s"], ["60", "up to 60 s"], ["90", "up to 90 s"]], form.max),
+      join: select([["", "The look decides"], ["cut", "Hard cut"], ["fade", "Fade"], ["slide", "Slide in"], ["slideup", "Slide up"], ["wipe", "Wipe"], ["circle", "Circle reveal"],
+                    ["zoom", "Zoom in"], ["blur", "Blur"], ["pixel", "Pixelate"], ["dip", "Dip to black"]], form.join),
       cardKind: select(Object.entries(CARD_KINDS).map(([k, c]) => [k, c.icon + " " + c.label]), "quote"),
       cardAdd: el("button", {type: "button", className: "alt"}, "Add card"),
     };
@@ -1215,6 +1218,7 @@ function createMontage(opts) {
         tick(ctl.tighten, "Cut the dead air out of talking clips (jump cuts)")),
       group("Motion and sound",
         field("Cuts between pictures and clips", ctl.cut),
+        field("Joining scenes (cannot be used with a beat or tempo)", ctl.join),
         field("Picture effect", ctl.effect),
         tick(ctl.depth, "Show pictures as 3D cards that sway (tilted, over a blurred copy)"),
         tick(ctl.fxwords, "Tick on each word (kinetic type) and countdown number"),
@@ -1224,6 +1228,7 @@ function createMontage(opts) {
       const on = switches.filter(([k]) => ctl[k].checked && !(k === "speech" || k === "sound")).map(([, t]) => t);   // speech and sound are on by default: not news
       if (ctl.bpm.value) on.push(ctl.bpm.value + " BPM");
       if (ctl.cut.value) on.push("cuts");
+      if (ctl.join.value) on.push(ctl.join.value + " joins");
       if (ctl.effect.value) on.push(ctl.effect.value + " effect");
       if (ctl.fxcuts.value) on.push("sound effects");
       if (ctl.max.value !== "30") on.push("up to " + ctl.max.value + " s");

@@ -939,7 +939,7 @@ def make_handler(home, owner: str):
                 recipe = body.get("recipe")
                 if body.get("dry_run") is True:
                     plan = montage.plan_for(recipe, root)
-                    return self._json(200, {"plan": {k: plan[k] for k in ("title", "format", "template", "total", "fade", "warnings", "sync", "transition", "depth", "effect")} | {"sfx": plan["sfx"] and {"events": len(plan["sfx"]["events"])}}
+                    return self._json(200, {"plan": {k: plan[k] for k in ("title", "format", "template", "total", "fade", "warnings", "sync", "transition", "depth", "effect", "join")} | {"sfx": plan["sfx"] and {"events": len(plan["sfx"]["events"])}}
                                                     | {"segments": [{k: s.get(k) for k in ("kind", "name", "text", "duration", "start", "speech", "sound", "cuts", "trimmed")} for s in plan["segments"]],
                                                        "music": plan["music"] and plan["music"]["name"]}})
                 return self._json(200, {"job": montage.RENDERER.submit(root, recipe)})

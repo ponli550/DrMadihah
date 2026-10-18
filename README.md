@@ -804,6 +804,16 @@ element one job and one level, make the primary action look primary, fewer choic
   turn is applied to a white mask and the two are multiplied. Measured on a bright square: 80% wide at rest, 10% narrower a quarter of
   the way into a sway, and a flip is under half width 0.05 s either side of the cut. Costs more CPU per piece than a zoom cut (two
   perspective passes per frame); not timed on the Air. The page has "3D card flip" in the cuts list and a "3D cards that sway" tick.
+- **Joining scenes** (`"join"`, the "Joining scenes" list in More options): how one scene gives way to the next, using ffmpeg's own `xfade`
+  transitions: `cut` (a hard cut, even in a look that crossfades), `fade`, `slide` (the next scene slides in from the right), `slideup`,
+  `wipe`, `circle` (a circle opens), `zoom`, `blur`, `pixel`, `dip` (through black). Left out, the look decides as before. A join overlaps the
+  two scenes for 0.45 s (less on a very short piece), exactly as the crossfading looks already do, so every time is still worked out by the
+  renderer: three 3 s pieces with a join are 8.1 s, not 9 s, and a cut sound lands in the middle of each join. It applies between pictures,
+  clips and cards alike. It **cannot be combined with `music.sync` or a `bpm`** (those need hard cuts; the recipe is refused with that
+  reason, and `join: "cut"` is fine). A video with a join is re-encoded in one pass (like the crossfading looks), which is slower than a hard-cut
+  video that is joined by copying. Measured: all ten render; the same two scenes' mid-join frames differ between slide, circle and fade, so the
+  name really reaches ffmpeg (a test that first passed with the name ignored was rewritten to catch that). Both machines' ffmpeg (9.0.2 here,
+  9.0.1 on the Air) have all nine transitions.
 - **Picture effects** (`"effect": "dither" | "glitch" | "neon"`, the "Picture effect" list): from the "20 animation styles" post saved in
   sekerinshotto; the three of them that ffmpeg can do alone, no new dependency. Applied to photo and video pieces (not cards, the paper
   collage or audiograms), with any look, `transition` and `depth`; the captions are drawn on top, so they stay clean. Timing-neutral.
