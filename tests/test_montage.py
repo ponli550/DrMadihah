@@ -2522,7 +2522,8 @@ class BackgroundBehindCards(Fixtures):
     def test_a_grid_draws_lines_and_leaves_the_cells_flat(self):
         d = self.first_frame({"quote": "x", "hold": 2}, "grid")
         row = [self.px(d, x, 40) for x in range(self.W)]
-        self.assertGreater(len(set(row)), 1, "there are lines")
+        flat = max(set(row), key=row.count)
+        self.assertGreater(max(sum(c) for c in row) - sum(flat), 60, "the lines can be seen: well above the flat colour, not a hair off it")
         self.assertGreater(row.count(max(set(row), key=row.count)), self.W * 0.75, "mostly flat between them")
 
     def test_the_title_and_end_cards_take_the_background_too(self):

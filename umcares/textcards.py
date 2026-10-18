@@ -78,7 +78,7 @@ def backdrop(kind, bg: str, accent: str, W: int, H: int, fps, d) -> str:
         return f"gradients=s={W}x{H}:r={fps}:d={d}:c0={_blend(accent, bg, 0.22)}:c1={bg}:x0={W // 2}:y0={int(H * 0.45)}:x1={W // 2}:y1={int(H * 0.45 + W * 0.9)}:type=radial:speed=0"
     if kind == "grid":          # faint lines, an engineering-paper look
         cell = max(8, W // 12)
-        return f"color=c={bg}:s={W}x{H}:r={fps}:d={d},drawgrid=w={cell}:h={cell}:t=1:c={_blend(accent, bg, 0.5)[:7]}@0.10"
+        return f"color=c={bg}:s={W}x{H}:r={fps}:d={d},drawgrid=w={cell}:h={cell}:t={max(1, W // 360)}:c={ink_for(bg)[:7]}@0.13"
     return f"color=c={bg}:s={W}x{H}:r={fps}:d={d}"
 
 

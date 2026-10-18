@@ -115,13 +115,33 @@ class TypingAndList(unittest.TestCase):
         self.assertEqual(problems_of("list", {"items": ["a", "b"]}), [])
         self.assertEqual(problems_of("list", {"title": "T", "items": ["a", "b", "c"], "from": "left"}), [])
 
+    def test_a_long_line_of_code_is_wrapped_so_the_type_can_stay_big_and_a_short_one_is_left_alone(self):
+        java = 'var url = new URL("http://www.oracle.com/");'
+        wrapped = explainer.wrap_code(java)
+        self.assertEqual(wrapped, 'var url = new URL(\n  "http://www.oracle.com/");', "broken after the bracket, the rest indented")
+        for code in (java, "    return some_function(argument_one, argument_two)", "x = " + "a" * 70, "if (a) { go(); } else { stop(); }" * 2):
+            with self.subTest(code=code[:20]):
+                w = explainer.wrap_code(code)
+                self.assertTrue(all(len(x) <= explainer.WRAP_COLS for x in w.split("\n")), w)
+                self.assertEqual("".join(w.split()), "".join(code.split()), "nothing is lost or added but whitespace")
+        for same in ("short", ".container {\n  display: flex;\n}", "with open(f) as g:\n    x = g.read()"):
+            self.assertEqual(explainer.wrap_code(same), same)
+        deep = " " * 40 + "a line far too deep to wrap usefully but long enough to be asked"
+        self.assertEqual(explainer.wrap_code(deep), deep, "and it does not loop")
+
+    def test_the_wrapped_code_is_what_the_card_types_and_times(self):
+        seg = explainer.segment({"_card": "typing", "typing": {"text": 'var url = new URL("http://www.oracle.com/");'}})
+        self.assertEqual(seg["code"], explainer.wrap_code('var url = new URL("http://www.oracle.com/");'))
+        self.assertIn("\n", seg["code"])
+
     def test_typing_problems_are_said_in_plain_words(self):
         for bad, why in (
             ("x", "an object like"),
             ({}, "typing.text"),
             ({"text": "   "}, "typing.text"),
             ({"text": "a\n" * 9}, "at most 8 lines"),
-            ({"text": "x" * 45}, "at most 8 lines of 44"),
+            ({"text": "x" * 81}, "at most 80 characters a line"),
+            ({"text": "\n".join(["word " * 13] * 5)}, "once long lines are wrapped"),
             ({"text": "x", "title": ""}, "typing.title"),
             ({"text": "x", "title": "y" * 31}, "typing.title"),
             ({"text": "x", "colour": 1}, "unknown field"),

@@ -302,6 +302,8 @@ card kinds are in the brief. Rules:
 - Every claim on a card must come from the fact sheet; do not add numbers, names or dates it does not contain, and drop what is "Not settled".
 - Use the right card for the idea: `flow` for a sequence, `versus` for before and after, `checklist` for a list of benefits, `typing` for commands.
 - End with an `end_card` that names the sources (their sites, not full URLs).
+- `quote` is for a real quote with a real source in the fact sheet, and `by` names that source. A framing line of your own (a hook, a question, a
+  summary) is an `announce` card or a plain `quote` with no `by`; never credit your own line to the topic, the title or the sources.
 - Write every word shown on screen in this language: """
 
 
