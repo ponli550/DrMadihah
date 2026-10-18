@@ -106,5 +106,73 @@ class Count(unittest.TestCase):
         self.assertEqual(len(explainer.events({"kind": "progress", "duration": 3.4})), 1)
 
 
+class TypingAndList(unittest.TestCase):
+    CODE = "const sprint = await plan();\nfor (const task of sprint) {\n  build(task);\n}"
+
+    def test_good_typing_and_list_have_no_problems(self):
+        self.assertEqual(problems_of("typing", {"text": self.CODE, "title": "sprint.ts"}), [])
+        self.assertEqual(problems_of("typing", {"text": "x"}), [])
+        self.assertEqual(problems_of("list", {"items": ["a", "b"]}), [])
+        self.assertEqual(problems_of("list", {"title": "T", "items": ["a", "b", "c"], "from": "left"}), [])
+
+    def test_typing_problems_are_said_in_plain_words(self):
+        for bad, why in (
+            ("x", "an object like"),
+            ({}, "typing.text"),
+            ({"text": "   "}, "typing.text"),
+            ({"text": "a\n" * 9}, "at most 8 lines"),
+            ({"text": "x" * 45}, "at most 8 lines of 44"),
+            ({"text": "x", "title": ""}, "typing.title"),
+            ({"text": "x", "title": "y" * 31}, "typing.title"),
+            ({"text": "x", "colour": 1}, "unknown field"),
+        ):
+            with self.subTest(bad=bad):
+                self.assertTrue(any(why in p for p in problems_of("typing", bad)), problems_of("typing", bad))
+
+    def test_list_problems_are_said_in_plain_words(self):
+        for bad, why in (
+            ({"items": ["only"]}, "2 to 6 items"),
+            ({"items": ["a"] * 7}, "2 to 6 items"),
+            ({"items": ["a", "x" * 51]}, "1 to 50 characters"),
+            ({"items": ["a", "b"], "title": ""}, "list.title"),
+            ({"items": ["a", "b"], "from": "up"}, "right or left"),
+            ({"items": ["a", "b"], "speed": 2}, "unknown field"),
+        ):
+            with self.subTest(bad=bad):
+                self.assertTrue(any(why in p for p in problems_of("list", bad)), problems_of("list", bad))
+
+    def test_typing_shows_the_text_in_growing_steps_ending_on_all_of_it(self):
+        cuts = explainer.type_cuts(self.CODE)
+        self.assertEqual((cuts[0], cuts[-1]), (0, len(self.CODE)))
+        self.assertEqual(cuts, sorted(set(cuts)))
+        self.assertLessEqual(len(cuts), explainer.TYPE_STEPS + 1)
+        self.assertEqual(explainer.type_cuts("ab"), [0, 1, 2], "a short text steps one character at a time")
+        self.assertLessEqual(len(explainer.type_cuts("x" * 400)), explainer.TYPE_STEPS + 1, "never more pictures than the cap")
+
+    def test_the_typing_is_done_a_second_before_the_end_however_long_the_piece_is_held(self):
+        for d in (3.0, 6.0, 12.0):
+            start, T = explainer.type_window(d)
+            self.assertAlmostEqual(start + T, d - 1.0, places=2)
+
+    def test_the_default_length_grows_with_the_text_and_is_capped(self):
+        seg = lambda t, **k: explainer.segment({"_card": "typing", "typing": {"text": t}, **k})
+        self.assertGreater(seg("x" * 120)["duration"], seg("x" * 10)["duration"] + 2)
+        self.assertLessEqual(seg("x" * 300)["duration"], 0.6 + 7.0 + 1.0 + 0.01)
+        self.assertEqual(seg("x" * 10, hold=11)["duration"], 11.0)
+        self.assertEqual(explainer.segment({"_card": "typing", "typing": {"text": "a = 1\nb = 2", "title": "x.py"}})["text"], "x.py")
+        self.assertEqual(explainer.segment({"_card": "typing", "typing": {"text": "a = 1\nb = 2"}})["text"], "a = 1")
+
+    def test_a_tick_belongs_at_the_start_of_each_typed_line_and_at_each_row(self):
+        starts = explainer.line_starts(self.CODE)
+        self.assertEqual(len(starts), 4)
+        seg = {"kind": "typing", "code": self.CODE, "duration": 6.0}
+        ev = explainer.events(seg)
+        self.assertEqual(len(ev), 4)
+        self.assertEqual(ev, sorted(ev))
+        self.assertAlmostEqual(ev[0], explainer.TYPE_START, places=2)
+        rows = {"kind": "list", "items": ["a", "b", "c"], "duration": 4.0}
+        self.assertEqual(explainer.events(rows), explainer.times(3, 4.0))
+
+
 if __name__ == "__main__":
     unittest.main()

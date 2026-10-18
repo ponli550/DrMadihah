@@ -836,7 +836,7 @@ element one job and one level, make the primary action look primary, fewer choic
   (defaults: a quote 3-8 s by length, an announcement 3 s + 0.5 s per chip, a countdown 0.8 s a number), count as clips for
   `max_seconds` (so a long list drops cards from the end with a warning), and show in the plan as `quote card: ...`. They are
   not in the page's Make-a-video card yet: write them in a recipe, or let `umcares draft` or Copy-brief-for-Claude use them.
-- **Explainer cards: checklist, progress** (`explainer.py`; phase 1 of the explainer set; typing and sliding-list cards come next). Built after
+- **Explainer cards: checklist, progress, typing, list** (`explainer.py`). Built after
   comparing us with a Remotion demo (a 24 s animated explainer): our text cards gave its story, timing and sound but none of its interface
   scenes, and these are the generic ones that are cheap in ffmpeg (no Node, no Chrome, nothing new on the Air). Same technique as the text cards:
   text drawn to PNGs by macOS, laid on the look's background with timed `overlay` expressions. Give exactly one of them instead of `media`:
@@ -848,7 +848,18 @@ element one job and one level, make the primary action look primary, fewer choic
   Defaults: a checklist 0.9 s + 0.6 s an item + 1.2 s to read it; a progress card 3.4 s; `hold` overrides. They work in every look, count as clips
   for `max_seconds`, and are not in the page's card yet (recipe, `umcares draft` or Copy-brief). Measured: rebuilding the demo's 9 scenes with
   them (the tools scene is a ticked checklist, the deadline and productivity scenes are counting numbers with filling bars) renders 28.7 s of video
-  in 11.6 s on this Mac. Still text only: the clock, the code window, the notification pile and the sliding invites (phase 2 does the last two).
+  in 11.6 s on this Mac.
+  **Typing**: `{"typing": {"title": "sprint.ts", "text": "const sprint = await plan();\nship(sprint);"}}` is a code-editor window (a title bar with
+  three traffic-light dots and the optional title, a faint body) in which the text types itself in Menlo with a cursor; at most 8 lines of 44
+  characters, so the type stays readable on a phone (the size is worked out so the longest line fills the window). It is shown in at most 48
+  steps, each a PNG, and finishes typing a second before the piece ends however long it is held (so a longer hold types more slowly); with
+  `sfx.words` a tick sounds as each line starts. **List**: `{"list": {"title": "Hari ini", "items": ["Standup 09:00", "Retro 16:00"], "from": "right"}}`
+  is 2 to 6 rows (a plate each, up to 50 characters) that slide in one after another, eased, from the right (default) or the left: meeting
+  invites, a notification pile (the title is optional). Defaults: typing 0.6 s + 0.04 s a character (at most 7 s) + 1 s; a list 0.9 s + 0.5 s a row
+  + 1.2 s. Measured: the whole 9-scene demo (title, quote, meeting list, deadline bar, code window, notification list, quote, checklist,
+  productivity bar, end card) is 36.9 s of video and renders in 18.2 s on this Mac, and 8 of its 9 scenes are now real scenes, not text. **What
+  is still missing:** the spinning clock and anything one-off (a custom animation still means custom code, which is where Remotion would earn
+  its place); the cards also have no page controls yet; none has been rendered on the Air's ffmpeg, and no tick sound has been heard.
 - **The `kinetic` look (kinetic type)** is built in `kinetic.py` and reuses the normal picture composition: only the text is
   different. A caption or title becomes big bold words (upper case, `HelveticaNeue-CondensedBlack`, on both Macs) that pop in
   one line after another, stacked and centred, the **last line in the accent colour** (`#ffe14d`), over a darkened picture

@@ -2280,8 +2280,60 @@ class ExplainerCards(Fixtures):
         self.assertGreater(diff(region(start + 0.2), region(start + T * 0.8)), 1.0, "the number is changing while it counts")
         self.assertLess(diff(region(start + T + 0.3), region(start + T + 0.7)), 0.2, "and holds still once it has landed")
 
+    def test_typing_and_list_are_in_the_plan_with_their_tick_sounds(self):
+        code = "const a = 1;\nconst b = 2;\nship(a, b);"
+        p = montage.plan_for(self.rec({"typing": {"title": "sprint.ts", "text": code}}, sfx={"words": "tick"}), self.root)
+        self.assertEqual((p["segments"][0]["kind"], p["segments"][0]["text"], p["segments"][0]["code"]), ("typing", "sprint.ts", code))
+        self.assertEqual(len(p["sfx"]["events"]), 3, "a tick as each line starts to type")
+        p = montage.plan_for(self.rec({"list": {"items": ["Standup", "Retro", "Sync", "Demo"], "from": "left"}}, sfx={"words": "tick"}), self.root)
+        seg = p["segments"][0]
+        self.assertEqual((seg["kind"], seg["from"], len(seg["items"])), ("list", "left", 4))
+        self.assertEqual(len(p["sfx"]["events"]), 4, "a tick as each row arrives")
+        with self.assertRaises(montage.RecipeError) as ctx:
+            montage.plan_for(self.rec({"list": {"items": ["only one"]}}), self.root)
+        self.assertIn("clips[0].list.items", str(ctx.exception))
+
+    def test_typed_text_grows_over_time_inside_a_window_that_is_there_from_the_start(self):
+        code = "const sprint = await plan();\nfor (const task of sprint) {\n  build(task);\n  ship(task);\n}"
+        out = self.made({"typing": {"title": "sprint.ts", "text": code}})
+        w, h = 216, 384
+        d = montage.plan_for(self.rec({"typing": {"title": "sprint.ts", "text": code}}), self.root)["segments"][0]["duration"]
+        start, T = explainer.type_window(d)
+        ink = lambda p: min(p) > 190
+        body = (0.12, 0.40, 0.88, 0.55)
+        counts = [self.pixels(frame(out, start + T * f, w, h), w, h, body, ink) for f in (0.15, 0.4, 0.7, 1.0)]
+        self.assertEqual(counts, sorted(set(counts)), f"more of the text each time: {counts}")
+        bg = self.colour("bg")
+        differs = lambda p: sum(abs(a - b) for a, b in zip(p, bg)) > 6
+        self.assertGreater(self.pixels(frame(out, 0.9, w, h), w, h, (0.15, 0.36, 0.85, 0.4), differs), 100, "the window itself is on screen before the typing starts")
+
+    def test_rows_slide_in_from_the_chosen_side_one_after_another(self):
+        items = ["Daily Standup 09:00", "Sprint Planning 11:00", "Sync dengan Klien", "Retro Mingguan"]
+        plate = [round(self.colour("bg")[k] + (255 - self.colour("bg")[k]) * 0.16) for k in range(3)]
+        near = lambda p: sum(abs(a - b) for a, b in zip(p, plate)) < 18
+        w, h = 216, 384
+        for side in ("right", "left"):
+            with self.subTest(side=side):
+                for f in self.root.joinpath("exports").glob("*"):
+                    f.unlink()
+                out = self.made({"list": {"items": items, "from": side}})
+                d = montage.plan_for(self.rec({"list": {"items": items, "from": side}}), self.root)["segments"][0]["duration"]
+                at = explainer.times(len(items), d)
+                row0 = (0.0, 0.26, 1.0, 0.34)
+                mid = self.pixels(frame(out, at[0] + 0.12, w, h), w, h, row0, near)           # mid-slide
+                left_third = self.pixels(frame(out, at[0] + 0.12, w, h), w, h, (0.0, 0.26, 0.33, 0.34), near)
+                right_third = self.pixels(frame(out, at[0] + 0.12, w, h), w, h, (0.67, 0.26, 1.0, 0.34), near)
+                self.assertGreater(mid, 0, "the first row is on its way")
+                if side == "right":
+                    self.assertGreater(right_third, left_third, f"it comes from the right: {left_third} vs {right_third}")
+                else:
+                    self.assertGreater(left_third, right_third, f"it comes from the left: {left_third} vs {right_third}")
+                counts = [self.pixels(frame(out, t + 0.55, w, h), w, h, (0.0, 0.26, 1.0, 0.9), near) for t in at]     # row k is in, row k+1 (0.6 s later) is not yet
+                self.assertEqual(counts, sorted(set(counts)), f"each row arrives after the one before: {counts}")
+
     def test_both_cards_render_in_every_look_and_format(self):
-        clips = [{"checklist": {"title": "Tools", "items": ["Board", "Git", "Timer"]}}, {"progress": {"label": "Done", "from": 20, "to": 90, "unit": "%"}}]
+        clips = [{"checklist": {"title": "Tools", "items": ["Board", "Git", "Timer"]}}, {"progress": {"label": "Done", "from": 20, "to": 90, "unit": "%"}},
+                 {"typing": {"title": "a.py", "text": "x = 1\ny = 2"}}, {"list": {"title": "Today", "items": ["Standup", "Retro"]}}]
         for tpl in montage.TEMPLATES:
             with self.subTest(template=tpl):
                 job, out = self.render(recipe(clips, template=tpl, quality="draft"))

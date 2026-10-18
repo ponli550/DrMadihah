@@ -107,9 +107,9 @@ NICE = prepare.NICE
 THREADS = prepare.THREADS
 ALLOWED_TOP = {"kind", "version", "title", "format", "template", "clips", "captions", "title_card", "end_card", "music",
                "max_seconds", "note", "quality", "speech", "clip_sound", "transition", "tighten", "sfx", "depth", "effect"}
-ALLOWED_CLIP = {"media", "caption", "hold", "speed", "start", "zoom", "move", "quote", "by", "announce", "countdown", "checklist", "progress", "audiogram", "image", "tighten"}
+ALLOWED_CLIP = {"media", "caption", "hold", "speed", "start", "zoom", "move", "quote", "by", "announce", "countdown", "checklist", "progress", "typing", "list", "audiogram", "image", "tighten"}
 ALLOWED_ANNOUNCE = {"title", "date", "time", "place", "note"}
-CONTENT_KINDS = ("photo", "video", "quote", "announce", "countdown", "checklist", "progress", "audiogram")      # what counts as a clip of the video (cards at the ends do not)
+CONTENT_KINDS = ("photo", "video", "quote", "announce", "countdown", "checklist", "progress", "typing", "list", "audiogram")      # what counts as a clip of the video (cards at the ends do not)
 ALLOWED_CARD = {"text", "subtitle", "hold"}
 ALLOWED_MUSIC = {"file", "start", "fade_out", "sync", "bpm"}
 
@@ -263,7 +263,7 @@ def validate(recipe, root) -> dict:
             problems.append(f"{w}.{k}: unknown field (allowed: {', '.join(sorted(ALLOWED_CLIP))})")
         given = [k for k in ("media", *textcards.KINDS, *explainer.KINDS, "audiogram") if k in c]
         if len(given) != 1:
-            problems.append(f"{w}: give exactly one of media, quote, announce, countdown, checklist, progress or audiogram")
+            problems.append(f"{w}: give exactly one of media, quote, announce, countdown, checklist, progress, typing, list or audiogram")
             continue
         if "image" in c and given[0] != "audiogram":
             problems.append(f"{w}.image: only an audiogram has an image")
@@ -1669,12 +1669,13 @@ def brief(root, project_name: str = "") -> str:
               "- A clip can also be an audiogram: `{\"audiogram\": \"<a song or voice file>\", \"image\": \"<optional picture>\", \"caption\": \"a name\", \"start\": 0, \"hold\": 8}`. "
               "It draws the audio as a moving waveform (over the darkened picture if given, else on the look's colour), shows the caption below, and its sound is always heard "
               "with the music dipping under it. It is never slowed, so cut to a tempo it fills whole cuts and its sound just ends early if it is shorter.",
-              "- A clip with no picture is a text card; give exactly one of `media`, `quote`, `announce`, `countdown`, `checklist`, `progress` or `audiogram`:",
+              "- A clip with no picture is a text card; give exactly one of `media`, `quote`, `announce`, `countdown`, `checklist`, `progress`, `typing`, `list` or `audiogram`:",
               "  `{\"quote\": \"text up to 160 characters\", \"by\": \"who said it\", \"hold\": 4}`; "
               "`{\"announce\": {\"title\": \"Hackathon CyberDSA\", \"date\": \"12 Okt 2026\", \"time\": \"9 pagi\", \"place\": \"Dewan A\", \"note\": \"Percuma\"}}` "
               "(title plus chips; every field but the title is optional); `{\"countdown\": 3}` (a whole number from 2 to 5, counts down to 1, one number per equal share, so on the beat when cut to one). "
-              "Two cards show an idea step by step, for an explainer: `{\"checklist\": {\"title\": \"Alat yang tepat\", \"items\": [\"Task Board\", \"Version Control\", \"Focus Timer\"]}}` (2 to 6 items, each up to 40 characters, arriving one after another, each followed by a tick) and "
-              "`{\"progress\": {\"label\": \"Produktiviti\", \"from\": 0, \"to\": 100, \"unit\": \"%\"}}` (a number counts up while a bar fills; with unit `%` the bar fills to that percentage, otherwise to the end). "
+              "Four cards show an idea step by step, for an explainer: `{\"checklist\": {\"title\": \"Alat yang tepat\", \"items\": [\"Task Board\", \"Version Control\", \"Focus Timer\"]}}` (2 to 6 items, each up to 40 characters, arriving one after another, each followed by a tick) and "
+              "`{\"progress\": {\"label\": \"Produktiviti\", \"from\": 0, \"to\": 100, \"unit\": \"%\"}}` (a number counts up while a bar fills; with unit `%` the bar fills to that percentage, otherwise to the end), `{\"typing\": {\"title\": \"sprint.ts\", \"text\": \"const sprint = await plan();\\nship(sprint);\"}}` (a code window in which the text types itself: up to 8 lines of 44 characters, the title is optional) and "
+              "`{\"list\": {\"title\": \"Hari ini\", \"items\": [\"Standup 09:00\", \"Retro 16:00\"], \"from\": \"right\"}}` (rows that slide in one after another, 2 to 6 of up to 50 characters, from `right` (default) or `left`; the title is optional). "
               "They work in every look, take only `hold`, and can be dropped to fit `max_seconds` like any clip.",
               "- `captions`: true draws each clip's caption on screen; `title_card` / `end_card`: `{text, subtitle?, hold?}`.",
               "- `music`: `{file, start?, fade_out?, sync?}` or null. `\"sync\": \"beat\"` finds the song's beat, makes every piece a whole number of beats long and starts the song on a beat, so every cut lands on one (hard cuts; the plan reports the BPM, or warns when the song has no steady beat). Use only royalty-free music; a commercial song gets a posted video muted or blocked.",
