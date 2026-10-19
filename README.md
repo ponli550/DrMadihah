@@ -591,6 +591,15 @@ fetches up to 12 thumbnails (one request per folder, small JPEGs), and calls Cla
 same validation a hand-written recipe gets; if it has problems, Claude is shown them **once** and corrects. The result is
 saved as `claude-draft-<time>` under *Saved recipes* and is **never rendered**: open the page, look at the plan, press Make.
 
+- **Hook variants** (`--variants N`, 2 to 5, on `draft` and on `explain`): a second, text-only call asks Claude for N different opening hooks
+  (at most 60 characters, a different angle each: a question, a claim the video backs up, a number or contrast, a promise) for the drafted
+  video, told to promise only what the recipe's clips and cards show. Then N recipes are saved, `claude-draft-<time>-hook-1` to `-N`, that differ
+  **only** in the title card's text (the card is added if there was none, and its subtitle and hold are kept); each passes the same dry run as a
+  draft. They replace the plain draft rather than sitting beside it. You render the ones you want and post them as trial reels. If the hooks come
+  back unusable the plain draft is saved with a warning, so asking for variants cannot lose it; blank, repeated and over-long hooks are dropped;
+  fewer than N usable ones saves fewer, with a warning. With `--dry-run` the hooks are printed and nothing is saved. Weak spot: the model's
+  hooks are only as true as its reading of the recipe, so read them; and on an `explain` video the title card is added in front of a first
+  card that is already a hook.
 - **A named length it cannot meet:** if the request names a length ("a 20 second reel", "2 minit") and the drafted video comes out under
   80% of it, `draft` prints a warning with the actual length (and returns it as `warnings`). It reads seconds and minutes only, ignores
   lengths under 5 s, and does not warn about being longer. `max_seconds` is a cap, not a promise, so it is never checked.
