@@ -75,6 +75,81 @@ TEMPLATES = {
                 "grade": "", "bg": "#f1ead8", "accent": "#ffd23f", "moves": ["in", "out", "pan_right", "pan_left"], "style": "collage"},
 }
 
+# A recipe's `template` may be a built-in name or an object: a look of its own, written as data. It starts from a built-in (`base`) and
+# changes some of its numbers and colours; `grade` is a few named numbers, never a filter string (a filter string from a recipe could
+# read files or run commands in ffmpeg, so the chain is always built here).
+LOOK_NUMBERS = {"photo_hold": (0.8, 6), "video_max": (1, 8), "video_speed": (0.5, 1.5), "fade": (0, 1.5), "zoom": (0, 0.25), "grain": (0, 20)}
+LOOK_GRADE = {"saturation": (0, 2), "contrast": (0.5, 1.5), "brightness": (-0.5, 0.5), "gamma": (0.5, 1.5), "warmth": (-1, 1)}
+LOOK_KEYS = {"name", "base", "label", "blurb", "bg", "accent", "vignette", "moves", "grade", "join", "background", "effect", *LOOK_NUMBERS}
+HEX = re.compile(r"#[0-9a-fA-F]{6}")
+
+
+def grade_chain(g: dict) -> str:
+    """The ffmpeg filter chain for a named grade: saturation, contrast, brightness and gamma through `eq`, warmth through `colorbalance`
+    (positive is warmer: more red and less blue in the shadows and midtones, as the warm built-in looks do)."""
+    eq = ":".join(f"{k}={g[k]:g}" for k in ("saturation", "contrast", "brightness", "gamma") if k in g)
+    chain = [f"eq={eq}"] if eq else []
+    w = g.get("warmth", 0)
+    if w:
+        chain.append(f"colorbalance=rs={0.06 * w:.3f}:bs={-0.06 * w:.3f}:rm={0.04 * w:.3f}:bm={-0.04 * w:.3f}")
+    return ",".join(chain)
+
+
+def custom_look(spec: dict):
+    """A look written as data -> (the look as the renderer reads it, [problems]). Built on a built-in so everything it does not change
+    (pacing, camera moves, the kinetic or collage drawing style) is still defined."""
+    problems = []
+    for k in sorted(set(spec) - LOOK_KEYS):
+        problems.append(f"template.{k}: unknown field (allowed: {', '.join(sorted(LOOK_KEYS))})")
+    name = spec.get("name")
+    if not isinstance(name, str) or not 1 <= len(name.strip()) <= 30:
+        problems.append("template.name: the look's name, 1 to 30 characters")
+    base = spec.get("base", "clean")
+    if base not in TEMPLATES:
+        problems.append(f"template.base: must be one of {', '.join(TEMPLATES)}")
+    for k in ("label", "blurb"):
+        if k in spec and (not isinstance(spec[k], str) or not 1 <= len(spec[k]) <= 140):
+            problems.append(f"template.{k}: text of 1 to 140 characters")
+    for k in ("bg", "accent"):
+        if k in spec and not (isinstance(spec[k], str) and HEX.fullmatch(spec[k])):
+            problems.append(f"template.{k}: a colour like #14110f")
+    for k, (lo, hi) in LOOK_NUMBERS.items():
+        if k in spec and not _num(spec[k], lo, hi):
+            problems.append(f"template.{k}: a number from {lo} to {hi}")
+    if "vignette" in spec and not isinstance(spec["vignette"], bool):
+        problems.append("template.vignette: true or false")
+    if "moves" in spec and not (isinstance(spec["moves"], list) and spec["moves"] and all(m in MOVES for m in spec["moves"])):
+        problems.append(f"template.moves: a list of {', '.join(MOVES)}")
+    grade = spec.get("grade")
+    if grade is not None:
+        if not isinstance(grade, dict):
+            problems.append("template.grade: an object of numbers, e.g. {\"saturation\": 0.8, \"warmth\": 0.5}, not a filter string")
+        else:
+            for k in sorted(set(grade) - set(LOOK_GRADE)):
+                problems.append(f"template.grade.{k}: unknown (allowed: {', '.join(LOOK_GRADE)})")
+            for k, (lo, hi) in LOOK_GRADE.items():
+                if k in grade and not _num(grade[k], lo, hi):
+                    problems.append(f"template.grade.{k}: a number from {lo} to {hi}")
+    if problems:
+        return None, problems
+    look = dict(TEMPLATES[base])
+    for k in ("bg", "accent", "vignette", "moves", *LOOK_NUMBERS):
+        if k in spec:
+            look[k] = spec[k]
+    look["label"] = spec.get("label", name.strip())
+    look["blurb"] = spec.get("blurb", f"A custom look based on {base}.")
+    if grade is not None:
+        look["grade"] = grade_chain(grade)
+    look["name"] = name.strip()
+    look["defaults"] = {k: spec[k] for k in ("join", "background", "effect") if k in spec}      # used when the recipe itself says nothing
+    return look, []
+
+
+def template_of(plan: dict) -> dict:
+    """The look a validated recipe or a plan uses: its own, or the built-in it names."""
+    return plan.get("look") or TEMPLATES[plan["template"]]
+
+
 # How the camera moves over a photo (the words a recipe can use). Every move is eased (smoothstep), because a linear
 # move reads as mechanical: the movement starts slowly, is fastest in the middle, and settles.
 MOVES = ("in", "out", "pan_left", "pan_right", "still")
@@ -86,7 +161,7 @@ TRANSITIONS = ZOOM_TRANSITIONS + ("flip",)        # flip: a piece swings in arou
 JOINS = {"cut": None, "fade": "fade", "slide": "slideleft", "slideup": "slideup", "wipe": "wipeleft", "circle": "circleopen", "zoom": "zoomin",
          "blur": "hblur", "pixel": "pixelize", "dip": "fadeblack"}
 JOIN_TIME = 0.45                                  # seconds a join takes (at most 40% of the shorter piece)
-EFFECTS = ("dither", "glitch", "neon")             # picture effects, done in ffmpeg alone: ordered-dither pixels, glitch bursts, neon outlines
+EFFECTS = ("dither", "glitch", "neon", "riso")             # picture effects, done in ffmpeg alone: ordered-dither pixels, glitch bursts, neon outlines
 DEPTHS = ("card",)                                # card: each picture is a smaller card that sways in perspective over a blurred copy of itself
 FLIP_TIME = 0.4                                   # seconds a card flip takes, in and out (at most a third of a short piece)
 FLIP_EDGE = 0.94                                  # how far edge-on the card gets at the very start: 1 would be a line (the maths has no solution)
@@ -240,8 +315,14 @@ def validate(recipe, root) -> dict:
     fmt = recipe.get("format", "reels")
     if fmt not in FORMATS:
         problems.append(f"format: must be one of {', '.join(FORMATS)}")
-    tpl = recipe.get("template", "slowmo")
-    if tpl not in TEMPLATES:
+    tpl, look = recipe.get("template", "slowmo"), None
+    if isinstance(tpl, dict):
+        look, found = custom_look(tpl)
+        problems.extend(found)
+        tpl = look["name"] if look else "custom"
+        if look:
+            recipe = {**look["defaults"], **recipe}                    # what the look says about joins, backgrounds and effects, unless the recipe says otherwise
+    elif tpl not in TEMPLATES:
         problems.append(f"template: must be one of {', '.join(TEMPLATES)}")
     if not isinstance(recipe.get("captions", True), bool):
         problems.append("captions: must be true or false")
@@ -387,7 +468,7 @@ def validate(recipe, root) -> dict:
         problems.append(f"background: must be one of {', '.join(textcards.BACKGROUNDS)} (a quiet pattern behind the cards) or left out")
     if problems:
         raise RecipeError(problems)
-    return {"kind": "montage", "version": 1, "title": title.strip(), "format": fmt, "template": tpl,
+    return {"kind": "montage", "version": 1, "title": title.strip(), "format": fmt, "template": tpl, "look": look,
             "captions": recipe.get("captions", True), "max_seconds": max_s, "clips": clips, "cards": cards,
             "quality": recipe.get("quality", "final"), "speech": recipe.get("speech"), "clip_sound": recipe.get("clip_sound"), "transition": recipe.get("transition"), "depth": recipe.get("depth"), "effect": recipe.get("effect"), "join": recipe.get("join"), "background": recipe.get("background"), "tighten": recipe.get("tighten"), "sfx": recipe.get("sfx"), "tempo": tempo,
             "music": None if music_item is None else {**music, "_item": music_item}, "note": recipe.get("note")}
@@ -465,7 +546,7 @@ def resolve(validated: dict, root) -> dict:
     files give the same plan."""
     root = Path(root)
     r = validated
-    tpl, fmt = TEMPLATES[r["template"]], FORMATS[r["format"]]
+    tpl, fmt = template_of(r), FORMATS[r["format"]]
     draft = r.get("quality") == "draft"
     segs, warnings = [], []
     photos_seen = 0
@@ -583,7 +664,7 @@ def resolve(validated: dict, root) -> dict:
                  "fade_out": round(min(float(m.get("fade_out", 1.5)), total / 2), 3)}
     even = lambda n: max(2, int(round(n)) // 2 * 2)                      # x264 needs even sizes
     width, height = (even(fmt["width"] * DRAFT_SCALE), even(fmt["height"] * DRAFT_SCALE)) if draft else (fmt["width"], fmt["height"])
-    return {"title": r["title"], "format": r["format"], "template": r["template"], "quality": r.get("quality") or "final",
+    return {"title": r["title"], "format": r["format"], "template": r["template"], "look": r.get("look"), "quality": r.get("quality") or "final",
             "width": width, "height": height,
             "fps": fmt["fps"], "fade": round(fade, 3), "total": total, "transition": r.get("transition"), "depth": r.get("depth"), "effect": r.get("effect"), "background": r.get("background"),
             "join": JOINS.get(r.get("join") or "") if fade > 0 and r.get("join") not in (None, "cut") else None, "sfx": sfx_plan, "segments": segs, "duck": duck, "music": music, "sync": None if not sync else {k: v for k, v in sync.items() if k != "music_start"},
@@ -844,6 +925,9 @@ def _card_fragment(src: str, out: str, fps: int, d: float, W: int, H: int) -> st
 DITHER_WIDTH = 180                                # the dither is drawn this many pixels across and enlarged, so the dots are big and chunky
 DITHER_LEVELS = 6                                 # levels per colour channel: 216 colours (4 looked noisy, with olive fringes on skin)
 BAYER = (0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5)    # a 4x4 ordered-dither matrix
+RISO_PAPER, RISO_INK1, RISO_INK2 = (243, 237, 220), (255, 72, 176), (0, 120, 191)    # warm paper, fluorescent pink, blue: how a two-drum risograph prints
+RISO_LEVELS = 4                                   # an ink is laid down in this many strengths (a print has no smooth tones)
+RISO_SLIP = (0.006, 0.004)                        # how far the second drum is out of register, as a fraction of the width and height
 GLITCH_EVERY, GLITCH_FOR = 0.9, 0.14              # seconds between glitch bursts (one starts every piece) and how long each lasts
 
 
@@ -876,6 +960,20 @@ def _effect_fragment(src: str, out: str, name: str, W: int, H: int) -> str:
                 f"[nw1]dilation,colorchannelmixer=rr=0.35:gg=1:bb=1,{G}[ncore];"
                 f"[nw2]gblur=sigma={sigma},{boost(6)},colorchannelmixer=rr=1:gg=0.15:bb=0.9,{G}[nglow];"
                 f"[nd][ncore]blend=all_mode=screen,{G}[nt];[nt][nglow]blend=all_mode=screen,format=yuv420p{out}")
+    if name == "riso":
+        # luminance, then two inks: the pink takes the dark and mid tones in four strengths, the blue only the darkest, a little out of register;
+        # the layers multiply onto warm paper, and a fixed grain (no `t` flag, so it does not flicker) sits over it all
+        grey = "colorchannelmixer=rr=.3:rg=.59:rb=.11:gr=.3:gg=.59:gb=.11:br=.3:bg=.59:bb=.11"
+        L = RISO_LEVELS
+        ink = lambda col, dens: ":".join(f"{c}='255-{255 - v}*({dens})'" for c, v in zip("rgb", col))
+        d1 = f"floor((255-val)/255*{L}+0.5)/{L}"
+        d2 = f"floor(clip((170-val)/170,0,1)*{L - 1}+0.5)/{L - 1}"
+        dx, dy = max(2, round(W * RISO_SLIP[0])), max(2, round(H * RISO_SLIP[1]))
+        pr, pg, pb = (round(c / 255, 4) for c in RISO_PAPER)
+        return (f"{src}{G},eq=contrast=1.12,{grey},split=2[ra][rb];"
+                f"[ra]lutrgb={ink(RISO_INK1, d1)},{G}[rink1];"
+                f"[rb]lutrgb={ink(RISO_INK2, d2)},crop={W - dx}:{H - dy}:0:0,pad={W}:{H}:{dx}:{dy}:color=white,{G}[rink2];"
+                f"[rink1][rink2]blend=all_mode=multiply,{G},colorchannelmixer=rr={pr}:gg={pg}:bb={pb},noise=alls=9:allf=u,format=yuv420p{out}")
     return f"{src}null{out}"
 
 
@@ -930,7 +1028,7 @@ def _encode_piece(plan) -> list:
 def _piece_command(ffmpeg, plan, seg, i, workdir: Path, out: Path):
     """The ffmpeg command(s) that render one piece of the timeline to `out`. Returns a list of (cmd, expected seconds)."""
     W, H, fps, d = plan["width"], plan["height"], plan["fps"], seg["duration"]
-    tpl = TEMPLATES[plan["template"]]
+    tpl = template_of(plan)
     fmt = FORMATS[plan["format"]]
     if seg["kind"] == "audiogram":
         return _audiogram_command(ffmpeg, plan, seg, i, workdir, out, tpl)
@@ -1681,6 +1779,13 @@ def brief(root, project_name: str = "") -> str:
         lines.append(f"| `{i['ref']}` | {i['name']}{' (prepared)' if i['prepared'] else ''} | {i['kind']} | {length} | {i['caption'] or '_none_'} |")
     lines += ["", "## Formats", ""] + [f"- `{k}`: {v['label']}" for k, v in FORMATS.items()]
     lines += ["", "## Templates (the look and the pacing)", ""] + [f"- `{k}`: {v['blurb']}" for k, v in TEMPLATES.items()]
+    lines += ["", "A look of your own: `template` may instead be an object that starts from one of the above and changes it, e.g. "
+              '`{"name": "Warm riso", "base": "clean", "bg": "#1b1410", "accent": "#ff6b4a", "fade": 0.6, "grain": 8, "vignette": true, '
+              '"grade": {"saturation": 0.85, "contrast": 1.05, "warmth": 0.6}, "join": "fade", "background": "glow"}`. '
+              f"Fields: `name` (required, 1 to 30 characters), `base` (default `clean`), `label`, `blurb`, `bg` and `accent` (colours like `#14110f`), `vignette`, `moves`, "
+              + ", ".join(f"`{k}` ({lo} to {hi})" for k, (lo, hi) in LOOK_NUMBERS.items())
+              + f"; `grade` is an object of numbers, never a filter string: " + ", ".join(f"`{k}` ({lo} to {hi})" for k, (lo, hi) in LOOK_GRADE.items())
+              + "; `join`, `background` and `effect` are defaults the recipe's own fields override."]
     lines += ["", "## Fields", "",
               "- `clips[]` (required, in order): `media`; optional `caption` (overrides the file's caption), `hold` (seconds on screen), "
               "`speed` (videos only, 0.25 to 2; below 1 is slow motion), `start` (videos only, seconds into the clip), "
@@ -1698,7 +1803,7 @@ def brief(root, project_name: str = "") -> str:
               "`{\"versus\": {\"title\": \"Sebelum dan selepas\", \"before\": {\"label\": \"Cara lama\", \"items\": [\"Uji manual\"]}, \"after\": {\"label\": \"Kini\", \"items\": [\"Ujian automatik\"]}}}` (a before panel with red crosses, then an after panel with green ticks while the before dims; 1 to 4 items of up to 30 characters each side, labels up to 20; use it to show a change). "
               "They work in every look, take only `hold`, and can be dropped to fit `max_seconds` like any clip.",
               "- `join`: how scenes are joined, one of `cut` (hard cut, even in a look that crossfades), `fade`, `slide` (the next scene slides in from the right), `slideup`, `wipe`, `circle` (a circle opens), `zoom`, `blur`, `pixel`, `dip` (through black). Left out, the look decides. A join overlaps the two scenes for 0.45 s, so it cannot be used with `music.sync` or a `bpm` (those need hard cuts). It works between pictures, clips and cards alike.",
-              "- `background`: a quiet pattern behind every drawn card instead of the flat colour, one of `gradient` (a diagonal drift towards a tint of the accent), `grid` (faint lines) or `glow` (a soft pool of light in the middle). Applies to text, explainer, title and end cards; left out is flat.",
+              "- `background`: a quiet pattern behind every drawn card instead of the flat colour, one of `gradient` (a diagonal drift towards a tint of the accent), `grid` (faint lines), `glow` (a soft pool of light in the middle), `glass` (soft coloured light under a large frosted plate with a light edge) or `vapor` (a vaporwave sunset: a slatted sun on a low horizon over a perspective grid floor, in the look's accent). Applies to text, explainer, title and end cards; left out is flat.",
               "- `captions`: true draws each clip's caption on screen; `title_card` / `end_card`: `{text, subtitle?, hold?}`.",
               "- `music`: `{file, start?, fade_out?, sync?}` or null. `\"sync\": \"beat\"` finds the song's beat, makes every piece a whole number of beats long and starts the song on a beat, so every cut lands on one (hard cuts; the plan reports the BPM, or warns when the song has no steady beat). Use only royalty-free music; a commercial song gets a posted video muted or blocked.",
               "- `music: {\"bpm\": 75}` (no file) cuts to that tempo with NO audio: every piece is a whole number of beats from the first frame, so a song added later in the app (a trending sound that cannot be downloaded) lines up if it is started on a beat. Use it when the song's BPM is known and its file is not.",
@@ -1708,7 +1813,7 @@ def brief(root, project_name: str = "") -> str:
               "- `tighten`: `\"gaps\"` cuts the dead air out of talking video clips: each phrase is kept with a little either side, pauses up to about 0.8 s stay, longer silences are cut and the phrases joined (jump cuts), and the clip keeps its own sound. A clip can opt in or out with `\"tighten\": true|false`. It finds speech-like sound, not words, so it cannot remove a repeated take.",
               "- `transition`: `\"zoom\"` (punch in at the end of a piece and settle at the start of the next, a zoom cut), `\"zoom_in\"` or `\"zoom_out\"` (just one half), or `\"flip\"` (a 3D card flip: each piece swings out around its vertical axis and the next swings in, through black; it suits hard cuts). Applies to photos and clips, never changes any timing. "
               "A video clip can also take `move`: `\"in\"` or `\"out\"` to zoom slowly over its whole length.",
-              "- `effect`: `\"dither\"` (chunky ordered-dither pixels, 216 colours), `\"glitch\"` (a short burst of colour split, sideways tearing and noise as every piece starts and about every 0.9 s) or `\"neon\"` (glowing outlines over a darkened picture). Applies to photos and clips, works with any look, never changes any timing; captions stay clean and on top.",
+              "- `effect`: `\"dither\"` (chunky ordered-dither pixels, 216 colours), `\"glitch\"` (a short burst of colour split, sideways tearing and noise as every piece starts and about every 0.9 s) `\"neon\"` (glowing outlines over a darkened picture) or `\"riso\"` (a two-ink risograph print: pink and blue in a few strengths, a little out of register, on warm paper with fixed grain). Applies to photos and clips, works with any look, never changes any timing; captions stay clean and on top.",
               "- `depth`: `\"card\"` shows each photo and clip as a smaller card that sways in 3D perspective over a darkened, blurred copy of itself. It is a flat picture tilted, not a depth map, so nothing parallaxes. It also works with `transition`.",
               "- `speech`: `\"follow\"` starts each video clip (that has no explicit `start`) where people speak, so a long clip's excerpt holds the words, not dead air. It finds speech-like sound, not words.",
               "- `quality`: `\"final\"` (default), `\"share\"` (the same video at full size in a much smaller file, for a slow link or posting; a little less fine detail: a photo reel came out at 15% of the final's size) or `\"draft\"` (half size, no grain: a fast preview).",

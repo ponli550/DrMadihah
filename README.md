@@ -841,13 +841,34 @@ element one job and one level, make the primary action look primary, fewer choic
   video that is joined by copying. Measured: all ten render; the same two scenes' mid-join frames differ between slide, circle and fade, so the
   name really reaches ffmpeg (a test that first passed with the name ignored was rewritten to catch that). Both machines' ffmpeg (9.0.2 here,
   9.0.1 on the Air) have all nine transitions.
+- **A look of your own** (`"template"` as an object): the look is data, so a new one needs no code. It starts from a built-in (`base`, default
+  `clean`) and changes what it names: `bg` and `accent` (colours like `#1b1410`), `photo_hold`, `video_max`, `video_speed`, `fade`, `zoom`, `grain`,
+  `vignette`, `moves`, a `grade` and defaults for `join`, `background` and `effect` that the recipe's own fields override. `name` (1 to 30
+  characters) is required and is what shows as the look's name. `grade` is **named numbers only**: `saturation`, `contrast`, `brightness`, `gamma`
+  and `warmth` (a recipe cannot give an ffmpeg filter string, because filters such as `movie=` can read files, so the chain is built here and a
+  string is refused with that reason). Example: `{"name": "Warm riso", "base": "clean", "bg": "#1b1410", "accent": "#ff6b4a", "fade": 0.6, "grain": 8,
+  "vignette": true, "grade": {"saturation": 0.85, "contrast": 1.05, "warmth": 0.6}, "join": "fade", "background": "glow"}`. The look travels with the
+  recipe, so a saved recipe keeps it. The brief documents it, so `umcares draft` can write one from a style name ("a warm risograph look"). On the
+  page a loaded recipe's look appears as "Custom: <name>" in the Look list and is sent back unchanged; the page cannot yet *edit* a look. A look is
+  still built on one of the six built-ins, so it changes colour, pacing and finish but cannot add a new way of drawing (the kinetic and collage
+  styles are inherited from their base).
 - **Behind the cards** (`"background"`: `gradient`, `grid` or `glow`, the "Behind the cards" list in More options): a quiet pattern instead of the
   flat colour under every drawn card: the quote, announce and countdown cards, all six explainer cards, and the title and end cards (kinetic
   ones too). `gradient` drifts diagonally from the look's background towards a tint of its accent, `grid` is engineering-paper lines (the text colour at 13% opacity, so they can be seen),
-  `glow` is a soft pool of accent light behind the middle. Pictures, clips and the collage look are untouched. Measured on the first frame:
+  `glow` is a soft pool of accent light behind the middle. `glass` is
+  soft light in three hues (the accent with its colour channels rotated) and two small bright dots, under one large plate covering the
+  middle of the frame (7% side margins, 10% top and bottom) that veils what is behind it lighter, blurs it, and has a thin light edge, so
+  the dot in the margin is sharp and the one under the plate is a smear (measured 603 against 221 on one frame). One frame is made and blurred
+  once and then repeated for the length of the piece, so it costs almost nothing (6 s for a three-card render here). Known flaw: the
+  before-and-after card's dimming veil is a flat slab of the background colour that runs past the plate's edges, and a wide title can too.
+  `vapor` is a vaporwave sunset in the look's own accent: a sky that warms from the background colour towards the horizon, a sun cut by slats that
+  thicken downwards, and a perspective grid floor (lines that run to a vanishing point, crossed by lines that crowd towards the horizon) that fades in
+  from the horizon so it does not alias. The horizon is low (78% of the height) so the middle of the frame, where most text sits, stays on clear
+  sky. It is one frame computed with `geq` and repeated, 0.4 s for a 2 s piece at 1080x1920 here. The quote card's attribution line sits right
+  on the horizon (legible, but it collides with the grid), and a lower horizon would put the sun behind it, so it stays at 78%. Pictures, clips and the collage look are untouched. Measured on the first frame:
   corners differ under a gradient, the middle is brighter under a glow, a grid is mostly flat between its lines; a test fails if the
   gradient is switched off.
-- **Picture effects** (`"effect": "dither" | "glitch" | "neon"`, the "Picture effect" list): from the "20 animation styles" post saved in
+- **Picture effects** (`"effect": "dither" | "glitch" | "neon" | "riso"`, the "Picture effect" list): from the "20 animation styles" post saved in
   sekerinshotto; the three of them that ffmpeg can do alone, no new dependency. Applied to photo and video pieces (not cards, the paper
   collage or audiograms), with any look, `transition` and `depth`; the captions are drawn on top, so they stay clean. Timing-neutral.
   **Dither**: the picture is drawn 180 pixels across, each colour channel is cut to 6 levels (216 colours) with a 4x4 ordered
@@ -855,7 +876,15 @@ element one job and one level, make the primary action look primary, fewer choic
   grey comes out as two levels in a repeating pattern (4 levels per channel looked noisy with olive fringes on skin, so it is 6). **Glitch**: a
   burst of colour split, sideways tearing of some bands and noise for 0.14 s as every piece starts and again every 0.9 s (so it lands on
   each cut); between bursts the picture is untouched. **Neon**: the picture is darkened, its outlines are found, lit as a cyan-white
-  line with a magenta glow. Measured on the Air with six real photos (18 s, 1080x1920): **render 35 s dither, 49 s glitch, 97 s neon**
+  line with a magenta glow. **Riso** (from the same saved posts' "risograph print"): the picture becomes luminance, then two inks as a
+  two-drum risograph lays them: fluorescent pink in four strengths over the dark and mid tones, blue in three over the darkest only, the blue
+  layer shifted about 0.6% of the width right and 0.4% of the height down (so every edge has a pink side and a blue side), multiplied onto warm
+  paper (243, 237, 220) with a fixed grain (no flicker on a still picture). It is built from `lutrgb`, `blend` and `noise` alone, no per-pixel
+  expressions, so it is cheap: 1 s to render a 2 s still at 1080x1920 here (not timed on the Air). Because the inks follow luminance, a saturated
+  colour keeps its darkness but not its hue (a pure red turns purple-pink), which is how a two-colour print behaves; faces and skies come out as
+  pink and blue tones. It shares the 12 Mbit/s effect cap. Measured: the lightest part is the paper colour, the darkest is a heavy overprint,
+  a grey ramp comes out in a handful of colour classes, an edge has a pink side and a blue side, and two frames of a still picture are the
+  same print; each of those tests fails when its part is removed. Measured on the Air with six real photos (18 s, 1080x1920): **render 35 s dither, 49 s glitch, 97 s neon**
   against about 37 s for a plain final (neon is the slow one, about 2.6x). **Size is the catch:** noise and thin outlines are expensive at
   CRF 14, so uncapped the glitch reel came out at **63 Mbit/s and the neon one at 36** (a plain final is 6.6; the judge flagged both as
   unusually heavy), and an effect final is now capped at 12 Mbit/s: measured **33.8 MB (glitch) and 34.3 MB (neon) against 14.8 MB for a

@@ -2487,6 +2487,159 @@ class JoinBetweenScenes(Fixtures):
 
 
 @NEED
+class RisoEffect(Fixtures):
+    """`effect: riso`: a two-ink print on warm paper. Measured on pixels: the paper colour, a few tonal steps, two inks out of register, a still grain."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        ff("-f", "lavfi", "-i", "color=c=black:s=640x360,geq=lum='255-255*X/W':cb=128:cr=128", "-frames:v", "1", str(cls.fx / "ramp.jpg"))
+        ff("-f", "lavfi", "-i", "color=c=white:s=640x360,drawbox=x=200:y=60:w=240:h=240:color=black:t=fill", "-frames:v", "1", str(cls.fx / "ink.jpg"))
+
+    def setUp(self):
+        super().setUp()
+        self.add("ramp.jpg", "ink.jpg")
+
+    def shot(self, name, at=1.0, effect="riso", hold=3):
+        for f in self.root.joinpath("exports").glob("*"):
+            f.unlink()
+        job, out = self.render(recipe([{"media": name, "move": "still", "hold": hold}], template="punchy", captions=False, effect=effect))
+        self.assertEqual(job["state"], "done", job["error"])
+        return frame(out, at, 216, 384)
+
+    @staticmethod
+    def px(d, x, y, w=216):
+        i = (y * w + x) * 3
+        return tuple(d[i:i + 3])
+
+    def row(self, d, y=192, w=216):
+        return [self.px(d, x, y, w) for x in range(w)]
+
+    def test_riso_is_an_effect_the_recipe_and_the_look_can_name(self):
+        self.assertIn("riso", montage.EFFECTS)
+        self.assertEqual(montage.plan_for(recipe([{"media": "ramp.jpg"}], effect="riso"), self.root)["effect"], "riso")
+        self.assertEqual(montage.plan_for(recipe([{"media": "ramp.jpg"}], template={"name": "Print", "effect": "riso"}), self.root)["effect"], "riso")
+
+    def test_white_becomes_warm_paper_and_black_becomes_a_heavy_overprint_of_both_inks(self):
+        row = self.row(self.shot("ramp.jpg"))
+        paper = montage.RISO_PAPER
+        lightest = max(row, key=sum)
+        self.assertTrue(all(abs(a - b) <= 28 for a, b in zip(lightest, paper)), f"the lightest part is the paper colour {paper}, got {lightest}")
+        self.assertGreater(lightest[0], lightest[2] + 6, "paper is warm, not white: red above blue")
+        darkest = min(row, key=sum)
+        self.assertLess(sum(darkest), 330, f"the darkest part carries both inks, got {darkest}")
+
+    def test_tones_come_in_a_few_steps_not_a_smooth_ramp(self):
+        d = self.shot("ramp.jpg")
+        levels = set()
+        for x in range(0, 216, 6):                             # a column's mean over 80 rows: the grain (random from run to run) averages out
+            px = [self.px(d, x, y) for y in range(150, 230)]
+            levels.add(round(sum(sum(c) for c in px) / len(px) / 3 / 12))
+        self.assertLessEqual(len(levels), 10, f"a print has a handful of strengths, found {len(levels)} grey levels along the ramp (a smooth ramp gives 16)")
+        self.assertGreaterEqual(len(levels), 5, "but it is not flat")
+
+    def test_the_second_ink_is_out_of_register_so_an_edge_has_a_pink_side_and_a_blue_side(self):
+        row = self.row(self.shot("ink.jpg"))
+        lum = [sum(c) for c in row]
+        dark = [i for i, v in enumerate(lum) if v < 200]
+        self.assertTrue(dark, "the black square printed")
+        left, right = dark[0], dark[-1]
+        self.assertTrue(any(c[0] > c[2] + 25 for c in row[left - 3:left + 3] if sum(c) > 200), f"pink where only the first ink reaches: {row[left - 3:left + 3]}")
+        self.assertTrue(any(c[2] > c[0] + 25 for c in row[right - 3:right + 4] if sum(c) > 200), f"blue where only the second ink reaches: {row[right - 3:right + 4]}")
+
+    def test_the_grain_is_fixed_to_the_print_and_does_not_flicker_on_a_still_picture(self):
+        for f in self.root.joinpath("exports").glob("*"):
+            f.unlink()
+        job, out = self.render(recipe([{"media": "ramp.jpg", "move": "still", "hold": 3}], template="punchy", captions=False, effect="riso"))
+        self.assertEqual(job["state"], "done", job["error"])
+        a, b = frame(out, 0.5, 216, 384), frame(out, 2.0, 216, 384)
+        self.assertLess(sum(abs(x - y) for x, y in zip(a, b)) / len(a), 2.0, "the same still picture at two times is the same print")
+
+
+@NEED
+class LooksAsData(Fixtures):
+    """A recipe's `template` may be an object: a look written as data, on top of a built-in."""
+    LOOK = {"name": "Warm riso", "base": "clean", "bg": "#1b1410", "accent": "#ff6b4a", "fade": 0.6, "grain": 8, "vignette": True,
+            "grade": {"saturation": 0.85, "contrast": 1.05, "warmth": 0.6}}
+
+    def setUp(self):
+        super().setUp()
+        self.add("land.jpg")
+        self.clips = [{"media": "land.jpg", "hold": 2, "move": "still"}, {"quote": "Tiga", "hold": 2}]
+
+    def plan(self, look=None, **kw):
+        return montage.plan_for(recipe(self.clips, template=look if look is not None else self.LOOK, captions=False, **kw), self.root)
+
+    def problems(self, look):
+        with self.assertRaises(montage.RecipeError) as ctx:
+            self.plan(look)
+        return str(ctx.exception)
+
+    def test_a_look_takes_the_built_ins_pacing_and_changes_only_what_it_says(self):
+        p = self.plan()
+        self.assertEqual(p["template"], "Warm riso")
+        look, clean = p["look"], montage.TEMPLATES["clean"]
+        self.assertEqual((look["bg"], look["accent"], look["fade"], look["grain"], look["vignette"]), ("#1b1410", "#ff6b4a", 0.6, 8, True))
+        self.assertEqual((look["photo_hold"], look["moves"]), (clean["photo_hold"], clean["moves"]), "what it does not say comes from the base")
+        self.assertEqual(p["fade"], 0.6, "the crossfade is the look's")
+        self.assertIsNone(self.plan("clean")["look"], "a built-in carries no look of its own")
+
+    def test_the_grade_is_built_from_named_numbers_into_a_fixed_chain(self):
+        self.assertEqual(montage.grade_chain({"saturation": 0.8, "warmth": 0.5}),
+                         "eq=saturation=0.8,colorbalance=rs=0.030:bs=-0.030:rm=0.020:bm=-0.020")
+        self.assertEqual(montage.grade_chain({}), "")
+        self.assertEqual(montage.grade_chain({"contrast": 1.2, "gamma": 0.9}), "eq=contrast=1.2:gamma=0.9")
+
+    def test_a_filter_string_a_bad_value_and_an_unknown_field_are_refused_in_plain_words(self):
+        for look, says in (
+            ({**self.LOOK, "grade": "movie=/etc/passwd"}, "not a filter string"),
+            ({**self.LOOK, "grade": {"saturation": 0.8, "eq": "x"}}, "template.grade.eq: unknown"),
+            ({**self.LOOK, "grade": {"saturation": 9}}, "template.grade.saturation: a number from 0 to 2"),
+            ({**self.LOOK, "bg": "red"}, "template.bg: a colour like"),
+            ({**self.LOOK, "bg": "#12345"}, "template.bg"),
+            ({**self.LOOK, "fade": 5}, "template.fade: a number from 0 to 1.5"),
+            ({**self.LOOK, "fade": True}, "template.fade"),
+            ({**self.LOOK, "moves": ["fly"]}, "template.moves"),
+            ({**self.LOOK, "base": "nope"}, "template.base: must be one of"),
+            ({**self.LOOK, "zzz": 1}, "template.zzz: unknown field"),
+            ({k: v for k, v in self.LOOK.items() if k != "name"}, "template.name"),
+            ({**self.LOOK, "name": "x" * 31}, "template.name"),
+        ):
+            with self.subTest(look=look):
+                self.assertIn(says, self.problems(look))
+        with self.assertRaises(montage.RecipeError):
+            self.plan("nonsense")
+
+    def test_the_looks_join_background_and_effect_are_defaults_the_recipe_can_override(self):
+        look = {**self.LOOK, "join": "slide", "background": "glow", "effect": "dither"}
+        p = self.plan(look)
+        self.assertEqual((p["join"], p["background"], p["effect"]), ("slideleft", "glow", "dither"))
+        p = self.plan(look, join="wipe", background="grid")
+        self.assertEqual((p["join"], p["background"], p["effect"]), ("wipeleft", "grid", "dither"), "the recipe's own say wins, the rest stays")
+        self.assertEqual(self.plan()["background"], None)
+
+    def test_the_brief_documents_the_look_and_its_own_example_is_accepted(self):
+        import re
+        brief = montage.brief(self.root)
+        self.assertIn("A look of your own", brief)
+        example = json.loads(re.search(r"e\.g\. `(\{.*?\})`\. Fields", brief).group(1))
+        self.assertEqual(self.plan(example)["template"], "Warm riso")
+        for field in montage.LOOK_KEYS:
+            self.assertIn(f"`{field}`", brief, f"{field} is documented")
+
+    def test_a_card_is_drawn_on_the_looks_colour_and_the_grade_reaches_a_picture(self):
+        mono = {"name": "Mono", "base": "clean", "bg": "#1b1410", "grade": {"saturation": 0}}
+        job, out = self.render(recipe([{"quote": "Tiga", "hold": 2}, {"media": "land.jpg", "hold": 2, "move": "still"}], template=mono, captions=False, quality="draft"))
+        self.assertEqual(job["state"], "done", job["error"])
+        d = frame(out, 0.02, 216, 384)
+        corner = tuple(d[3 * 3: 3 * 3 + 3])
+        self.assertTrue(all(abs(a - b) <= 6 for a, b in zip(corner, (0x1b, 0x14, 0x10))), f"the card's background is the look's colour, got {corner}")
+        pic = frame(out, 3.2, 216, 384)
+        spread = max(max(pic[i:i + 3]) - min(pic[i:i + 3]) for i in range(0, len(pic), 3 * 7))
+        self.assertLessEqual(spread, 12, "saturation 0 makes the picture grey: red, green and blue agree")
+
+
+@NEED
 class BackgroundBehindCards(Fixtures):
     """`background`: a quiet gradient, grid or glow under the card text. Measured on the first frame, before any text has arrived."""
     W, H = 216, 384
@@ -2511,7 +2664,7 @@ class BackgroundBehindCards(Fixtures):
         with self.assertRaises(montage.RecipeError) as ctx:
             montage.plan_for(recipe([{"quote": "Hi", "hold": 2}], template="kinetic", background="stripes"), self.root)
         self.assertIn("background", str(ctx.exception))
-        for name in ("gradient", "grid", "glow"):
+        for name in ("gradient", "grid", "glow", "glass", "vapor"):
             self.assertEqual(montage.plan_for(recipe([{"quote": "Hi", "hold": 2}], template="kinetic", background=name), self.root)["background"], name)
 
     def test_without_a_background_the_card_is_one_flat_colour(self):
@@ -2536,6 +2689,66 @@ class BackgroundBehindCards(Fixtures):
         flat = max(set(row), key=row.count)
         self.assertGreater(max(sum(c) for c in row) - sum(flat), 60, "the lines can be seen: well above the flat colour, not a hair off it")
         self.assertGreater(row.count(max(set(row), key=row.count)), self.W * 0.75, "mostly flat between them")
+
+    def test_glass_is_soft_coloured_light_under_a_frosted_plate_with_a_visible_edge(self):
+        d = self.first_frame({"quote": "x", "hold": 2}, "glass")
+        px, py = int(self.W * 0.07) // 2 * 2, int(self.H * 0.10) // 2 * 2
+        flat = self.px(self.first_frame({"quote": "x", "hold": 2}), 3, 3)
+        lum = lambda c: sum(c)
+        self.assertGreater(max(lum(self.px(d, x, y)) for x in (3, self.W - 4) for y in (3, self.H // 2, self.H - 4)), lum(flat) + 25, "soft coloured light, not a flat colour")
+        row = self.H // 2
+        edge = lum(self.px(d, px, row))
+        self.assertGreater(edge, lum(self.px(d, px - 5, row)) + 20, "the plate has a visible light edge")
+        self.assertGreater(edge, lum(self.px(d, px + 5, row)) + 12, "that is brighter than the plate's own face")
+        veiled = [lum(self.px(d, px + 6, y)) - lum(self.px(d, px - 6, y)) for y in range(py + 10, self.H - py - 10, 24)]
+        self.assertGreater(sum(veiled) / len(veiled), 30, "the face of the plate is veiled lighter than the light around it (47 measured, 11 without the veil)")
+
+    def test_what_is_behind_the_plate_is_blurred_and_what_is_beside_it_is_not(self):
+        d = self.first_frame({"quote": "x", "hold": 2}, "glass")
+        y = int(self.H * 0.88)
+        outside, inside = sum(self.px(d, int(self.W * 0.035), y)), sum(self.px(d, int(self.W * 0.80), y))
+        self.assertGreater(outside, inside * 1.5, f"the same bright dot is sharp in the margin ({outside}) and a smear under the plate ({inside})")
+
+    def test_glass_and_vapor_run_for_exactly_the_length_of_the_piece_under_every_card_kind(self):
+        clips = [{"quote": "x", "hold": 2}, {"checklist": {"title": "T", "items": ["a", "b"]}, "hold": 2.5}, {"typing": {"text": "x = 1"}, "hold": 2.5}]
+        for background in ("glass", "vapor"):
+            with self.subTest(background=background):
+                for f in self.root.joinpath("exports").glob("*"):
+                    f.unlink()
+                rec = recipe(clips, template="kinetic", captions=False, background=background, quality="draft")
+                job, out = self.render(rec)
+                self.assertEqual(job["state"], "done", job["error"])
+                self.assertAlmostEqual(stats(out)["dur"], montage.plan_for(rec, self.root)["total"], delta=0.2)
+
+    def test_vapor_is_a_sunset_over_a_perspective_grid_with_clear_sky_where_the_text_sits(self):
+        d = self.first_frame({"quote": "x", "hold": 2}, "vapor")
+        flat = self.px(self.first_frame({"quote": "x", "hold": 2}), 3, 3)
+        lum = lambda c: sum(c)
+        yh = int(self.H * 0.78)
+        mid = self.px(d, 6, self.H // 2)
+        self.assertLessEqual(sum(abs(a - b) for a, b in zip(self.px(d, 6, 4), flat)), 30, "the top of the sky is the look's own background colour")
+        self.assertLessEqual(sum(abs(a - b) for a, b in zip(mid, flat)), 40, "the middle of the frame, where text sits, is still dark sky")
+        self.assertGreater(lum(self.px(d, 6, yh - 8)), lum(flat) + 120, "the sky warms towards the horizon")
+        ys = yh - int(self.W * 0.17 * 0.10)
+        self.assertGreater(lum(self.px(d, self.W // 2, ys - 10)), lum(self.px(d, 6, ys - 10)) + 150, "a sun, brighter than the sky beside it")
+
+    def test_vapor_floor_lines_converge_so_the_horizon_has_more_lines_than_the_foreground(self):
+        d = self.first_frame({"quote": "x", "hold": 2}, "vapor")
+        yh = int(self.H * 0.78)
+
+        def lines(y):
+            row = [sum(self.px(d, x, y)) for x in range(self.W)]
+            floor = sorted(row)[len(row) // 4]
+            runs, inside = 0, False
+            for v in row:
+                if v > floor + 90 and not inside:
+                    runs, inside = runs + 1, True
+                elif v <= floor + 90:
+                    inside = False
+            return runs
+        near_horizon, foreground = lines(yh + int(self.H * 0.06)), lines(self.H - 3)
+        self.assertGreater(near_horizon, foreground, f"{near_horizon} lines close to the horizon against {foreground} in the foreground")
+        self.assertGreaterEqual(near_horizon, 4, "a grid, not a floor")
 
     def test_the_title_and_end_cards_take_the_background_too(self):
         job, out = self.render(recipe([{"media": "land.jpg", "hold": 2}], template="kinetic", background="gradient", title_card={"text": "Hi"}))
