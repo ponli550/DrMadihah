@@ -1150,6 +1150,10 @@ def build_parser() -> argparse.ArgumentParser:
     ex.add_argument("--variants", type=int, default=0, metavar="N", help="save N versions (2 to 5) that differ only in the opening hook (the title card's text), to A/B test")
     ex.set_defaults(func=cmd_explain)
 
+    mc = sub.add_parser("mcp", help="run an MCP server (stdio) so Claude and other MCP clients can drive umcares as tools")
+    mc.add_argument("--url", help="the web app's address (default: UMC_WEB_URL)")
+    mc.set_defaults(func=cmd_mcp)
+
     jd = sub.add_parser("judge", help="check finished videos you choose (format, sound, picture) and say pass, warn or fail")
     jd.add_argument("project", help="the project's folder name on the web app, e.g. cyberdsa")
     jd.add_argument("names", nargs="*", help="the video file names to check (nothing is checked unless you name it or use --all)")
@@ -1219,6 +1223,21 @@ def cmd_explain(args, cfg):
         log.ok(f"saved as recipe '{res['name']}': open the project page, Make a video, Saved recipes, then Use or Make. Nothing was rendered.")
     else:
         log.out(res["recipe"])
+    return 0
+
+
+def cmd_mcp(args, cfg):
+    """Serve MCP over stdio. stdout is the protocol, so nothing else may be printed to it; a human gets stderr."""
+    import os
+    from . import mcpserver
+    url = args.url or cfg.env.get("UMC_WEB_URL") or os.environ.get("UMC_WEB_URL", "")
+    try:
+        site = draft_mod.Site(url)
+    except draft_mod.DraftError as e:
+        print(f"umcares mcp: {e}", file=sys.stderr)
+        return 2
+    print(f"umcares mcp: serving tools for {site.base} on stdio", file=sys.stderr)
+    mcpserver.Server(site).serve(sys.stdin, sys.stdout)
     return 0
 
 

@@ -616,6 +616,28 @@ saved as `claude-draft-<time>` under *Saved recipes* and is **never rendered**: 
   failed the checker), never a half-saved recipe.
 
 
+#### Mode E: `umcares mcp` (an MCP server, so Claude and other MCP clients can drive umcares)
+
+```bash
+claude mcp add umcares -e UMC_WEB_URL=https://<machine>.<tailnet>.ts.net/umcares -- /path/to/DrMadihah/bin/umcares mcp
+```
+
+Claude Desktop (or any client that reads a config file): `{"mcpServers": {"umcares": {"command": "/path/to/DrMadihah/bin/umcares", "args": ["mcp"],
+"env": {"UMC_WEB_URL": "https://<machine>.<tailnet>.ts.net/umcares"}}}}`. It runs on the machine that runs the client and talks to the web app over the
+tailnet, so that machine must be on it. MCP over stdio is newline-delimited JSON-RPC 2.0 (`initialize`, `tools/list`, `tools/call`, `ping`), written with
+the standard library, so there is no `mcp` package to install. stdout carries only the protocol; the banner and errors go to stderr.
+
+Ten tools, each over the web app's own API (so a recipe an LLM writes is checked exactly as a hand-written one is): `list_projects`, `get_project`
+(pictures and clips with their refs and captions, saved recipes, finished videos, jobs), `get_recipe_brief` (the whole recipe format), `get_thumbnails`
+(images, up to 6 a call), `plan_recipe` (a dry run: the timeline, or the problems to fix), `save_recipe`, `render_recipe` (quality final, share or
+draft), `get_jobs`, `cancel_render` and `judge_videos`. Read-only tools say so (`readOnlyHint`); `cancel_render` is marked destructive; **nothing deletes
+an export, on purpose**. The server's own instructions tell a model the order (brief, project, plan until clean, save, ask the person, render, jobs,
+judge) and that rendering takes the Air's CPU for minutes. **Privacy:** `get_thumbnails` sends the person's photos to the model, so its description
+says to call it only with their agreement; a tool never returns a path on the machine. A bad project name (anything but lower case letters, digits and
+dashes) is refused before any request is made. Tested over real stdio and against a real web app (protocol errors, every tool, a render followed to a
+judged video), and connected to a real client: `claude -p --mcp-config ... --strict-mcp-config` started it, called `list_projects` on the live web app and
+returned the four project names. The Adobe/Premiere tools are not in it yet (phase 2).
+
 #### Mode D: `umcares explain` (a topic, researched)
 
 ```bash
