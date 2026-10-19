@@ -472,6 +472,17 @@ class Rendering(Fixtures):
         self.assertEqual(job["state"], "failed")
         self.assertIn("not enough free disk space", job["error"])
 
+    def test_two_jobs_made_in_the_same_millisecond_never_share_an_id_even_when_the_list_is_full(self):
+        self.add("land.jpg")
+        filler = [{"id": f"old{i}", "root": "/elsewhere", "state": "done", "percent": 100, "error": None, "output": None, "title": "", "format": "reels",
+                   "template": "punchy", "quality": "final", "total": 1, "pieces": 1, "warnings": []} for i in range(100)]
+        with mock.patch.object(montage.RENDERER, "jobs", filler), mock.patch.object(montage.time, "time", return_value=1_700_000_000.0), prepare.HEAVY:
+            ids = [montage.RENDERER.submit(self.root, recipe([{"media": "land.jpg"}], template=t))["id"] for t in ("punchy", "clean", "slowmo")]
+            self.assertEqual(len(montage.RENDERER.jobs), 100, "the list really is at its cap")
+        self.assertEqual(len(set(ids)), 3, ids)
+        montage.RENDERER.cancel(self.root)
+        montage.RENDERER.wait_idle(60)
+
     def test_pressing_make_twice_with_the_same_recipe_is_one_job_not_two(self):
         self.add("land.jpg")
         rec = recipe([{"media": "land.jpg"}], template="punchy")
