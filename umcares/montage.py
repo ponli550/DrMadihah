@@ -1294,6 +1294,7 @@ class Renderer:
     def __init__(self):
         self.cv = threading.Condition(threading.RLock())
         self.jobs: list = []
+        self.seq = 0                                         # only goes up: an id built from the list's length repeats once the list is trimmed
         self.thread = None
         self.ctls: dict = {}
 
@@ -1305,7 +1306,8 @@ class Renderer:
             same = next((j for j in self.jobs if j["root"] == str(root) and j["state"] in ("queued", "running") and j.get("_key") == key), None)
             if same:                                         # a second press of Make must not queue a second copy
                 return self.public(same)
-            job = self._enqueue(root, recipe, plan, key, f"{int(time.time() * 1000):x}{len(self.jobs)}", 0)
+            self.seq += 1
+            job = self._enqueue(root, recipe, plan, key, f"{int(time.time() * 1000):x}-{self.seq}", 0)        # the dash keeps it apart from ids saved by older versions
         return self.public(job)
 
     def _enqueue(self, root, recipe, plan, key, job_id, runs) -> dict:
