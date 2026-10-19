@@ -860,7 +860,12 @@ element one job and one level, make the primary action look primary, fewer choic
   middle of the frame (7% side margins, 10% top and bottom) that veils what is behind it lighter, blurs it, and has a thin light edge, so
   the dot in the margin is sharp and the one under the plate is a smear (measured 603 against 221 on one frame). One frame is made and blurred
   once and then repeated for the length of the piece, so it costs almost nothing (6 s for a three-card render here). Known flaw: the
-  before-and-after card's dimming veil is a flat slab of the background colour that runs past the plate's edges, and a wide title can too. Pictures, clips and the collage look are untouched. Measured on the first frame:
+  before-and-after card's dimming veil is a flat slab of the background colour that runs past the plate's edges, and a wide title can too.
+  `vapor` is a vaporwave sunset in the look's own accent: a sky that warms from the background colour towards the horizon, a sun cut by slats that
+  thicken downwards, and a perspective grid floor (lines that run to a vanishing point, crossed by lines that crowd towards the horizon) that fades in
+  from the horizon so it does not alias. The horizon is low (78% of the height) so the middle of the frame, where most text sits, stays on clear
+  sky. It is one frame computed with `geq` and repeated, 0.4 s for a 2 s piece at 1080x1920 here. The quote card's attribution line sits right
+  on the horizon (legible, but it collides with the grid), and a lower horizon would put the sun behind it, so it stays at 78%. Pictures, clips and the collage look are untouched. Measured on the first frame:
   corners differ under a gradient, the middle is brighter under a glow, a grid is mostly flat between its lines; a test fails if the
   gradient is switched off.
 - **Picture effects** (`"effect": "dither" | "glitch" | "neon" | "riso"`, the "Picture effect" list): from the "20 animation styles" post saved in

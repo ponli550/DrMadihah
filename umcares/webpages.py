@@ -1154,7 +1154,7 @@ function createMontage(opts) {
       max: select([["15", "up to 15 s"], ["30", "up to 30 s"], ["45", "up to 45 s"], ["60", "up to 60 s"], ["90", "up to 90 s"]], form.max),
       join: select([["", "The look decides"], ["cut", "Hard cut"], ["fade", "Fade"], ["slide", "Slide in"], ["slideup", "Slide up"], ["wipe", "Wipe"], ["circle", "Circle reveal"],
                     ["zoom", "Zoom in"], ["blur", "Blur"], ["pixel", "Pixelate"], ["dip", "Dip to black"]], form.join),
-      background: select([["", "Flat colour"], ["gradient", "Soft gradient"], ["grid", "Fine grid"], ["glow", "Glow in the middle"], ["glass", "Frosted glass"]], form.background),
+      background: select([["", "Flat colour"], ["gradient", "Soft gradient"], ["grid", "Fine grid"], ["glow", "Glow in the middle"], ["glass", "Frosted glass"], ["vapor", "Sunset grid (vaporwave)"]], form.background),
       cardKind: select(Object.entries(CARD_KINDS).map(([k, c]) => [k, c.icon + " " + c.label]), "quote"),
       cardAdd: el("button", {type: "button", className: "alt"}, "Add card"),
     };

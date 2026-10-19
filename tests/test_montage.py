@@ -2653,7 +2653,7 @@ class BackgroundBehindCards(Fixtures):
         with self.assertRaises(montage.RecipeError) as ctx:
             montage.plan_for(recipe([{"quote": "Hi", "hold": 2}], template="kinetic", background="stripes"), self.root)
         self.assertIn("background", str(ctx.exception))
-        for name in ("gradient", "grid", "glow", "glass"):
+        for name in ("gradient", "grid", "glow", "glass", "vapor"):
             self.assertEqual(montage.plan_for(recipe([{"quote": "Hi", "hold": 2}], template="kinetic", background=name), self.root)["background"], name)
 
     def test_without_a_background_the_card_is_one_flat_colour(self):
@@ -2698,12 +2698,46 @@ class BackgroundBehindCards(Fixtures):
         outside, inside = sum(self.px(d, int(self.W * 0.035), y)), sum(self.px(d, int(self.W * 0.80), y))
         self.assertGreater(outside, inside * 1.5, f"the same bright dot is sharp in the margin ({outside}) and a smear under the plate ({inside})")
 
-    def test_glass_runs_for_exactly_the_length_of_the_piece_under_every_card_kind(self):
+    def test_glass_and_vapor_run_for_exactly_the_length_of_the_piece_under_every_card_kind(self):
         clips = [{"quote": "x", "hold": 2}, {"checklist": {"title": "T", "items": ["a", "b"]}, "hold": 2.5}, {"typing": {"text": "x = 1"}, "hold": 2.5}]
-        rec = recipe(clips, template="kinetic", captions=False, background="glass", quality="draft")
-        job, out = self.render(rec)
-        self.assertEqual(job["state"], "done", job["error"])
-        self.assertAlmostEqual(stats(out)["dur"], montage.plan_for(rec, self.root)["total"], delta=0.2)
+        for background in ("glass", "vapor"):
+            with self.subTest(background=background):
+                for f in self.root.joinpath("exports").glob("*"):
+                    f.unlink()
+                rec = recipe(clips, template="kinetic", captions=False, background=background, quality="draft")
+                job, out = self.render(rec)
+                self.assertEqual(job["state"], "done", job["error"])
+                self.assertAlmostEqual(stats(out)["dur"], montage.plan_for(rec, self.root)["total"], delta=0.2)
+
+    def test_vapor_is_a_sunset_over_a_perspective_grid_with_clear_sky_where_the_text_sits(self):
+        d = self.first_frame({"quote": "x", "hold": 2}, "vapor")
+        flat = self.px(self.first_frame({"quote": "x", "hold": 2}), 3, 3)
+        lum = lambda c: sum(c)
+        yh = int(self.H * 0.78)
+        mid = self.px(d, 6, self.H // 2)
+        self.assertLessEqual(sum(abs(a - b) for a, b in zip(self.px(d, 6, 4), flat)), 30, "the top of the sky is the look's own background colour")
+        self.assertLessEqual(sum(abs(a - b) for a, b in zip(mid, flat)), 40, "the middle of the frame, where text sits, is still dark sky")
+        self.assertGreater(lum(self.px(d, 6, yh - 8)), lum(flat) + 120, "the sky warms towards the horizon")
+        ys = yh - int(self.W * 0.17 * 0.10)
+        self.assertGreater(lum(self.px(d, self.W // 2, ys - 10)), lum(self.px(d, 6, ys - 10)) + 150, "a sun, brighter than the sky beside it")
+
+    def test_vapor_floor_lines_converge_so_the_horizon_has_more_lines_than_the_foreground(self):
+        d = self.first_frame({"quote": "x", "hold": 2}, "vapor")
+        yh = int(self.H * 0.78)
+
+        def lines(y):
+            row = [sum(self.px(d, x, y)) for x in range(self.W)]
+            floor = sorted(row)[len(row) // 4]
+            runs, inside = 0, False
+            for v in row:
+                if v > floor + 90 and not inside:
+                    runs, inside = runs + 1, True
+                elif v <= floor + 90:
+                    inside = False
+            return runs
+        near_horizon, foreground = lines(yh + int(self.H * 0.06)), lines(self.H - 3)
+        self.assertGreater(near_horizon, foreground, f"{near_horizon} lines close to the horizon against {foreground} in the foreground")
+        self.assertGreaterEqual(near_horizon, 4, "a grid, not a floor")
 
     def test_the_title_and_end_cards_take_the_background_too(self):
         job, out = self.render(recipe([{"media": "land.jpg", "hold": 2}], template="kinetic", background="gradient", title_card={"text": "Hi"}))

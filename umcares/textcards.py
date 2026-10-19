@@ -61,13 +61,41 @@ def _lift(start: float, dur: float, px: int) -> str:
     return f"{px}*pow(1-min(1,max(0,(t-{start:g})/{dur:g})),3)"
 
 
-BACKGROUNDS = ("gradient", "grid", "glow", "glass")
+BACKGROUNDS = ("gradient", "grid", "glow", "glass", "vapor")
+VAPOR_HORIZON = 0.78                                    # where the horizon is, as a fraction of the height: low, so the middle of the frame stays clear sky for text
 
 
 def _blend(a: str, b: str, share: float) -> str:
     """The colour `share` of the way from b to a (hex in, hex out)."""
     x, y = a.lstrip("#"), b.lstrip("#")
     return "#" + "".join(f"{round(int(y[i:i + 2], 16) + (int(x[i:i + 2], 16) - int(y[i:i + 2], 16)) * share):02x}" for i in (0, 2, 4))
+
+
+def _vapor(bg: str, accent: str, W: int, H: int, fps, d) -> str:
+    """The synthwave scene as one frame computed with `geq` (a sky that warms towards the horizon, a slatted sun on it, a perspective grid floor
+    that fades in from the horizon so it does not alias), repeated for the length of the piece."""
+    rgb = lambda h: tuple(int(h.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4))
+    top, glow = rgb(bg), rgb(_blend(accent, bg, 0.55))
+    sun_a, sun_b = rgb(_blend(accent, "#ffffff", 0.45)), rgb(accent)
+    line, floor = rgb(_blend(accent, "#ffffff", 0.35)), rgb(_blend(bg, "#000000", 0.35))
+    yh = H * VAPOR_HORIZON
+    R = W * 0.17
+    ys = yh - R * 0.10
+    slat = H * 0.012
+    near = f"max(Y-{yh:.1f},0.5)"
+
+    def chan(k):
+        sky = f"({top[k]}+({glow[k]}-{top[k]})*pow(clip((Y-{H * 0.35:.1f})/{yh - H * 0.35:.1f},0,1),2.2))"
+        sun = f"({sun_a[k]}+({sun_b[k]}-{sun_a[k]})*clip((Y-{ys - R:.1f})/{2 * R:.1f},0,1))"
+        return (f"st(0,hypot(X-{W / 2:.1f},Y-{ys:.1f})/{R:.1f});"
+                f"st(1,lt(ld(0),1)*lt(Y,{yh:.1f})*gt(mod(Y,{slat:.2f}),{slat:.2f}*clip((Y-{ys - R * 0.2:.1f})/{R * 1.2:.1f},0,0.8)));"            # the sun, cut by slats that thicken downwards
+                f"st(2,max(pow(1-abs(2*mod({H * 0.072:.2f}/{near},1)-1),8),pow(1-abs(2*mod((X-{W / 2:.1f})/{near}*0.9,1)-1),14))"            # cross lines and lines that run to the vanishing point
+                f"*clip((Y-{yh:.1f})/{H * 0.035:.1f},0,1));"                                                                                    # fading in from the horizon
+                f"if(gt(Y,{yh:.1f}),{floor[k]}+({line[k]}-{floor[k]})*clip(ld(2),0,1),{sky}+({sun}-{sky})*ld(1))")
+    expr = ":".join(f"{c}='{chan(k)}'" for c, k in zip("rgb", range(3)))
+    frames = max(1, round(float(d) * float(fps)))
+    return (f"color=c=black:s={W}x{H}:r={fps}:d=1,trim=end_frame=1,format=gbrp,geq={expr},"
+            f"loop=loop=-1:size=1,setpts=N/({fps}*TB),trim=end_frame={frames}")
 
 
 def backdrop(kind, bg: str, accent: str, W: int, H: int, fps, d) -> str:
@@ -79,6 +107,8 @@ def backdrop(kind, bg: str, accent: str, W: int, H: int, fps, d) -> str:
     if kind == "grid":          # faint lines, an engineering-paper look
         cell = max(8, W // 12)
         return f"color=c={bg}:s={W}x{H}:r={fps}:d={d},drawgrid=w={cell}:h={cell}:t={max(1, W // 360)}:c={ink_for(bg)[:7]}@0.13"
+    if kind == "vapor":         # a sunset over a perspective grid: the vaporwave look
+        return _vapor(bg, accent, W, H, fps, d)
     if kind == "glass":         # soft coloured light, with a frosted plate over most of the frame: the light is blurred and veiled inside it
         rot = lambda c, k: "#" + c.lstrip("#")[2 * k:] + c.lstrip("#")[:2 * k]               # the accent with its channels rotated: two more hues
         blobs = ((accent, 0.28, 0.28, 0.24), (rot(accent, 1), 0.80, 0.72, 0.32), (rot(accent, 2), 0.74, 0.16, 0.22))
