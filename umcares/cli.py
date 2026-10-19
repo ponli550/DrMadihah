@@ -1135,6 +1135,7 @@ def build_parser() -> argparse.ArgumentParser:
     dr.add_argument("--budget", type=float, default=draft_mod.DEFAULT_BUDGET, help="safety cap in dollars for the single call")
     dr.add_argument("--from", dest="revise", metavar="RECIPE", help="revise a saved recipe instead of drafting a new one (a name, or 'latest'); the original is kept")
     dr.add_argument("--dry-run", action="store_true", help="check the draft and print it, but do not save it")
+    dr.add_argument("--variants", type=int, default=0, metavar="N", help="save N versions (2 to 5) that differ only in the opening hook (the title card's text), to A/B test")
     dr.set_defaults(func=cmd_draft)
 
     ex = sub.add_parser("explain", help="research a topic on the web and draft a cards-only explainer video from the sourced facts (saved for you to approve)")
@@ -1146,6 +1147,7 @@ def build_parser() -> argparse.ArgumentParser:
     ex.add_argument("--model", help="model for both calls (default: your Claude Code default)")
     ex.add_argument("--budget", type=float, default=draft_mod.DEFAULT_BUDGET, help="safety cap in dollars for the drafting call (research has its own cap)")
     ex.add_argument("--dry-run", action="store_true", help="check the draft and print it, but do not save it")
+    ex.add_argument("--variants", type=int, default=0, metavar="N", help="save N versions (2 to 5) that differ only in the opening hook (the title card's text), to A/B test")
     ex.set_defaults(func=cmd_explain)
 
     jd = sub.add_parser("judge", help="check finished videos you choose (format, sound, picture) and say pass, warn or fail")
@@ -1173,7 +1175,7 @@ def cmd_draft(args, cfg):
         site = draft_mod.Site(url)
         with spinner.spin("Claude is looking at the pictures", 240):
             res = draft_mod.draft(site, args.project, " ".join(args.request), max_images=args.images, images=not args.no_images,
-                                  budget=args.budget, model=args.model, save=not args.dry_run, revise=args.revise)
+                                  budget=args.budget, model=args.model, save=not args.dry_run, revise=args.revise, variants=args.variants)
     except draft_mod.DraftError as e:
         log.err(str(e))
         return 2
@@ -1182,6 +1184,8 @@ def cmd_draft(args, cfg):
            f"Claude saw {res['images']} picture(s), {res['attempts']} attempt(s)")
     for w in [*plan.get("warnings", []), *res.get("warnings", [])]:
         log.warn(w)
+    for k, v in enumerate(res.get("variants", []), 1):
+        log.ok(f"hook {k}: {v['hook']!r}" + (f"  ->  recipe '{v['name']}'" if v["name"] else ""))
     if res["name"]:
         log.ok(f"saved as recipe '{res['name']}': open the project page, Make a video, Saved recipes, then Use or Make. Nothing was rendered.")
     else:
@@ -1197,7 +1201,7 @@ def cmd_explain(args, cfg):
     try:
         site = draft_mod.Site(url)
         with spinner.spin("Claude is researching the topic, then drafting", 900):
-            res = draft_mod.explain(site, args.project, " ".join(args.topic), lang=args.lang, budget=args.budget, model=args.model, save=not args.dry_run)
+            res = draft_mod.explain(site, args.project, " ".join(args.topic), lang=args.lang, budget=args.budget, model=args.model, save=not args.dry_run, variants=args.variants)
     except draft_mod.DraftError as e:
         log.err(str(e))
         return 2
@@ -1209,6 +1213,8 @@ def cmd_explain(args, cfg):
     log.warn("every claim comes from the fact sheet, but read it and the cards before you post: the sources are the model's reading of the web")
     for w in [*plan.get("warnings", []), *res.get("warnings", [])]:
         log.warn(w)
+    for k, v in enumerate(res.get("variants", []), 1):
+        log.ok(f"hook {k}: {v['hook']!r}" + (f"  ->  recipe '{v['name']}'" if v["name"] else ""))
     if res["name"]:
         log.ok(f"saved as recipe '{res['name']}': open the project page, Make a video, Saved recipes, then Use or Make. Nothing was rendered.")
     else:

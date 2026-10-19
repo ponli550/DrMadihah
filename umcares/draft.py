@@ -243,13 +243,94 @@ def length_warning(request: str, plan: dict):
             f"add more pictures or clips, give a clip a longer hold, or accept the shorter video")
 
 
+# ------------------------------------------------------------------ hook variants
+HOOK_LIMIT = 60                                   # characters: a title card is read in a second or two
+MAX_VARIANTS = 5
+
+HOOKS = """Write {n} different opening hooks (the text of the video's title card) for the video recipe below. Rules:
+- Reply with ONLY a JSON array of {n} strings. No prose, no code fences.
+- Each hook is at most {limit} characters, in the language the video's own text uses.
+- Each takes a different angle: a question, a bold claim the video backs up, a number or a contrast, a promise of what the viewer will learn.
+- Every hook must be true of THIS video: promise only what the clips and cards below actually show. No invented facts, numbers or superlatives,
+  and no clickbait the video does not pay off.
+"""
+
+
+def build_hook_input(recipe: dict, request: str, n: int) -> str:
+    text = (HOOKS.format(n=n, limit=HOOK_LIMIT) + "\n## What was asked for\n" + request.strip()
+            + "\n\n## The recipe\n" + json.dumps(recipe, ensure_ascii=False))
+    return json.dumps({"type": "user", "message": {"role": "user", "content": [{"type": "text", "text": text}]}})
+
+
+def extract_hooks(text: str, n: int) -> list:
+    """The hooks in a reply: a JSON array of strings (a code fence or a sentence around it is tolerated). Blank, over-long and repeated ones are
+    dropped, and no more than n are kept; fewer than n may come back."""
+    t = text.strip()
+    fence = re.search(r"```(?:json)?\s*(\[.*\])\s*```", t, re.S)
+    if fence:
+        t = fence.group(1)
+    elif not t.startswith("["):
+        i, j = t.find("["), t.rfind("]")
+        t = t[i:j + 1] if 0 <= i < j else ""
+    try:
+        items = json.loads(t)
+    except ValueError:
+        return []
+    out, seen = [], set()
+    for x in items if isinstance(items, list) else []:
+        if isinstance(x, str) and 1 <= len(x.strip()) <= 100 and x.strip().lower() not in seen:
+            seen.add(x.strip().lower())
+            out.append(x.strip())
+    return out[:n]
+
+
+def with_hook(recipe: dict, hook: str) -> dict:
+    """The recipe with the title card's text set to `hook` (a title card is added if there was none); nothing else changes."""
+    r = json.loads(json.dumps(recipe))
+    card = dict(r.get("title_card") or {})
+    card["text"] = hook
+    r["title_card"] = card
+    return r
+
+
+def make_variants(site, slug: str, recipe: dict, request: str, n: int, ask, base_name, save: bool) -> tuple:
+    """N versions of the recipe that differ only in the title card's hook: (list of {name, hook, recipe, plan}, warnings). Each is checked by the
+    same dry run as a draft; a hook whose recipe does not pass is dropped with a warning, and if no hook can be had the caller keeps the
+    plain draft, so asking for variants can never lose it."""
+    try:
+        hooks = extract_hooks(ask(build_hook_input(recipe, request, n)), n)
+    except DraftError as e:
+        return [], [f"hook variants: {e}"]
+    if not hooks:
+        return [], ["hook variants: Claude's answer had no usable hooks (a JSON array of short, different lines), so only the plain draft is saved"]
+    out, warnings = [], []
+    if len(hooks) < n:
+        warnings.append(f"hook variants: asked for {n} but only {len(hooks)} usable hook(s) came back")
+    for k, hook in enumerate(hooks, 1):
+        r = with_hook(recipe, hook)
+        code, d = site.call("POST", f"/p/{slug}/api/montage", {"recipe": r, "dry_run": True})
+        if code != 200:
+            warnings.append(f"hook {k} ({hook!r}) was dropped: " + "; ".join((d.get("problems") or [d.get("error", f"HTTP {code}")])[:2]))
+            continue
+        name = None
+        if save:
+            name = f"{base_name}-hook-{k}"
+            code, sv = site.call("POST", f"/p/{slug}/api/montage/recipes", {"name": name, "recipe": r})
+            if code != 200:
+                raise DraftError("a variant is valid but could not be saved: " + str(sv.get("error", code)))
+        out.append({"name": name, "hook": hook, "recipe": r, "plan": d["plan"]})
+    return out, warnings
+
+
 # ------------------------------------------------------------------ the whole job
 def draft(site, slug: str, request: str, max_images: int = MAX_IMAGES, images: bool = True, budget: float = DEFAULT_BUDGET,
-          model=None, save: bool = True, ask=None, claude=None, revise=None, ctx=None) -> dict:
+          model=None, save: bool = True, ask=None, claude=None, revise=None, ctx=None, variants: int = 0) -> dict:
     """Draft, check, (repair once), and save a recipe. With `revise` (a saved recipe's name, or "latest") the request is applied to that
     recipe instead of drafting from scratch; the original is left as it is and the result is saved under a new name. Returns {"name", "recipe", "plan", "attempts", "images"}."""
     if not request or not request.strip():
         raise DraftError("say what you want, e.g. \"a 20 second reel of the opening, upbeat\"")
+    if variants and not 2 <= variants <= MAX_VARIANTS:
+        raise DraftError(f"variants: 2 to {MAX_VARIANTS} versions, or leave it out")
     if ask is None:
         claude = claude or shutil.which("claude")
         if not claude:                                                  # before the slow part, not after it
@@ -267,14 +348,17 @@ def draft(site, slug: str, request: str, max_images: int = MAX_IMAGES, images: b
             continue
         code, d = site.call("POST", f"/p/{slug}/api/montage", {"recipe": recipe, "dry_run": True})
         if code == 200:
-            name = None
-            if save:
-                name = "claude-draft-" + time.strftime("%Y%m%d-%H%M%S")
+            name = "claude-draft-" + time.strftime("%Y%m%d-%H%M%S")
+            found, notes = (make_variants(site, slug, recipe, request, variants, ask, name, save) if variants else ([], []))
+            if found:                                          # N versions replace the plain draft: they differ only in the hook
+                recipe, d = found[0]["recipe"], {"plan": found[0]["plan"]}
+                name = found[0]["name"]
+            elif save:
                 code, s = site.call("POST", f"/p/{slug}/api/montage/recipes", {"name": name, "recipe": recipe})
                 if code != 200:
                     raise DraftError("the recipe is valid but could not be saved: " + str(s.get("error", code)))
-            return {"name": name, "recipe": recipe, "plan": d["plan"], "attempts": attempt, "images": len(ctx["pics"]), "revised": bool(base),
-                    "warnings": [w for w in [length_warning(request, d["plan"])] if w]}
+            return {"name": name if save else None, "recipe": recipe, "plan": d["plan"], "attempts": attempt, "images": len(ctx["pics"]), "revised": bool(base),
+                    "variants": found, "warnings": [w for w in [length_warning(request, d["plan"]), *notes] if w]}
         problems = d.get("problems") or [d.get("error", f"HTTP {code}")]
         repair, last = {"answer": json.dumps(recipe)[:4000], "problems": problems}, "; ".join(problems[:3])
     raise DraftError("Claude's recipe did not pass the checker after one correction: " + (last or "unknown problem"))
@@ -320,7 +404,7 @@ def research(topic: str, ask) -> str:
 
 
 def explain(site, slug: str, topic: str, lang: str = "English", budget: float = DEFAULT_BUDGET, model=None, save: bool = True,
-            ask=None, research_ask=None, claude=None) -> dict:
+            ask=None, research_ask=None, claude=None, variants: int = 0) -> dict:
     """Research a topic, then draft a cards-only recipe from the fact sheet through `draft`. Returns draft()'s result plus "sheet"."""
     if research_ask is None or ask is None:
         claude = claude or shutil.which("claude")
@@ -331,7 +415,7 @@ def explain(site, slug: str, topic: str, lang: str = "English", budget: float = 
     sheet = research(topic, research_ask)
     ctx = gather(site, slug, 0, False, need_media=False)
     ctx["rules"] = EXPLAIN_RULES + (lang or "English") + "\n\n## Fact sheet\n" + sheet + "\n"
-    res = draft(site, slug, f"Explain: {topic.strip()}", budget=budget, model=model, save=save, ask=ask, claude=claude, ctx=ctx)
+    res = draft(site, slug, f"Explain: {topic.strip()}", budget=budget, model=model, save=save, ask=ask, claude=claude, ctx=ctx, variants=variants)
     res["sheet"] = sheet
     return res
 

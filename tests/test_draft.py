@@ -101,6 +101,73 @@ class Flow(unittest.TestCase):
         self.assertEqual((state["jobs"], state["exports"], state["active"]), ([], [], False), "a draft is never rendered")
         self.assertGreater(res["plan"]["total"], 2)
 
+    # -------------------------------------------------------------- hook variants
+    HOOKS3 = '["Why is shipping so slow?", "Three habits, one safer release", "Stop fearing deploy day"]'
+
+    def saved(self):
+        return {r["name"]: r["recipe"] for r in web.montage_state(self.root)["recipes"]}
+
+    def test_variants_save_n_versions_that_differ_only_in_the_title_cards_hook_and_no_plain_copy(self):
+        ask = Fake(self.good(title_card={"text": "Old", "subtitle": "Sub"}), self.HOOKS3)
+        res = draft.draft(self.site, "demo", "a reel for the launch", ask=ask, variants=3)
+        saved = self.saved()
+        self.assertEqual(len(saved), 3, "three versions and no plain draft beside them")
+        self.assertEqual([v["hook"] for v in res["variants"]], json.loads(self.HOOKS3))
+        base = json.loads(self.good(title_card={"text": "Old", "subtitle": "Sub"}))
+        for k, v in enumerate(res["variants"], 1):
+            self.assertEqual(v["name"], f"{res['variants'][0]['name'].rsplit('-hook-', 1)[0]}-hook-{k}")
+            r = saved[v["name"]]
+            self.assertEqual(r["title_card"], {"text": v["hook"], "subtitle": "Sub"}, "the hook replaces the text and keeps the rest of the card")
+            self.assertEqual({k2: x for k2, x in r.items() if k2 != "title_card"}, {k2: x for k2, x in base.items() if k2 != "title_card"}, "nothing else differs")
+        self.assertEqual(res["name"], res["variants"][0]["name"])
+
+    def test_a_draft_with_no_title_card_gets_one_in_each_version_and_the_model_sees_the_recipe_but_no_pictures(self):
+        ask = Fake(self.good(), self.HOOKS3)
+        draft.draft(self.site, "demo", "a reel", ask=ask, variants=3)
+        for r in self.saved().values():
+            self.assertIn(r["title_card"]["text"], json.loads(self.HOOKS3))
+        asked = ask.asked[1]["message"]["content"]
+        self.assertEqual([b["type"] for b in asked], ["text"], "the hook call is text only")
+        text = text_of(ask.asked[1])
+        for must in ("true of THIS video", "JSON array of 3", "Selamat datang", "a reel"):
+            self.assertIn(must, text)
+
+    def test_unusable_or_missing_hooks_never_lose_the_draft(self):
+        for answer, says in (("I cannot do that", "no usable hooks"), ('["Only one"]', "only 1 usable"), ('["Same", "same", "SAME"]', "only 1 usable"), ("[1, 2]", "no usable hooks")):
+            with self.subTest(answer=answer):
+                for f in (self.root / "recipes").glob("*"):                      # drafts made within one second share a timestamp name
+                    f.unlink()
+                res = draft.draft(self.site, "demo", "a reel", ask=Fake(self.good(), answer), variants=3)
+                new = set(self.saved())
+                self.assertTrue(new, "something was saved")
+                self.assertTrue(any(says in w for w in res["warnings"]), res["warnings"])
+                if says == "no usable hooks":
+                    self.assertEqual(res["variants"], [])
+                    self.assertEqual(len(new), 1, "the plain draft")
+
+    def test_the_count_is_checked_before_the_model_is_asked_and_a_dry_run_saves_nothing(self):
+        for n in (1, 6, -2):
+            with self.subTest(n=n):
+                ask = Fake(self.good())
+                with self.assertRaises(draft.DraftError) as ctx:
+                    draft.draft(self.site, "demo", "a reel", ask=ask, variants=n)
+                self.assertIn("2 to 5", str(ctx.exception))
+                self.assertEqual(ask.asked, [])
+        res = draft.draft(self.site, "demo", "a reel", ask=Fake(self.good(), self.HOOKS3), variants=3, save=False)
+        self.assertEqual((res["name"], [v["name"] for v in res["variants"]]), (None, [None, None, None]))
+        self.assertEqual(self.saved(), {})
+
+    def test_hooks_are_read_from_a_fence_or_a_sentence_and_blank_repeated_and_overlong_ones_are_dropped(self):
+        self.assertEqual(draft.extract_hooks('```json\n["A", "B", "C", "D"]\n```', 3), ["A", "B", "C"])
+        self.assertEqual(draft.extract_hooks('Here you go: ["A", " a ", "", "B"] enjoy', 5), ["A", "B"])
+        self.assertEqual(draft.extract_hooks(json.dumps(["x" * 101, "ok"]), 3), ["ok"])
+        self.assertEqual(draft.extract_hooks("no array", 3) + draft.extract_hooks('{"a": 1}', 3) + draft.extract_hooks("[not json]", 3), [])
+
+    def test_the_command_lists_the_hooks_and_the_recipes_they_were_saved_as(self):
+        with mock.patch.object(draft, "ask_claude", side_effect=[self.good(), self.HOOKS3]), mock.patch.object(draft.shutil, "which", return_value="/bin/claude"):
+            self.assertEqual(cli.main(["draft", "demo", "a", "reel", "--variants", "3", "--url", self.base]), 0)
+        self.assertEqual(len(self.saved()), 3)
+
     # -------------------------------------------------------------- a named length that cannot be met
     def test_the_length_a_request_names_is_read_in_seconds_and_minutes_and_none_is_none(self):
         for text, want in (("a 20 second reel", 20), ("30s opening", 30), ("video 2 minit", 120), ("1.5 minutes", 90), ("12-sec teaser", 12),
@@ -283,6 +350,11 @@ class Explain(unittest.TestCase):
                 self.assertIn("without sources", str(ctx.exception))
         self.assertEqual(ask.asked, [], "the drafting model was never called")
         self.assertEqual(web.montage_state(self.root)["recipes"], [])
+
+    def test_explain_can_make_hook_variants_too_and_asks_for_them_after_the_facts_are_in_the_recipe(self):
+        res = draft.explain(self.site, "bare", "how CI/CD works", ask=Fake(self.RECIPE, '["Why is CI/CD worth it?", "Ship smaller, ship safer"]'), research_ask=Fake(self.SHEET), variants=2)
+        self.assertEqual(len(res["variants"]), 2)
+        self.assertEqual(len(web.montage_state(self.root)["recipes"]), 2)
 
     def test_draft_still_refuses_a_project_with_nothing_to_show_and_a_blank_topic_is_refused(self):
         with self.assertRaises(draft.DraftError) as ctx:
