@@ -169,7 +169,7 @@ class Command(unittest.TestCase):
 
     def run_cmd(self, view, choice=(), url="http://127.0.0.1:9"):
         out, err = io.StringIO(), io.StringIO()
-        args = SimpleNamespace(view=view, choice=list(choice), url=url)
+        args = SimpleNamespace(view=view, choice=list(choice), url=url, recipe=None)
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = cli.cmd_panel(args, SimpleNamespace(env={}))
         return code, out.getvalue(), err.getvalue()

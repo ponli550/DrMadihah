@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from . import (auth, doctor, media_scan as inspect_mod, log, media, post, recipe
 from . import projects as projects_mod
 from . import draft as draft_mod
 from . import panel as panel_mod
+from . import panels as panels_mod
 from . import views
 from . import scope
 from .example import EXAMPLE_RECIPE
@@ -1168,7 +1170,14 @@ def build_parser() -> argparse.ArgumentParser:
     pn.add_argument("view", choices=(*panel_mod.VIEWS, "set"), help="a board's view, or `set` to choose the project (and recipe) the next boards show")
     pn.add_argument("choice", nargs="*", help="with `set`: the project's folder name, then optionally a recipe's row word")
     pn.add_argument("--url", help="the web app's address (default: UMC_WEB_URL)")
+    pn.add_argument("--recipe", metavar="ROW", help="with `set`: keep the chosen project and choose this recipe (a row word)")
     pn.set_defaults(func=cmd_panel)
+
+    ps = sub.add_parser("panels", help="install the panvim boards (a dry run unless --commit; changed keys files are backed up first)")
+    ps.add_argument("action", choices=("install",))
+    ps.add_argument("--commit", action="store_true", help="write the boards and keys (without it, only say what would happen)")
+    ps.add_argument("--url", help="bake this web app address into the boards (default: UMC_WEB_URL if set); it is a tailnet name, not a secret")
+    ps.set_defaults(func=cmd_panels)
 
     mc = sub.add_parser("mcp", help="run an MCP server (stdio) so Claude and other MCP clients can drive umcares as tools")
     mc.add_argument("--url", help="the web app's address (default: UMC_WEB_URL)")
@@ -1290,6 +1299,15 @@ def cmd_panel(args, cfg):
         sys.stdout.write(f"{e}\n")
         return 0
     if args.view == "set":
+        if args.recipe:
+            if args.choice:
+                log.err("panel set --recipe ROW keeps the chosen project; give a project or --recipe, not both")
+                return 1
+            args.choice = [panel_mod.load_state().get("project") or ""]
+            if not args.choice[0]:
+                log.err("no project chosen yet; open the projects board and press Enter on one")
+                return 1
+            args.choice.append(args.recipe)
         if not 1 <= len(args.choice) <= 2:
             log.err("panel set <project> [recipe]")
             return 1
@@ -1303,6 +1321,21 @@ def cmd_panel(args, cfg):
         return 0
     sys.stdout.write(panel_mod.render(args.view, site))
     return 0
+
+
+def cmd_panels(args, cfg):
+    """Install the panvim boards. A dry run unless --commit. Exit 0 done or planned, 1 could not, 2 done but `panvim audit` has findings."""
+    import os
+    url = args.url or cfg.env.get("UMC_WEB_URL") or os.environ.get("UMC_WEB_URL", "")
+    try:
+        res = panels_mod.install(args.commit, url)
+    except (panels_mod.PanelsError, OSError, subprocess.SubprocessError) as e:
+        log.err(str(e))
+        return 1
+    log.out(res)
+    if res.get("failures"):
+        return 1
+    return 2 if args.commit and res["panvim_audit"]["exit"] else 0
 
 
 def cmd_mcp(args, cfg):
