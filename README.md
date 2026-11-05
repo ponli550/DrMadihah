@@ -649,6 +649,30 @@ project names. A second real run in `--read-only` mode followed steps 1 and 2 of
 That run also found a hole: the brief's file table carried captions raw, a second way for a caption to reach the model, so the brief now cleans the file and
 caption columns the same way (one line, no fences, a pipe cannot add a column) and says they are data. The Adobe/Premiere tools are not in it yet.
 
+#### Looking at umcares from the terminal: `projects`, `jobs`, `show`, `plan`
+
+```bash
+umcares projects                       # the projects on the web app
+umcares jobs [project]                 # render jobs, running first, with a progress bar while they wait
+umcares show <project>                 # pictures and clips per folder, saved recipes (valid or not), finished videos, how many are rendering
+umcares plan <project> <recipe>        # the plan of a saved recipe, and a rough render time; renders nothing
+```
+
+All four are **read-only** and go through the web app's HTTP API (`UMC_WEB_URL` or `--url`): no ssh, no billing, no credentials. They never show **captions or
+project notes**, only counts and names: these are the text people wrote about other people, and a terminal board stays on screen through a screen share.
+Text that came from a file or a person is made one line and stripped of fence-like runs before it is printed. `--json` prints one object, the house envelope
+`{"command", "ok", "version", "data" | "error"}`; the exit codes are 0 (ran), 1 (could not run: the web app is unreachable, no such project or recipe) and 2 (ran, and the
+answer is no: a saved recipe that does not work, with its problems). Results go to stdout and errors to stderr. The code is `umcares/views.py`, the one place
+that knows how to look; the panvim boards for the terminal UI (the old `umcares` panel brought up to date) use the same functions, so a board shows what the command says.
+**`umcares panel <view>`** is the text of a panvim board: `projects`, `jobs`, `project`, `recipes`, `plan`, `exports` (`umcares/panel.py`). panvim shows whatever a command
+prints and re-runs it on a timer, and takes as a row every line that starts with two spaces and a word (its Lua pattern `^  (%S+)`); so in every view a row is exactly
+the thing a key can act on (a project, a recipe, a video, the project a render job belongs to) and headings, details and messages are not indented that way. A recipe name with
+spaces is shown with underscores, and `panel set` finds the real name again; if two names would collide it refuses instead of guessing. Enter on a row picks what the next
+board shows, through `umcares panel set <project> [recipe]`, which keeps the choice in `$UMCARES_PANEL_STATE` (default `~/.local/state/umcares/panel.json`, written atomically, a
+damaged file just means no choice); with one project and no choice made, the only project is used. A board never fails: if the web app is unreachable it prints one line and
+tries again on its next refresh (exit 0, so a board never shows a stack trace); `set` exits 1 on a problem. Phase 2 of 5: the commands exist and are tested against a real web
+app and your live one; the boards themselves (`umcares panels install`, which writes the panvim rows and keys) are phase 3.
+
 #### Mode D: `umcares explain` (a topic, researched)
 
 ```bash

@@ -21,6 +21,7 @@ from urllib.parse import quote
 
 from . import draft
 from .montage import clean_line
+from .views import estimate_render
 
 VERSION = "0.2.0"
 PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")       # newest first: the client's own is echoed back when we know it
@@ -84,20 +85,6 @@ def _commit(args: dict) -> bool:
     if not isinstance(c, bool):
         raise ToolError("commit: true or false (false, the default, only shows what would happen)")
     return c
-
-
-def estimate_render(plan: dict, quality: str | None) -> dict:
-    """A rough guide to how long a render takes, from the plan alone. The multiples come from timings on the Air (8 GB): cards about 0.9x the video's
-    length, still pictures about 0.4x, real photos with camera moves up to about 2x; riso about 2.4x and neon 2.5 to 5x a plain picture render."""
-    kinds = {sg.get("kind") for sg in plan.get("segments", [])}
-    lo, hi = (0.4, 2.0) if kinds & {"photo", "video"} else (0.8, 1.3)
-    f = {"neon": (2.5, 5.0), "riso": (1.2, 2.4), "glitch": (1.2, 1.4), "dither": (1.0, 1.1)}.get(plan.get("effect"), (1.0, 1.0))
-    lo, hi = lo * f[0], hi * f[1]
-    if quality == "draft":
-        lo, hi = lo / 2, hi / 2
-    total = float(plan.get("total", 0))
-    return {"video_seconds": round(total, 1), "render_seconds_roughly": [max(1, round(total * lo)), max(2, round(total * hi))],
-            "note": "a rough guide measured on the Air; the real time is shown by get_jobs"}
 
 
 def _call(site, method: str, path: str, body=None):
