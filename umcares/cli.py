@@ -16,6 +16,7 @@ from . import (auth, doctor, media_scan as inspect_mod, log, media, post, recipe
                script as script_mod, envsecrets, session, spinner, stack, web)
 from . import projects as projects_mod
 from . import draft as draft_mod
+from . import views
 from . import scope
 from .example import EXAMPLE_RECIPE
 from . import __version__
@@ -1150,6 +1151,18 @@ def build_parser() -> argparse.ArgumentParser:
     ex.add_argument("--variants", type=int, default=0, metavar="N", help="save N versions (2 to 5) that differ only in the opening hook (the title card's text), to A/B test")
     ex.set_defaults(func=cmd_explain)
 
+    for name, helptext, extra in (
+            ("projects", "list the projects on the web app", ()),
+            ("jobs", "render jobs across the projects (or one): running first", (("project", {"nargs": "?", "help": "only this project's folder name"}),)),
+            ("show", "what a project holds, as counts and names (no captions)", (("project", {"help": "the project's folder name on the web app"}),)),
+            ("plan", "the plan of a saved recipe (exit 2 if it does not work); renders nothing", (("project", {"help": "the project's folder name"}), ("recipe", {"help": "the saved recipe's name"})))):
+        vp = sub.add_parser(name, help=helptext + " (read-only, over the web app's API)")
+        for arg, kw in extra:
+            vp.add_argument(arg, **kw)
+        vp.add_argument("--url", help="the web app's address (default: UMC_WEB_URL)")
+        vp.add_argument("--json", action="store_true", help="one JSON object: command, ok, version, data | error")
+        vp.set_defaults(func=cmd_view, view=name)
+
     mc = sub.add_parser("mcp", help="run an MCP server (stdio) so Claude and other MCP clients can drive umcares as tools")
     mc.add_argument("--url", help="the web app's address (default: UMC_WEB_URL)")
     mc.add_argument("--read-only", action="store_true", help="offer only the tools that cannot change anything (also UMCARES_MCP_READONLY=1): for agents that listen or run unattended")
@@ -1225,6 +1238,36 @@ def cmd_explain(args, cfg):
     else:
         log.out(res["recipe"])
     return 0
+
+
+def cmd_view(args, cfg):
+    """Read-only views of the web app: the text a person reads, or `--json`. Exit 0 ran; 1 could not run; 2 ran and the answer is no (a recipe that does not work)."""
+    import os
+    url = args.url or cfg.env.get("UMC_WEB_URL") or os.environ.get("UMC_WEB_URL", "")
+    name = args.view
+    try:
+        site = draft_mod.Site(url)
+        if name == "projects":
+            data = {"projects": views.list_projects(site)}
+            text = lambda d: views.format_projects(d["projects"])
+        elif name == "jobs":
+            data = {"jobs": views.jobs(site, args.project)}
+            text = lambda d: views.format_jobs(d["jobs"])
+        elif name == "show":
+            data, text = views.overview(site, args.project), views.format_overview
+        else:
+            data, text = views.saved_plan(site, args.project, args.recipe), views.format_plan
+    except (draft_mod.DraftError, views.ViewError) as e:
+        if args.json:
+            log.out({"command": name, "ok": False, "version": __version__, "error": str(e)})
+        else:
+            log.err(str(e))
+        return 1
+    if args.json:
+        log.out({"command": name, "ok": True, "version": __version__, "data": data})
+    else:
+        sys.stdout.write(text(data))
+    return 0 if data.get("valid", True) else 2
 
 
 def cmd_mcp(args, cfg):

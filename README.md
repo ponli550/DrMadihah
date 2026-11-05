@@ -649,6 +649,23 @@ project names. A second real run in `--read-only` mode followed steps 1 and 2 of
 That run also found a hole: the brief's file table carried captions raw, a second way for a caption to reach the model, so the brief now cleans the file and
 caption columns the same way (one line, no fences, a pipe cannot add a column) and says they are data. The Adobe/Premiere tools are not in it yet.
 
+#### Looking at umcares from the terminal: `projects`, `jobs`, `show`, `plan`
+
+```bash
+umcares projects                       # the projects on the web app
+umcares jobs [project]                 # render jobs, running first, with a progress bar while they wait
+umcares show <project>                 # pictures and clips per folder, saved recipes (valid or not), finished videos, how many are rendering
+umcares plan <project> <recipe>        # the plan of a saved recipe, and a rough render time; renders nothing
+```
+
+All four are **read-only** and go through the web app's HTTP API (`UMC_WEB_URL` or `--url`): no ssh, no billing, no credentials. They never show **captions or
+project notes**, only counts and names: these are the text people wrote about other people, and a terminal board stays on screen through a screen share.
+Text that came from a file or a person is made one line and stripped of fence-like runs before it is printed. `--json` prints one object, the house envelope
+`{"command", "ok", "version", "data" | "error"}`; the exit codes are 0 (ran), 1 (could not run: the web app is unreachable, no such project or recipe) and 2 (ran, and the
+answer is no: a saved recipe that does not work, with its problems). Results go to stdout and errors to stderr. The code is `umcares/views.py`, the one place
+that knows how to look; the panvim boards for the terminal UI (the old `umcares` panel brought up to date) use the same functions, so a board shows what the command says.
+Phase 1 of 5: the boards themselves are not built yet.
+
 #### Mode D: `umcares explain` (a topic, researched)
 
 ```bash
