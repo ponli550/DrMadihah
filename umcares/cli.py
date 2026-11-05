@@ -1152,6 +1152,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     mc = sub.add_parser("mcp", help="run an MCP server (stdio) so Claude and other MCP clients can drive umcares as tools")
     mc.add_argument("--url", help="the web app's address (default: UMC_WEB_URL)")
+    mc.add_argument("--read-only", action="store_true", help="offer only the tools that cannot change anything (also UMCARES_MCP_READONLY=1): for agents that listen or run unattended")
     mc.set_defaults(func=cmd_mcp)
 
     jd = sub.add_parser("judge", help="check finished videos you choose (format, sound, picture) and say pass, warn or fail")
@@ -1236,8 +1237,9 @@ def cmd_mcp(args, cfg):
     except draft_mod.DraftError as e:
         print(f"umcares mcp: {e}", file=sys.stderr)
         return 2
-    print(f"umcares mcp: serving tools for {site.base} on stdio", file=sys.stderr)
-    mcpserver.Server(site).serve(sys.stdin, sys.stdout)
+    read_only = bool(args.read_only or os.environ.get("UMCARES_MCP_READONLY") in ("1", "true", "yes"))
+    print(f"umcares mcp: serving {'READ-ONLY ' if read_only else ''}tools for {site.base} on stdio", file=sys.stderr)
+    mcpserver.Server(site, read_only=read_only).serve(sys.stdin, sys.stdout)
     return 0
 
 

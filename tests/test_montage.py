@@ -472,6 +472,29 @@ class Rendering(Fixtures):
         self.assertEqual(job["state"], "failed")
         self.assertIn("not enough free disk space", job["error"])
 
+    def test_only_a_few_renders_may_wait_per_project_and_the_same_recipe_twice_and_another_project_are_not_counted(self):
+        self.add("land.jpg")
+        other = Path(projects.create_project(self.home, "Other", init_git=False)["path"])
+        put(other, self.fx / "land.jpg", mtime=1_700_000_000_000)
+        with prepare.HEAVY:
+            made, refused = [], []
+            for i in range(montage.MAX_QUEUED + 2):
+                try:
+                    made.append(montage.RENDERER.submit(self.root, recipe([{"media": "land.jpg"}], template="punchy", title=f"t{i}")))
+                except montage.MontageError as e:
+                    refused.append(str(e))
+            self.assertLessEqual(len(made), montage.MAX_QUEUED + 1)
+            self.assertTrue(refused, "a sixth waiting render is refused")
+            self.assertIn("already waiting", refused[0])
+            self.assertIn(f"at most {montage.MAX_QUEUED}", refused[0])
+            again = montage.RENDERER.submit(self.root, recipe([{"media": "land.jpg"}], template="punchy", title="t0"))
+            self.assertEqual(again["id"], made[0]["id"], "the same recipe is the same job, whatever the queue holds")
+            elsewhere = montage.RENDERER.submit(other, recipe([{"media": "land.jpg"}], template="punchy"))
+            self.assertEqual(elsewhere["state"], "queued", "the limit is per project: another project still gets its turn")
+        montage.RENDERER.cancel(self.root)
+        montage.RENDERER.cancel(other)
+        montage.RENDERER.wait_idle(60)
+
     def test_two_jobs_made_in_the_same_millisecond_never_share_an_id_even_when_the_list_is_full(self):
         self.add("land.jpg")
         filler = [{"id": f"old{i}", "root": "/elsewhere", "state": "done", "percent": 100, "error": None, "output": None, "title": "", "format": "reels",

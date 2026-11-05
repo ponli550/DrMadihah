@@ -627,16 +627,27 @@ Claude Desktop (or any client that reads a config file): `{"mcpServers": {"umcar
 tailnet, so that machine must be on it. MCP over stdio is newline-delimited JSON-RPC 2.0 (`initialize`, `tools/list`, `tools/call`, `ping`), written with
 the standard library, so there is no `mcp` package to install. stdout carries only the protocol; the banner and errors go to stderr.
 
-Ten tools, each over the web app's own API (so a recipe an LLM writes is checked exactly as a hand-written one is): `list_projects`, `get_project`
-(pictures and clips with their refs and captions, saved recipes, finished videos, jobs), `get_recipe_brief` (the whole recipe format), `get_thumbnails`
-(images, up to 6 a call), `plan_recipe` (a dry run: the timeline, or the problems to fix), `save_recipe`, `render_recipe` (quality final, share or
-draft), `get_jobs`, `cancel_render` and `judge_videos`. Read-only tools say so (`readOnlyHint`); `cancel_render` is marked destructive; **nothing deletes
-an export, on purpose**. The server's own instructions tell a model the order (brief, project, plan until clean, save, ask the person, render, jobs,
-judge) and that rendering takes the Air's CPU for minutes. **Privacy:** `get_thumbnails` sends the person's photos to the model, so its description
-says to call it only with their agreement; a tool never returns a path on the machine. A bad project name (anything but lower case letters, digits and
-dashes) is refused before any request is made. Tested over real stdio and against a real web app (protocol errors, every tool, a render followed to a
-judged video), and connected to a real client: `claude -p --mcp-config ... --strict-mcp-config` started it, called `list_projects` on the live web app and
-returned the four project names. The Adobe/Premiere tools are not in it yet (phase 2).
+Eleven tools, each over the web app's own API (so a recipe an LLM writes is checked exactly as a hand-written one is): `about` (the workflow, the
+grounding rules and every tool in a line), `list_projects`, `get_project` (pictures and clips with their refs and captions, saved recipes, finished
+videos, jobs), `get_recipe_brief` (the whole recipe format), `get_thumbnails` (images, up to 6 a call), `plan_recipe` (a dry run: the timeline, or the
+problems to fix), `save_recipe`, `render_recipe` (quality final, share or draft), `get_jobs`, `cancel_render` and `judge_videos`. The house rules come from the
+SekerinShotto and FatherPeng MCP servers: **every write is a dry run until `commit` is true** (`save_recipe` shows the plan and whether it would replace a saved
+recipe; `render_recipe` shows the plan and a rough time, a range from timings on the Air, and starts nothing), so "ask the person first" is built into the
+tool, not only said in the instructions; **long lists are paged** (`get_project` takes `limit` up to 200, `offset`, `folder` and `kind`, and says `catalog_total` and
+`next_offset`); **text from files and people is data**: captions, file names and recipe names are made one line, stripped of control characters and of runs of
+dashes or equals signs that could pass for a fence, bounded, and the answer says they are data, never instructions (the instructions also carry grounding rules);
+**`--read-only`** (or `UMCARES_MCP_READONLY=1`) offers only the eight tools that cannot change anything, for agents that listen or run unattended. Read-only tools
+say so (`readOnlyHint`); `cancel_render` is marked destructive; **nothing deletes an export, on purpose**. At most **5 renders may wait per project** (the same recipe
+twice is still one job, and another project is not counted): a looping agent is told "already waiting", it cannot stack up dozens of renders on the Air's 8 GB.
+The server's own instructions give the order (about, brief, project, plan until clean, save, ask, render, jobs, judge) and `docs/PROMPTS.md` has prompts to paste
+(make a video, change a recipe, a quiet weekday queue check, judge what finished). **Privacy:** `get_thumbnails` sends the person's photos to the model, so its
+description says to call it only with their agreement; a tool never returns a path on the machine. A bad project name (anything but lower case letters, digits and
+dashes) is refused before any request is made. Tested over real stdio and against a real web app (protocol errors, every tool, a render followed to a judged video),
+and connected to a real client: `claude -p --mcp-config ... --strict-mcp-config` started it, called `list_projects` on the live web app and returned the four
+project names. A second real run in `--read-only` mode followed steps 1 and 2 of the prompt in `docs/PROMPTS.md` (about, the brief, `get_project` with
+`limit 3` and one `next_offset`): it reported `catalog_total` 9 (8 pictures and 1 clip) from the server and said plainly that it had paged only 6 of the 9.
+That run also found a hole: the brief's file table carried captions raw, a second way for a caption to reach the model, so the brief now cleans the file and
+caption columns the same way (one line, no fences, a pipe cannot add a column) and says they are data. The Adobe/Premiere tools are not in it yet.
 
 #### Mode D: `umcares explain` (a topic, researched)
 
