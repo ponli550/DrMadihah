@@ -616,6 +616,63 @@ saved as `claude-draft-<time>` under *Saved recipes* and is **never rendered**: 
   failed the checker), never a half-saved recipe.
 
 
+#### Mode E: `umcares mcp` (an MCP server, so Claude and other MCP clients can drive umcares)
+
+```bash
+claude mcp add umcares -e UMC_WEB_URL=https://<machine>.<tailnet>.ts.net/umcares -- /path/to/DrMadihah/bin/umcares mcp
+```
+
+Claude Desktop (or any client that reads a config file): `{"mcpServers": {"umcares": {"command": "/path/to/DrMadihah/bin/umcares", "args": ["mcp"],
+"env": {"UMC_WEB_URL": "https://<machine>.<tailnet>.ts.net/umcares"}}}}`. It runs on the machine that runs the client and talks to the web app over the
+tailnet, so that machine must be on it. MCP over stdio is newline-delimited JSON-RPC 2.0 (`initialize`, `tools/list`, `tools/call`, `ping`), written with
+the standard library, so there is no `mcp` package to install. stdout carries only the protocol; the banner and errors go to stderr.
+
+Eleven tools, each over the web app's own API (so a recipe an LLM writes is checked exactly as a hand-written one is): `about` (the workflow, the
+grounding rules and every tool in a line), `list_projects`, `get_project` (pictures and clips with their refs and captions, saved recipes, finished
+videos, jobs), `get_recipe_brief` (the whole recipe format), `get_thumbnails` (images, up to 6 a call), `plan_recipe` (a dry run: the timeline, or the
+problems to fix), `save_recipe`, `render_recipe` (quality final, share or draft), `get_jobs`, `cancel_render` and `judge_videos`. The house rules come from the
+SekerinShotto and FatherPeng MCP servers: **every write is a dry run until `commit` is true** (`save_recipe` shows the plan and whether it would replace a saved
+recipe; `render_recipe` shows the plan and a rough time, a range from timings on the Air, and starts nothing), so "ask the person first" is built into the
+tool, not only said in the instructions; **long lists are paged** (`get_project` takes `limit` up to 200, `offset`, `folder` and `kind`, and says `catalog_total` and
+`next_offset`); **text from files and people is data**: captions, file names and recipe names are made one line, stripped of control characters and of runs of
+dashes or equals signs that could pass for a fence, bounded, and the answer says they are data, never instructions (the instructions also carry grounding rules);
+**`--read-only`** (or `UMCARES_MCP_READONLY=1`) offers only the eight tools that cannot change anything, for agents that listen or run unattended. Read-only tools
+say so (`readOnlyHint`); `cancel_render` is marked destructive; **nothing deletes an export, on purpose**. At most **5 renders may wait per project** (the same recipe
+twice is still one job, and another project is not counted): a looping agent is told "already waiting", it cannot stack up dozens of renders on the Air's 8 GB.
+The server's own instructions give the order (about, brief, project, plan until clean, save, ask, render, jobs, judge) and `docs/PROMPTS.md` has prompts to paste
+(make a video, change a recipe, a quiet weekday queue check, judge what finished). **Privacy:** `get_thumbnails` sends the person's photos to the model, so its
+description says to call it only with their agreement; a tool never returns a path on the machine. A bad project name (anything but lower case letters, digits and
+dashes) is refused before any request is made. Tested over real stdio and against a real web app (protocol errors, every tool, a render followed to a judged video),
+and connected to a real client: `claude -p --mcp-config ... --strict-mcp-config` started it, called `list_projects` on the live web app and returned the four
+project names. A second real run in `--read-only` mode followed steps 1 and 2 of the prompt in `docs/PROMPTS.md` (about, the brief, `get_project` with
+`limit 3` and one `next_offset`): it reported `catalog_total` 9 (8 pictures and 1 clip) from the server and said plainly that it had paged only 6 of the 9.
+That run also found a hole: the brief's file table carried captions raw, a second way for a caption to reach the model, so the brief now cleans the file and
+caption columns the same way (one line, no fences, a pipe cannot add a column) and says they are data. The Adobe/Premiere tools are not in it yet.
+
+#### Looking at umcares from the terminal: `projects`, `jobs`, `show`, `plan`
+
+```bash
+umcares projects                       # the projects on the web app
+umcares jobs [project]                 # render jobs, running first, with a progress bar while they wait
+umcares show <project>                 # pictures and clips per folder, saved recipes (valid or not), finished videos, how many are rendering
+umcares plan <project> <recipe>        # the plan of a saved recipe, and a rough render time; renders nothing
+```
+
+All four are **read-only** and go through the web app's HTTP API (`UMC_WEB_URL` or `--url`): no ssh, no billing, no credentials. They never show **captions or
+project notes**, only counts and names: these are the text people wrote about other people, and a terminal board stays on screen through a screen share.
+Text that came from a file or a person is made one line and stripped of fence-like runs before it is printed. `--json` prints one object, the house envelope
+`{"command", "ok", "version", "data" | "error"}`; the exit codes are 0 (ran), 1 (could not run: the web app is unreachable, no such project or recipe) and 2 (ran, and the
+answer is no: a saved recipe that does not work, with its problems). Results go to stdout and errors to stderr. The code is `umcares/views.py`, the one place
+that knows how to look; the panvim boards for the terminal UI (the old `umcares` panel brought up to date) use the same functions, so a board shows what the command says.
+**`umcares panel <view>`** is the text of a panvim board: `projects`, `jobs`, `project`, `recipes`, `plan`, `exports` (`umcares/panel.py`). panvim shows whatever a command
+prints and re-runs it on a timer, and takes as a row every line that starts with two spaces and a word (its Lua pattern `^  (%S+)`); so in every view a row is exactly
+the thing a key can act on (a project, a recipe, a video, the project a render job belongs to) and headings, details and messages are not indented that way. A recipe name with
+spaces is shown with underscores, and `panel set` finds the real name again; if two names would collide it refuses instead of guessing. Enter on a row picks what the next
+board shows, through `umcares panel set <project> [recipe]`, which keeps the choice in `$UMCARES_PANEL_STATE` (default `~/.local/state/umcares/panel.json`, written atomically, a
+damaged file just means no choice); with one project and no choice made, the only project is used. A board never fails: if the web app is unreachable it prints one line and
+tries again on its next refresh (exit 0, so a board never shows a stack trace); `set` exits 1 on a problem. Phase 2 of 5: the commands exist and are tested against a real web
+app and your live one; the boards themselves (`umcares panels install`, which writes the panvim rows and keys) are phase 3.
+
 #### Mode D: `umcares explain` (a topic, researched)
 
 ```bash
