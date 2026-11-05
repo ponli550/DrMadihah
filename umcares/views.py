@@ -68,6 +68,11 @@ def _state(site, slug: str) -> dict:
         raise
 
 
+def recipes(site, slug: str) -> list:
+    """A project's saved recipes: name, whether it still works, how many problems."""
+    return [{"name": clean_line(r.get("name"), 100), "valid": bool(r.get("valid")), "problems": len(r.get("problems") or [])} for r in _state(site, slug).get("recipes", [])]
+
+
 def overview(site, slug: str) -> dict:
     """What a project holds, as counts and names. No captions."""
     d = _state(site, slug)

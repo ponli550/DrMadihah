@@ -16,6 +16,7 @@ from . import (auth, doctor, media_scan as inspect_mod, log, media, post, recipe
                script as script_mod, envsecrets, session, spinner, stack, web)
 from . import projects as projects_mod
 from . import draft as draft_mod
+from . import panel as panel_mod
 from . import views
 from . import scope
 from .example import EXAMPLE_RECIPE
@@ -1163,6 +1164,12 @@ def build_parser() -> argparse.ArgumentParser:
         vp.add_argument("--json", action="store_true", help="one JSON object: command, ok, version, data | error")
         vp.set_defaults(func=cmd_view, view=name)
 
+    pn = sub.add_parser("panel", help="the text of a panvim board, or remember which project and recipe the boards show (read-only, over the web app's API)")
+    pn.add_argument("view", choices=(*panel_mod.VIEWS, "set"), help="a board's view, or `set` to choose the project (and recipe) the next boards show")
+    pn.add_argument("choice", nargs="*", help="with `set`: the project's folder name, then optionally a recipe's row word")
+    pn.add_argument("--url", help="the web app's address (default: UMC_WEB_URL)")
+    pn.set_defaults(func=cmd_panel)
+
     mc = sub.add_parser("mcp", help="run an MCP server (stdio) so Claude and other MCP clients can drive umcares as tools")
     mc.add_argument("--url", help="the web app's address (default: UMC_WEB_URL)")
     mc.add_argument("--read-only", action="store_true", help="offer only the tools that cannot change anything (also UMCARES_MCP_READONLY=1): for agents that listen or run unattended")
@@ -1268,6 +1275,34 @@ def cmd_view(args, cfg):
     else:
         sys.stdout.write(text(data))
     return 0 if data.get("valid", True) else 2
+
+
+def cmd_panel(args, cfg):
+    """A board's text (never fails: a board that cannot reach the web app says so and tries again), or `set` to remember the chosen project and recipe."""
+    import os
+    url = args.url or cfg.env.get("UMC_WEB_URL") or os.environ.get("UMC_WEB_URL", "")
+    try:
+        site = draft_mod.Site(url)
+    except draft_mod.DraftError as e:
+        if args.view == "set":
+            log.err(str(e))
+            return 1
+        sys.stdout.write(f"{e}\n")
+        return 0
+    if args.view == "set":
+        if not 1 <= len(args.choice) <= 2:
+            log.err("panel set <project> [recipe]")
+            return 1
+        try:
+            recipe = panel_mod.resolve_recipe(site, args.choice[0], args.choice[1]) if len(args.choice) == 2 else None
+            state = panel_mod.set_state(args.choice[0], recipe)
+        except (draft_mod.DraftError, views.ViewError) as e:
+            log.err(str(e))
+            return 1
+        log.out({"ok": True, **state})
+        return 0
+    sys.stdout.write(panel_mod.render(args.view, site))
+    return 0
 
 
 def cmd_mcp(args, cfg):
