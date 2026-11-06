@@ -94,19 +94,43 @@ class PanelsTest(unittest.TestCase):
         self.assertFalse(any(l.startswith("new umcares-jobs ") for l in news))
         self.assertTrue(self.cfg("umcares-jobs", "keys.tsv").exists())      # its keys are still brought up to date
 
-    def test_no_key_writes_or_passes_commit(self):
+    def test_only_the_gated_keys_can_start_or_stop_work(self):
+        """Lowercase keys and Enter only look. The uppercase keys are the three that write, each in [row], each showing the plan and committing only after `yes`."""
+        allowed = {"umcares-recipes": {"R", "D"}, "umcares-jobs": {"C"}}
         for name in panels.BOARDS:
-            text = panels.board_keys(name)
-            self.assertNotIn("--commit", text)
-            for line in text.splitlines():
-                if line.startswith("#") or line.startswith("["):
+            section, seen = None, set()
+            for line in panels.board_keys(name).splitlines():
+                if line.startswith("#"):
+                    continue
+                if line.startswith("["):
+                    section = line
                     continue
                 cols = line.split("\t")
                 self.assertGreaterEqual(len(cols), 3, line)
-                self.assertFalse(len(cols[0]) == 1 and cols[0].isupper(), f"{name}: an uppercase key {cols[0]}")
-                self.assertNotRegex(line, r"umcares (render|push|pull|premiere|cancel)")
+                key, cmd = cols[0], cols[3] if len(cols) > 3 else ""
+                if len(key) == 1 and key.isupper():
+                    seen.add(key)
+                    self.assertEqual(section, "[row]", f"{name}: {key} must sit behind SPACE on a row")
+                    self.assertEqual(cols[2], "term-hold")
+                    self.assertIn('read a; if [ "$a" = yes ]', cmd)
+                    commit = cmd.index("--commit")
+                    self.assertTrue(cmd.startswith("if umcares "), cmd)                      # the plan runs first and a refusal stops there
+                    self.assertLess(cmd.index("read a"), commit)                                # the question comes before the commit
+                    self.assertEqual(cmd.count("--commit"), 1)
+                else:
+                    self.assertNotIn("--commit", line, f"{name}: {key} commits without a yes")
+                    self.assertNotRegex(cmd, r"umcares (make|stop|render|push|pull|premiere|cancel)")
+            self.assertEqual(seen, allowed.get(name, set()), name)
         for line in panels.home_block().splitlines():
             self.assertNotIn("--commit", line)
+
+    def test_the_gated_keys_are_valid_bash_and_ask_before_committing(self):
+        import subprocess
+        for name, keys in (("umcares-recipes", "RD"), ("umcares-jobs", "C")):
+            for line in panels.board_keys(name).splitlines():
+                if line[:1] in keys and "\t" in line and line[:1].isupper():
+                    cmd = line.split("\t")[3].replace("{row}", "alpha")
+                    self.assertEqual(subprocess.run(["bash", "-n", "-c", cmd]).returncode, 0, cmd)
 
     def test_enter_does_not_wait_for_the_popup_it_opens(self):
         import subprocess

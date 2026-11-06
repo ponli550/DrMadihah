@@ -19,6 +19,7 @@ from . import projects as projects_mod
 from . import draft as draft_mod
 from . import panel as panel_mod
 from . import panels as panels_mod
+from . import actions
 from . import views
 from . import scope
 from .example import EXAMPLE_RECIPE
@@ -1179,6 +1180,19 @@ def build_parser() -> argparse.ArgumentParser:
     ps.add_argument("--url", help="bake this web app address into the boards (default: UMC_WEB_URL if set); it is a tailnet name, not a secret")
     ps.set_defaults(func=cmd_panels)
 
+    mk = sub.add_parser("make", help="render a saved recipe on the web app's machine (a dry run unless --commit; `render` is the json2video pipeline)")
+    mk.add_argument("recipe", help="the saved recipe's name, or its row word from the recipes board")
+    mk.add_argument("--project", help="the project's folder name (default: the one the panvim boards show)")
+    mk.add_argument("--quality", choices=actions.QUALITIES, help="final (default), share (a smaller file) or draft (half size, fast)")
+    mk.set_defaults(func=cmd_act, act="make")
+    sp = sub.add_parser("stop", help="stop a project's running and waiting renders (a dry run unless --commit)")
+    sp.add_argument("--project", help="the project's folder name (default: the one the panvim boards show)")
+    sp.set_defaults(func=cmd_act, act="stop")
+    for q in (mk, sp):
+        q.add_argument("--commit", action="store_true", help="do it (without it, only say what would happen)")
+        q.add_argument("--url", help="the web app's address (default: UMC_WEB_URL)")
+        q.add_argument("--json", action="store_true", help="one JSON object: command, ok, version, data | error")
+
     mc = sub.add_parser("mcp", help="run an MCP server (stdio) so Claude and other MCP clients can drive umcares as tools")
     mc.add_argument("--url", help="the web app's address (default: UMC_WEB_URL)")
     mc.add_argument("--read-only", action="store_true", help="offer only the tools that cannot change anything (also UMCARES_MCP_READONLY=1): for agents that listen or run unattended")
@@ -1281,6 +1295,34 @@ def cmd_view(args, cfg):
         return 1
     if args.json:
         log.out({"command": name, "ok": True, "version": __version__, "data": data})
+    else:
+        sys.stdout.write(text(data))
+    return 0 if data.get("valid", True) else 2
+
+
+def cmd_act(args, cfg):
+    """`make` and `stop`. Every write is a dry run until --commit. Exit 0 done or planned, 1 could not run, 2 the recipe does not work."""
+    import os
+    url = args.url or cfg.env.get("UMC_WEB_URL") or os.environ.get("UMC_WEB_URL", "")
+    try:
+        site = draft_mod.Site(url)
+        slug = args.project or panel_mod.load_state().get("project")
+        if not slug:
+            raise views.ViewError("no project: give --project, or choose one on the projects board first")
+        slug = views._slug(slug)
+        if args.act == "make":
+            name = panel_mod.resolve_recipe(site, slug, args.recipe)
+            data, text = actions.make(site, slug, name, args.quality, args.commit), (lambda d: actions.format_make(d, slug))
+        else:
+            data, text = actions.stop(site, slug, args.commit), actions.format_stop
+    except (draft_mod.DraftError, views.ViewError) as e:
+        if args.json:
+            log.out({"command": args.act, "ok": False, "version": __version__, "error": str(e)})
+        else:
+            log.err(str(e))
+        return 1
+    if args.json:
+        log.out({"command": args.act, "ok": True, "version": __version__, "data": data})
     else:
         sys.stdout.write(text(data))
     return 0 if data.get("valid", True) else 2

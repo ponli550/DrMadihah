@@ -670,17 +670,22 @@ the thing a key can act on (a project, a recipe, a video, the project a render j
 spaces is shown with underscores, and `panel set` finds the real name again; if two names would collide it refuses instead of guessing. Enter on a row picks what the next
 board shows, through `umcares panel set <project> [recipe]`, which keeps the choice in `$UMCARES_PANEL_STATE` (default `~/.local/state/umcares/panel.json`, written atomically, a
 damaged file just means no choice); with one project and no choice made, the only project is used. A board never fails: if the web app is unreachable it prints one line and
-tries again on its next refresh (exit 0, so a board never shows a stack trace); `set` exits 1 on a problem. Phase 3 of 5: `umcares panels install` puts the boards in panvim.
+tries again on its next refresh (exit 0, so a board never shows a stack trace); `set` exits 1 on a problem. Phase 4 of 5: the boards can start and stop renders, behind a typed `yes`. (Phase 3: `umcares panels install` puts the boards in panvim.)
+
+**`umcares make RECIPE [--project P] [--quality final|share|draft] [--commit]`** and **`umcares stop [--project P] [--commit]`** (`umcares/actions.py`) are what those keys run. Both are
+dry runs until `--commit`: `make` shows the plan, a rough time and how many renders are ahead; `stop` lists the renders it would stop (the web app stops a project's running and waiting
+renders together, not one). A recipe that does not work is never sent, even with `--commit` (exit 2); the web app's own refusals, like the queue cap, come back as exit 1 with the reason.
+`--project` defaults to the one the boards show. (`umcares render` is the older json2video pipeline and is untouched.)
 
 **`umcares panels install [--commit] [--url URL]`** (`umcares/panels.py`) is a dry run until `--commit`. It creates six hidden boards with `panvim new` (`umcares-projects`,
 `umcares-jobs`, `umcares-project`, `umcares-recipes`, `umcares-plan`, `umcares-exports`), writes their keys and colours, and adds six navigation keys to the old `umcares` home board
 (`j` jobs, `p` projects, `o` this project, `m` recipes, `t` timeline, `f` finished videos). The home board keeps every key it had and stays local only (it refreshes every 60 s
 whether or not you look). The new boards read only the web app and refresh while their popup is open: 10 to 60 seconds. Every key on them only looks; Enter on a project, job or
-recipe row remembers the choice and opens the next board. Nothing renders or cancels from a key yet (phase 4, and it will ask you to type `yes`).
+recipe row remembers the choice and opens the next board. The only keys that start or stop work are `R` and `D` (full or draft render of the recipe under the cursor, recipes board) and `C` (stop that project's renders, jobs board): uppercase, behind SPACE, on a row, each shows the plan and commits only after you type `yes`.
 
 It is safe to run again: a keys or colours file that would change is copied to `<name>.bak-<time>` first, a board that already exists is not created again, and `panvim audit` runs
 at the end (exit 2 means the audit had findings). The web app's address is baked into the boards when `UMC_WEB_URL` is set (or `--url` is given), because a tmux popup does not
-always inherit your shell's environment; it is a tailnet name, not a secret. Phase 4 adds the write keys, phase 5 a Premiere board.
+always inherit your shell's environment; it is a tailnet name, not a secret. Phase 5 adds a Premiere board.
 
 #### Mode D: `umcares explain` (a topic, researched)
 
