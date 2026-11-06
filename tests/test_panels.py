@@ -108,6 +108,16 @@ class PanelsTest(unittest.TestCase):
         for line in panels.home_block().splitlines():
             self.assertNotIn("--commit", line)
 
+    def test_enter_does_not_wait_for_the_popup_it_opens(self):
+        import subprocess
+        for name in ("umcares-projects", "umcares-jobs", "umcares-recipes"):
+            line = [l for l in panels.board_keys(name).splitlines() if l.startswith("<CR>")][0]
+            cmd = line.split("\t")[3].replace("{row}", "alpha")
+            self.assertEqual(subprocess.run(["bash", "-n", "-c", cmd]).returncode, 0, cmd)       # valid bash
+            self.assertIn(">/dev/null 2>&1 &", cmd)                                           # the popup is started in the background
+            self.assertNotRegex(cmd, r"&&\s*panvim popup")                                    # not chained so the pane would wait for it
+            self.assertIn("read -r -n1", cmd)                                                 # a refusal stays on screen
+
     def test_keys_use_row_only_where_a_row_exists(self):
         self.assertIn("{row}", panels.board_keys("umcares-projects"))
         self.assertIn("{row}", panels.board_keys("umcares-recipes"))

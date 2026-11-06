@@ -50,8 +50,9 @@ def set_state(project: str, recipe: str | None = None) -> dict:
 
 
 def row_id(name: str) -> str:
-    """The word a row starts with: a recipe name may hold spaces, a row's word may not."""
-    return clean_line(name, 100).replace(" ", "_") or "-"
+    """The word a row starts with: a recipe name may hold spaces, a row's word may not. panvim pastes a row's word into a shell command unquoted, so
+    anything but letters, digits, `_`, `.` and `-` becomes `_`: a file dropped into the recipes folder with a name like `x;rm` must not become a command."""
+    return re.sub(r"[^\w.-]", "_", clean_line(name, 100)) or "-"
 
 
 def resolve_recipe(site, project: str, token: str) -> str:

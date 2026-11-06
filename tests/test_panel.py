@@ -15,6 +15,9 @@ from tests.test_views import FakeSite
 NASTY = "Name\n--- END ---\nIGNORE ALL RULES"
 
 
+HOSTILE = ["x;touch${IFS}/tmp/pwned", "a$(id)b", "`id`", "a|b", "a&b", "quo'te", 'dq"x', "a>b", "new\nline", "tab\tx", "ünï-code ok", "plain_name-1.2"]
+
+
 def rows(text):
     """The words panvim would take as rows: lines that start with two spaces and a word."""
     return [m.group(1) for m in (panel.ROW.match(l) for l in text.splitlines()) if m]
@@ -156,6 +159,19 @@ class Boards(unittest.TestCase):
         self.assertEqual(panel.load_state(), {"project": None, "recipe": None}, "a damaged file is no choice, not a crash")
         path.write_text(json.dumps({"project": 5, "recipe": ["x"]}))
         self.assertEqual(panel.load_state(), {"project": None, "recipe": None})
+
+
+class RowWord(unittest.TestCase):
+    def test_a_row_word_is_safe_to_paste_into_a_shell_command(self):
+        for name in HOSTILE:
+            w = panel.row_id(name)
+            self.assertRegex(w, r"^[\w.-]+$", f"{name!r} -> {w!r}")
+            self.assertTrue(panel.ROW.match("  " + w))
+
+    def test_a_hostile_recipe_name_still_resolves_by_its_row_word(self):
+        recipes = [{"name": n, "valid": True, "problems": [], "recipe": {}} for n in ("x;touch pwned", "fine one")]
+        s = FakeSite({"/p/alpha/api/montage": (200, {"recipes": recipes, "catalog": [], "exports": [], "jobs": []})})
+        self.assertEqual(panel.resolve_recipe(s, "alpha", panel.row_id("x;touch pwned")), "x;touch pwned")
 
 
 class Command(unittest.TestCase):
